@@ -669,18 +669,57 @@ export async function pruneRecent(root: string): Promise<string[]> {
 /** User-facing app settings (`settings.json` in app-data, #3016). */
 export interface AppSettings {
   reopenLastProject: boolean;
+  /** How this install takes updates (`docs/desktop-ota-spec.md` Stage 4). */
+  updatePolicy: UpdatePolicy;
 }
 
-const DEFAULT_SETTINGS: AppSettings = { reopenLastProject: false };
+export const DEFAULT_UPDATE_POLICY: UpdatePolicy = { mode: "auto", channel: "stable" };
 
-/** Read settings; any failure (or a legacy/malformed payload) reads as
- *  defaults — a settings hiccup must never block startup. */
+const DEFAULT_SETTINGS: AppSettings = {
+  reopenLastProject: false,
+  updatePolicy: DEFAULT_UPDATE_POLICY,
+};
+
+/**
+ * Parse an update policy off the wire, defaulting anything unrecognised.
+ *
+ * Validated rather than cast, because this value decides whether the app
+ * updates at all: a malformed `pinned` with no version would otherwise
+ * freeze the install with no way for the author to see why.
+ */
+export function parseUpdatePolicy(raw: unknown): UpdatePolicy {
+  if (typeof raw !== "object" || raw === null) return DEFAULT_UPDATE_POLICY;
+  const value = raw as Record<string, unknown>;
+  const channel = value.channel === "beta" ? "beta" : "stable";
+  if (value.mode === "pinned") {
+    return typeof value.version === "string" && value.version !== ""
+      ? { mode: "pinned", version: value.version }
+      : DEFAULT_UPDATE_POLICY;
+  }
+  if (value.mode === "manual") return { mode: "manual", channel };
+  return { mode: "auto", channel };
+}
+
+/**
+ * Read settings; any failure (or a legacy/malformed payload) reads as
+ * defaults — a settings hiccup must never block startup.
+ *
+ * ⚠ Every field must be carried through, not just the one a caller happens
+ * to want. `writeAppSettings` sends back whatever this returned, and the
+ * Rust side fills an absent field from `#[serde(default)]` — so a field
+ * dropped HERE is a field silently RESET on the next write. That is how an
+ * author's update policy would quietly revert to Auto/Stable the first time
+ * they toggled "reopen last project".
+ */
 export async function readAppSettings(): Promise<AppSettings> {
   try {
     const raw = await invoke<unknown>("read_app_settings");
     if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-      const value = (raw as Record<string, unknown>).reopenLastProject;
-      return { reopenLastProject: value === true };
+      const value = raw as Record<string, unknown>;
+      return {
+        reopenLastProject: value.reopenLastProject === true,
+        updatePolicy: parseUpdatePolicy(value.updatePolicy),
+      };
     }
   } catch (e: unknown) {
     console.error("[brink-desktop] read_app_settings failed", e);

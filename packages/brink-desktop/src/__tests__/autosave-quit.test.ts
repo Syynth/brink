@@ -95,7 +95,12 @@ vi.mock("../tauri-provider.js", () => ({
   TauriFileProvider: FakeTauriFileProvider,
   pickProjectFolder: vi.fn(() => Promise.resolve(null)),
   projectAnchorExists: vi.fn(() => Promise.resolve(true)),
-  readAppSettings: vi.fn(() => Promise.resolve({ reopenLastProject: false })),
+  readAppSettings: vi.fn(() =>
+    Promise.resolve({
+      reopenLastProject: false,
+      updatePolicy: { mode: "auto", channel: "stable" },
+    }),
+  ),
   writeAppSettings: vi.fn(() => Promise.resolve()),
   previousExitClean: vi.fn(() => Promise.resolve(true)),
   pickProjectFile: vi.fn(() => Promise.resolve(null)),
@@ -110,6 +115,11 @@ vi.mock("../tauri-provider.js", () => ({
   // mock of this module that drives main.tsx has to carry it.
   bundleReady: vi.fn(() => Promise.resolve({ version: null, rolledBackFrom: null })),
   bundleUpdateCheck: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
+  // `unifiedUpdateApi()` binds every channel capability when it is built,
+  // so the whole set has to be present even for a check that resolves
+  // "up to date" — a missing key is a module-namespace access that throws.
+  bundleUpdateApply: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
+  bundleActivate: vi.fn(() => Promise.resolve()),
 }));
 
 describe("desktop autosave ticker is cleared on quit (#2517)", () => {
