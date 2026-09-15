@@ -504,6 +504,38 @@ export type BundleUpdateOutcome =
   /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
   | { kind: "failed"; reason: string };
 
+/** Which stream of bundles this install follows. */
+export type UpdateChannel = "stable" | "beta";
+
+/**
+ * How this install takes updates (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * One discriminated union rather than an `autoUpdate` flag beside a channel:
+ * two fields could express "pinned *and* auto-updating", which must not
+ * exist. `pinned` stops the full-app updater too — that is what makes
+ * pinning safe, since nothing else protects an old pinned bundle from a
+ * newer shell that has dropped a command it calls.
+ */
+export type UpdatePolicy =
+  | { mode: "auto"; channel: UpdateChannel }
+  | { mode: "manual"; channel: UpdateChannel }
+  | { mode: "pinned"; version: string };
+
+/** What the bundle store holds, newest first. */
+export interface BundleInventory {
+  /** The active bundle; `null` means the copy built into the app. */
+  active: string | null;
+  /** Previously-active bundles still on disk, most recent first. */
+  history: string[];
+  /** This install's policy, so a picker needs no second round trip. */
+  policy: UpdatePolicy;
+}
+
+/** List the bundles on disk and the policy in force. */
+export async function bundleList(): Promise<BundleInventory> {
+  return invoke<BundleInventory>("bundle_list");
+}
+
 /**
  * Serve the store's current bundle pointer without restarting the process
  * (`docs/desktop-ota-spec.md` Stage 4).

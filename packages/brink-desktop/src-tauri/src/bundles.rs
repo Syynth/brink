@@ -36,6 +36,14 @@ pub const STATE_FILE: &str = "current.json";
 /// Served for a request with no path of its own.
 pub const INDEX_FILE: &str = "index.html";
 
+/// How many bundle directories the store keeps: the active one plus
+/// [`RETENTION`] - 1 of history.
+///
+/// Three, because bundles are tens of megabytes unpacked and history is not
+/// free. Two would cover rollback alone; three covers rollback plus a
+/// usable recent history to pick from.
+pub const RETENTION: usize = 3;
+
 /// The bundle pointer, as it lives in `current.json`.
 ///
 /// `attempting` is the rollback sentinel: it is stamped with the version
@@ -48,8 +56,13 @@ pub const INDEX_FILE: &str = "index.html";
 pub struct BundleState {
     /// Active bundle version; `None` means the embedded floor is active.
     pub version: Option<String>,
-    /// The one previous bundle kept for rollback.
-    pub previous: Option<String>,
+    /// Previously-active bundles, **most recent first**.
+    ///
+    /// A list rather than one slot (Stage 4): the author can return to a
+    /// version they liked, not merely undo the last step. Capped at
+    /// [`RETENTION`] minus the active one — see [`promote`] for the
+    /// exemption that keeps a pinned version out of the cap's reach.
+    pub history: Vec<String>,
     /// Install time of `version`, epoch milliseconds.
     ///
     /// Epoch millis rather than RFC 3339 deliberately: a timestamp format
@@ -241,7 +254,11 @@ pub fn begin_launch(root: &Path, now_ms: u64) -> (LaunchOutcome, BundleState) {
         if let Some(dir) = version_dir(root, &failed) {
             let _ = std::fs::remove_dir_all(dir);
         }
-        let now_serving = state.previous.take();
+        let now_serving = if state.history.is_empty() {
+            None
+        } else {
+            Some(state.history.remove(0))
+        };
         state.version.clone_from(&now_serving);
         state.installed_at_ms = now_serving.is_some().then_some(now_ms);
         LaunchOutcome::RolledBack {
@@ -310,6 +327,32 @@ pub fn begin_activation(root: &Path) -> std::io::Result<Option<String>> {
     Ok(serving)
 }
 
+/// Trim `history` to the retention budget, returning what was dropped.
+///
+/// **`protected` survives regardless of its position**, and that exemption is
+/// load-bearing rather than tidy: with a plain "keep the N most recent", a
+/// version the author pinned three updates ago is pruned out from under them
+/// and the forever-bundle they chose silently vanishes. The pin is the one
+/// thing a retention policy must not outrank.
+///
+/// It is passed in rather than read here because the pin lives in the app's
+/// settings, not in the store — this module stays a pure function of a root
+/// path.
+fn prune_history(history: &mut Vec<String>, protected: Option<&str>) -> Vec<String> {
+    let budget = RETENTION.saturating_sub(1);
+    let mut kept = Vec::with_capacity(history.len());
+    let mut dropped = Vec::new();
+    for version in history.drain(..) {
+        if kept.len() < budget || protected == Some(version.as_str()) {
+            kept.push(version);
+        } else {
+            dropped.push(version);
+        }
+    }
+    *history = kept;
+    dropped
+}
+
 /// Whether `version`'s directory exists and holds an `index.html`.
 fn bundle_is_present(root: &Path, version: &str) -> bool {
     version_dir(root, version).is_some_and(|dir| dir.join(INDEX_FILE).is_file())
@@ -334,7 +377,12 @@ pub fn mark_ready(root: &Path) -> std::io::Result<()> {
 ///
 /// Verification (sha256, signature) happens **before** this — nothing here
 /// re-checks it, so do not call it on an unverified directory.
-pub fn promote(root: &Path, version: &str, now_ms: u64) -> std::io::Result<BundleState> {
+pub fn promote(
+    root: &Path,
+    version: &str,
+    now_ms: u64,
+    protected: Option<&str>,
+) -> std::io::Result<BundleState> {
     let invalid = |msg: &str| std::io::Error::new(std::io::ErrorKind::InvalidInput, msg.to_owned());
 
     let target = version_dir(root, version).ok_or_else(|| invalid("unsafe bundle version"))?;
@@ -351,14 +399,21 @@ pub fn promote(root: &Path, version: &str, now_ms: u64) -> std::io::Result<Bundl
     }
     std::fs::rename(&staging, &target)?;
 
-    // Roll the pointer: the version being replaced becomes `previous`, and
-    // whatever `previous` held is dropped — exactly one is kept. The dropped
-    // directory is deleted here; this is the only place that prunes.
+    // Roll the pointer: the version being replaced goes to the front of the
+    // history, and anything past the retention budget is dropped. The
+    // dropped directories are deleted here; this is the only place that
+    // prunes.
     let superseded = state.version.replace(version.to_owned());
     state.installed_at_ms = Some(now_ms);
-    if superseded.is_some() {
-        let dropped = std::mem::replace(&mut state.previous, superseded);
-        if let Some(dir) = dropped.as_deref().and_then(|v| version_dir(root, v)) {
+    if let Some(superseded) = superseded {
+        state.history.retain(|held| held != &superseded);
+        state.history.insert(0, superseded);
+    }
+    // The newly active version is not also history.
+    state.history.retain(|held| held != version);
+
+    for dropped in prune_history(&mut state.history, protected) {
+        if let Some(dir) = version_dir(root, &dropped) {
             let _ = std::fs::remove_dir_all(dir);
         }
     }
@@ -371,7 +426,7 @@ mod tests {
     use super::{
         begin_activation, begin_launch, is_safe_component, mark_ready, percent_decode, promote,
         read_state, resolve_asset, staging_dir, version_dir, write_state, BundleState,
-        LaunchOutcome, INDEX_FILE,
+        LaunchOutcome, INDEX_FILE, RETENTION,
     };
     use std::path::{Path, PathBuf};
 
@@ -405,7 +460,7 @@ mod tests {
             root,
             &BundleState {
                 version: version.map(str::to_owned),
-                previous: previous.map(str::to_owned),
+                history: previous.into_iter().map(str::to_owned).collect(),
                 installed_at_ms: Some(1),
                 attempting: None,
             },
@@ -521,7 +576,7 @@ mod tests {
                 .is_file(),
             "the previous bundle must survive — only begin_launch prunes"
         );
-        assert_eq!(read_state(root.path()).previous.as_deref(), Some("0.0.1"));
+        assert_eq!(read_state(root.path()).history, vec!["0.0.1".to_owned()]);
     }
 
     /// Lay down `<root>/<version>/index.html` plus any extra files.
@@ -575,7 +630,7 @@ mod tests {
         let root = TempRoot::new("roundtrip");
         let state = BundleState {
             version: Some("0.7.1".into()),
-            previous: Some("0.7.0".into()),
+            history: vec!["0.7.0".into()],
             installed_at_ms: Some(1_726_000_000_000),
             attempting: None,
         };
@@ -813,7 +868,7 @@ mod tests {
             root.path(),
             &BundleState {
                 version: Some("0.7.1".into()),
-                previous: Some("0.7.0".into()),
+                history: vec!["0.7.0".into()],
                 installed_at_ms: Some(1),
                 // Stamped by the previous launch and never cleared.
                 attempting: Some("0.7.1".into()),
@@ -830,7 +885,7 @@ mod tests {
             }
         );
         assert_eq!(state.version.as_deref(), Some("0.7.0"));
-        assert_eq!(state.previous, None, "0.7.0 is now active, not spare");
+        assert!(state.history.is_empty(), "0.7.0 is now active, not spare");
         assert_eq!(
             state.attempting.as_deref(),
             Some("0.7.0"),
@@ -879,7 +934,7 @@ mod tests {
             root.path(),
             &BundleState {
                 version: Some("0.7.1".into()),
-                previous: Some("0.7.0".into()),
+                history: vec!["0.7.0".into()],
                 attempting: Some("0.7.1".into()),
                 installed_at_ms: Some(1),
             },
@@ -927,7 +982,7 @@ mod tests {
         let root = TempRoot::new("promote");
         stage(root.path(), &[("app.js", "console.log(1)")]);
 
-        let state = promote(root.path(), "0.7.1", 42).expect("promote");
+        let state = promote(root.path(), "0.7.1", 42, None).expect("promote");
         assert_eq!(state.version.as_deref(), Some("0.7.1"));
         assert_eq!(state.installed_at_ms, Some(42));
         assert!(!staging_dir(root.path()).exists(), "staging is consumed");
@@ -940,25 +995,91 @@ mod tests {
         assert_eq!(read_state(root.path()).version.as_deref(), Some("0.7.1"));
     }
 
+    /// The retention budget: the active bundle plus `RETENTION - 1` of
+    /// history, and the overflow's directories are deleted rather than
+    /// orphaned.
     #[test]
-    fn promote_keeps_exactly_one_previous_and_deletes_the_rest() {
+    fn promote_keeps_the_retention_budget_and_deletes_the_rest() {
         let root = TempRoot::new("prune");
 
-        stage(root.path(), &[]);
-        promote(root.path(), "0.7.0", 1).expect("first");
-        stage(root.path(), &[]);
-        promote(root.path(), "0.7.1", 2).expect("second");
-        stage(root.path(), &[]);
-        let state = promote(root.path(), "0.7.2", 3).expect("third");
+        for (index, version) in ["0.7.0", "0.7.1", "0.7.2", "0.7.3"].iter().enumerate() {
+            stage(root.path(), &[]);
+            promote(root.path(), version, index as u64 + 1, None).expect("promote");
+        }
 
-        assert_eq!(state.version.as_deref(), Some("0.7.2"));
-        assert_eq!(state.previous.as_deref(), Some("0.7.1"));
+        let state = read_state(root.path());
+        assert_eq!(state.version.as_deref(), Some("0.7.3"));
+        assert_eq!(
+            state.history,
+            vec!["0.7.2".to_owned(), "0.7.1".to_owned()],
+            "most recent first, capped at RETENTION - 1"
+        );
+        assert_eq!(state.history.len(), RETENTION - 1);
         assert!(
             version_dir(root.path(), "0.7.0").is_some_and(|d| !d.exists()),
             "the dropped bundle's directory should be deleted, not orphaned"
         );
-        assert!(version_dir(root.path(), "0.7.1").is_some_and(|d| d.exists()));
-        assert!(version_dir(root.path(), "0.7.2").is_some_and(|d| d.exists()));
+        for kept in ["0.7.1", "0.7.2", "0.7.3"] {
+            assert!(
+                version_dir(root.path(), kept).is_some_and(|d| d.exists()),
+                "{kept} should still be on disk"
+            );
+        }
+    }
+
+    /// **The pin outranks the retention budget.** Without this exemption a
+    /// version the author pinned three updates ago is pruned out from under
+    /// them, and the forever-bundle they chose silently vanishes — which is
+    /// the one thing a retention policy must not be allowed to do.
+    #[test]
+    fn promote_never_prunes_the_pinned_version() {
+        let root = TempRoot::new("prune-pinned");
+
+        for (index, version) in ["0.7.0", "0.7.1", "0.7.2", "0.7.3"].iter().enumerate() {
+            stage(root.path(), &[]);
+            promote(root.path(), version, index as u64 + 1, Some("0.7.0")).expect("promote");
+        }
+
+        let state = read_state(root.path());
+        assert!(
+            state.history.contains(&"0.7.0".to_owned()),
+            "the pinned version must survive its position in the history: {:?}",
+            state.history
+        );
+        assert!(
+            version_dir(root.path(), "0.7.0").is_some_and(|d| d.exists()),
+            "the pinned bundle's directory must still be on disk"
+        );
+        // The exemption ADDS to the budget rather than displacing a recent
+        // one: an author who pinned an old version still gets rollback.
+        assert!(
+            state.history.contains(&"0.7.2".to_owned()),
+            "the most recent history entry must not be sacrificed for the pin"
+        );
+    }
+
+    /// Re-promoting a version already in the history must not leave it in
+    /// both places — a picker would show the active bundle as a rollback
+    /// target, and the budget would be silently spent twice on one version.
+    #[test]
+    fn promote_does_not_leave_a_version_in_both_active_and_history() {
+        let root = TempRoot::new("prune-dup");
+
+        stage(root.path(), &[]);
+        promote(root.path(), "0.7.0", 1, None).expect("first");
+        stage(root.path(), &[]);
+        promote(root.path(), "0.7.1", 2, None).expect("second");
+        // Back to the older one, as a rollback or a pin would.
+        stage(root.path(), &[]);
+        let state = promote(root.path(), "0.7.0", 3, None).expect("third");
+
+        assert_eq!(state.version.as_deref(), Some("0.7.0"));
+        assert!(
+            !state.history.contains(&"0.7.0".to_owned()),
+            "the active version must not also be history: {:?}",
+            state.history
+        );
+        assert_eq!(state.history, vec!["0.7.1".to_owned()]);
     }
 
     #[test]
@@ -967,17 +1088,23 @@ mod tests {
 
         stage(root.path(), &[]);
         assert!(
-            promote(root.path(), "../escape", 1).is_err(),
+            promote(root.path(), "../escape", 1, None).is_err(),
             "unsafe version"
         );
 
         let _ = std::fs::remove_dir_all(staging_dir(root.path()));
-        assert!(promote(root.path(), "0.7.1", 1).is_err(), "no staging");
+        assert!(
+            promote(root.path(), "0.7.1", 1, None).is_err(),
+            "no staging"
+        );
 
         // A staging directory with no index.html is a failed extract, not a
         // bundle — promoting it would point the shell at nothing.
         std::fs::create_dir_all(staging_dir(root.path())).expect("mkdir");
         std::fs::write(staging_dir(root.path()).join("stray.txt"), "x").expect("write");
-        assert!(promote(root.path(), "0.7.1", 1).is_err(), "no index.html");
+        assert!(
+            promote(root.path(), "0.7.1", 1, None).is_err(),
+            "no index.html"
+        );
     }
 }
