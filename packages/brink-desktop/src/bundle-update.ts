@@ -18,7 +18,7 @@
  *   there yet.
  */
 
-import type { BundleUpdateOutcome } from "./tauri-provider.js";
+import type { BundleUpdateCheck, BundleUpdateOutcome } from "./tauri-provider.js";
 
 /** One studio notification, matching `StudioApi.notify`'s entry shape. */
 export interface BundleUpdateNotice {
@@ -51,6 +51,36 @@ export function bundleUpdateNotice(
       return { severity: "error", message: outcome.reason };
     case "failed":
       return silent ? null : { severity: "error", message: `Update check failed: ${outcome.reason}` };
+    case "upToDate":
+      return silent ? null : { severity: "info", message: "The editor is up to date." };
+  }
+}
+
+/**
+ * How a CHECK should be reported, or `null` when it should be silent.
+ *
+ * `available` is deliberately absent from the returned shapes: an available
+ * update is an offer awaiting an answer, not a notice. Reporting it as one
+ * would tell the author something is happening and then not do it — the
+ * exact confusion splitting consent out of the install path exists to remove.
+ * Callers must handle `available` before reaching here; this returns `null`
+ * for it so a caller that forgets says nothing rather than something wrong.
+ */
+export function bundleCheckNotice(
+  check: BundleUpdateCheck,
+  options: { silent?: boolean } = {},
+): BundleUpdateNotice | null {
+  const silent = options.silent === true;
+  switch (check.kind) {
+    case "available":
+      return null;
+    case "refused":
+      // Never silent: the author can act on this one.
+      return { severity: "error", message: check.reason };
+    case "failed":
+      return silent
+        ? null
+        : { severity: "error", message: `Update check failed: ${check.reason}` };
     case "upToDate":
       return silent ? null : { severity: "info", message: "The editor is up to date." };
   }

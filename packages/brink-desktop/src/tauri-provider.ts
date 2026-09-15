@@ -497,25 +497,49 @@ export async function bundleReady(): Promise<BundleLaunchInfo> {
 /** The outcome of an OTA web-bundle update attempt. */
 export type BundleUpdateOutcome =
   | { kind: "upToDate" }
-  /** Installed; takes effect on the next launch, never a hot swap. */
+  /** Installed; takes effect on the next launch. */
   | { kind: "installed"; version: string }
   /** Refused for a reason the author can act on — `minShellVersion` above all. */
   | { kind: "refused"; reason: string }
   /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
   | { kind: "failed"; reason: string };
 
+/** What a check found. An offer, not an outcome — nothing is downloaded yet. */
+export type BundleUpdateCheck =
+  | { kind: "upToDate" }
+  /** There is an update available; it has NOT been installed. */
+  | { kind: "available"; version: string }
+  | { kind: "refused"; reason: string }
+  | { kind: "failed"; reason: string };
+
 /**
- * Check for an OTA web-bundle update and install it if there is one
- * (`docs/desktop-ota-spec.md` Stage 2).
+ * Check for an OTA web-bundle update (`docs/desktop-ota-spec.md` Stage 4).
  *
- * One call rather than check/download/install steps on purpose: the ordering
- * between them is a safety property (verify before extract; promote only a
- * verified staging directory), and splitting it across IPC would put that
- * ordering in the webview's hands — which is exactly where an OTA'd bundle's
- * own JS runs.
+ * Downloads and installs nothing. Stage 2 shipped this as check-and-install
+ * in one call; Stage 4 split the consent step out so both update channels
+ * ask first, per the full-app channel's standing "nothing installs without
+ * consent" (2026-08-22).
  */
-export async function bundleUpdateCheck(): Promise<BundleUpdateOutcome> {
-  return invoke<BundleUpdateOutcome>("bundle_update_check");
+export async function bundleUpdateCheck(): Promise<BundleUpdateCheck> {
+  return invoke<BundleUpdateCheck>("bundle_update_check");
+}
+
+/**
+ * Install the available OTA web-bundle update, if there still is one.
+ *
+ * ⚠ Takes no arguments, and must not grow any. The shell re-fetches and
+ * re-judges the manifest itself rather than trusting a version, url, hash or
+ * signature from here — this code is an OTA'd bundle's own JS, which is
+ * precisely what an attacker who compromised the channel would control. The
+ * version `bundleUpdateCheck` returned is toast text, not an instruction.
+ *
+ * What is NOT split, and must never be: download, verify, unpack and promote
+ * stay inside this one call, because the ordering between them is a safety
+ * property (verify before extract; promote only a verified staging
+ * directory). Splitting *that* across IPC would put the ordering here.
+ */
+export async function bundleUpdateApply(): Promise<BundleUpdateOutcome> {
+  return invoke<BundleUpdateOutcome>("bundle_update_apply");
 }
 
 /**

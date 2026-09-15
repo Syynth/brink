@@ -690,17 +690,32 @@ fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
     BundleLaunchInfo::from(&runtime.outcome)
 }
 
-// ── OTA bundle updates (docs/desktop-ota-spec.md Stage 2) ──────────────
+// ── OTA bundle updates (docs/desktop-ota-spec.md Stage 2; split in Stage 4) ──
 //
-// The one command the frontend drives: fetch the manifest, decide, download,
-// verify, unpack into `staging/`, promote. Everything that DECIDES lives in
-// `bundle_update` as pure functions; this is the IO shell around them.
+// Two commands, and WHERE the seam falls is the whole design.
 //
-// It is a single command rather than check/download/install steps because
-// the ordering between them is a safety property (verify before extract,
-// promote only a verified staging), and splitting it across IPC calls would
-// put that ordering in the webview's hands — which is precisely where an
-// OTA'd bundle's own JS lives.
+// `bundle_update_check` fetches the manifest and judges it. `bundle_update_apply`
+// acts on a yes. Stage 4 ruled that a bundle asks before installing, matching
+// the full-app channel's "nothing installs without consent" (2026-08-22) — two
+// channels cannot differ on something the author can feel.
+//
+// What is NOT split is the safety-ordered part. Download, verify, unpack into
+// `staging/` and promote all stay inside ONE command, because the ordering
+// between them is a safety property (verify before extract, promote only a
+// verified staging) and splitting *that* across IPC calls would put the
+// ordering in the webview's hands — precisely where an OTA'd bundle's own JS
+// lives. That is Stage 2's reasoning and it is untouched; only the consent
+// step moved out from under it.
+//
+// ⚠ `bundle_update_apply` TAKES NO ARGUMENTS, and that is not an oversight —
+// it is what keeps the split safe. It re-fetches and re-judges the manifest
+// itself rather than accepting a url, hash, signature or version from the
+// caller, so a frontend that has been compromised (or is simply an older
+// bundle than the one being offered) can ask for "the update" and never for a
+// *particular* payload. The version `check` hands back is display text for a
+// toast, not an instruction this command obeys. Re-judging also closes the
+// window between the two calls: a manifest that moved, or a bundle installed
+// by another window in the meantime, is caught rather than acted on stale.
 
 /// Where the manifest is served, beside the full-app `latest.json`.
 const BUNDLE_MANIFEST_URL: &str =
@@ -715,6 +730,29 @@ enum BundleUpdateOutcome {
     /// Installed; takes effect on the next launch (never a hot swap — the
     /// running webview already holds the old JS and instantiated wasm).
     Installed { version: String },
+    /// Refused for a reason the author can act on, `minShellVersion` above
+    /// all.
+    Refused { reason: String },
+    /// Something went wrong. Distinct from `Refused`: a refusal is the
+    /// system working.
+    Failed { reason: String },
+}
+
+/// What a check found.
+///
+/// Deliberately a separate type from [`BundleUpdateOutcome`] rather than a
+/// shared enum with an extra variant: a check that finds something has *not*
+/// installed it, and `Available` is an offer awaiting an answer. Sharing one
+/// type would make it possible to write a frontend that reports "installed"
+/// from a check, which is exactly the confusion the consent split exists to
+/// remove.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum BundleUpdateCheck {
+    /// Nothing newer on offer.
+    UpToDate,
+    /// There is an update, and nothing has been downloaded yet.
+    Available { version: String },
     /// Refused for a reason the author can act on, `minShellVersion` above
     /// all.
     Refused { reason: String },
@@ -766,34 +804,38 @@ async fn fetch_bounded(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
     Ok(bytes.to_vec())
 }
 
-/// Check for a web-bundle update and install it if there is one.
+/// 4 MiB — a manifest is a few hundred bytes; anything near this is wrong.
+const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// 128 MiB. The real bundle is ~10 MiB compressed (the spec's measured
+/// figure), so this is an order of magnitude of headroom rather than a tight
+/// fit — it exists to bound a hostile stream, not to police size.
+const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
+
+/// The manifest, fetched and judged against this shell and what is installed.
 ///
-/// Returns rather than throws for every *expected* outcome, so the frontend
-/// renders one shape. See [`BundleUpdateOutcome`].
-#[tauri::command]
-async fn bundle_update_check(app: tauri::AppHandle) -> BundleUpdateOutcome {
-    match bundle_update_run(&app).await {
-        Ok(outcome) => outcome,
-        Err(reason) => BundleUpdateOutcome::Failed { reason },
-    }
+/// The single place the decision is made, so `check` and `apply` cannot drift
+/// into disagreeing about what is on offer — which would show up as an offer
+/// the author accepts and the shell then refuses.
+enum Resolution {
+    UpToDate,
+    Refused(String),
+    Install(bundle_update::BundleManifest),
 }
 
-/// The body of [`bundle_update_check`], with `?` available.
-async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome, String> {
+/// Fetch the manifest and judge it. Shared by both commands; see the ⚠ note
+/// at the top of this section for why `apply` runs this again rather than
+/// trusting what `check` returned.
+async fn resolve_update(app: &tauri::AppHandle) -> Result<Resolution, String> {
     use tauri::Manager as _;
 
-    /// 4 MiB — a manifest is a few hundred bytes; anything near this is
-    /// wrong.
-    const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
-    /// 128 MiB. The real bundle is ~10 MiB compressed (the spec's measured
-    /// figure), so this is an order of magnitude of headroom rather than a
-    /// tight fit — it exists to bound a hostile stream, not to police size.
-    const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
-
-    let runtime = app
-        .try_state::<BundleRuntime>()
-        .ok_or("the bundle store is not initialised")?;
-    let root = runtime.root.clone();
+    // Scoped so the `State` guard is not held across an await point.
+    let root = {
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
     let installed = bundles::read_state(&root).version;
 
     let manifest_text = fetch_bounded(BUNDLE_MANIFEST_URL, MAX_MANIFEST_BYTES).await?;
@@ -802,13 +844,60 @@ async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome
     let manifest = bundle_update::parse_manifest(&manifest_text).map_err(|e| e.to_string())?;
 
     let shell_version = app.package_info().version.to_string();
-    match bundle_update::decide(&manifest, &shell_version, installed.as_deref()) {
-        bundle_update::UpdateDecision::UpToDate => return Ok(BundleUpdateOutcome::UpToDate),
-        bundle_update::UpdateDecision::Refuse(reason) => {
-            return Ok(BundleUpdateOutcome::Refused { reason })
-        }
-        bundle_update::UpdateDecision::Install => {}
+    Ok(
+        match bundle_update::decide(&manifest, &shell_version, installed.as_deref()) {
+            bundle_update::UpdateDecision::UpToDate => Resolution::UpToDate,
+            bundle_update::UpdateDecision::Refuse(reason) => Resolution::Refused(reason),
+            bundle_update::UpdateDecision::Install => Resolution::Install(manifest),
+        },
+    )
+}
+
+/// Check for a web-bundle update. Downloads and installs NOTHING.
+///
+/// Returns rather than throws for every *expected* outcome, so the frontend
+/// renders one shape. See [`BundleUpdateCheck`].
+#[tauri::command]
+async fn bundle_update_check(app: tauri::AppHandle) -> BundleUpdateCheck {
+    match resolve_update(&app).await {
+        Ok(Resolution::UpToDate) => BundleUpdateCheck::UpToDate,
+        Ok(Resolution::Refused(reason)) => BundleUpdateCheck::Refused { reason },
+        Ok(Resolution::Install(manifest)) => BundleUpdateCheck::Available {
+            version: manifest.version,
+        },
+        Err(reason) => BundleUpdateCheck::Failed { reason },
     }
+}
+
+/// Install the available web-bundle update, if there still is one.
+///
+/// Takes no arguments by design — see the ⚠ note at the top of this section.
+#[tauri::command]
+async fn bundle_update_apply(app: tauri::AppHandle) -> BundleUpdateOutcome {
+    match bundle_update_run(&app).await {
+        Ok(outcome) => outcome,
+        Err(reason) => BundleUpdateOutcome::Failed { reason },
+    }
+}
+
+/// The body of [`bundle_update_apply`], with `?` available.
+async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome, String> {
+    // Judged again rather than taken on trust, so the answer reflects the
+    // moment of installing rather than the moment of offering.
+    let manifest = match resolve_update(app).await? {
+        Resolution::UpToDate => return Ok(BundleUpdateOutcome::UpToDate),
+        Resolution::Refused(reason) => return Ok(BundleUpdateOutcome::Refused { reason }),
+        Resolution::Install(manifest) => manifest,
+    };
+
+    // Scoped for the same reason as in `resolve_update`.
+    let root = {
+        use tauri::Manager as _;
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
 
     // The public key the full-app updater already uses — one keypair across
     // both channels (RULED 2026-09-14), read from the same config field
@@ -1995,6 +2084,7 @@ pub fn run() -> tauri::Result<()> {
             previous_exit_clean,
             bundle_ready,
             bundle_update_check,
+            bundle_update_apply,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
@@ -4108,6 +4198,37 @@ on:
         assert!(path.is_file(), "ota-bundle.json should exist at {path:?}");
         let text = std::fs::read_to_string(&path).expect("just asserted it exists");
         serde_json::from_str(&text).expect("ota-bundle.json should be valid JSON")
+    }
+
+    /// `bundle_update_apply` must take nothing but the app handle.
+    ///
+    /// This is the property that makes splitting consent out of the install
+    /// path safe, and it is one edit away from being lost: the obvious
+    /// "improvement" is to pass the version (or url, or hash) that `check`
+    /// just returned, so `apply` need not fetch twice. That hands a caller
+    /// the ability to name a *particular* payload — and the caller is an
+    /// OTA'd bundle's own JS, which is exactly the code an attacker who has
+    /// compromised the channel would control.
+    ///
+    /// Re-fetching is the cost of not trusting the frontend. Pinned here
+    /// rather than left to review, because the diff that breaks it looks
+    /// like an optimisation.
+    #[test]
+    fn bundle_update_apply_accepts_no_caller_supplied_payload() {
+        let source = include_str!("lib.rs");
+        let signature = source
+            .split_once("async fn bundle_update_apply(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once(')'))
+            .map(|(params, _)| params.trim().to_owned())
+            .expect("bundle_update_apply should still be declared in this file");
+
+        assert_eq!(
+            signature, "app: tauri::AppHandle",
+            "bundle_update_apply grew a parameter. If it now takes a version, url, \
+             hash or signature from the caller, the frontend can name which payload \
+             gets installed — re-read the ⚠ note above bundle_update_check."
+        );
     }
 
     /// Every command name in this file's own `generate_handler!` list, sorted.

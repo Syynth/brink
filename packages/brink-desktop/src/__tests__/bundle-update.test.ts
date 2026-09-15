@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { bundleUpdateNotice } from "../bundle-update.js";
-import type { BundleUpdateOutcome } from "../tauri-provider.js";
+import { bundleCheckNotice, bundleUpdateNotice } from "../bundle-update.js";
+import type { BundleUpdateCheck, BundleUpdateOutcome } from "../tauri-provider.js";
 
 describe("bundleUpdateNotice", () => {
   /**
@@ -60,5 +60,53 @@ describe("bundleUpdateNotice", () => {
     const failed = bundleUpdateNotice({ kind: "failed", reason: "needs a newer app" });
     expect(refused?.message).not.toBe(failed?.message);
     expect(failed?.message).toContain("failed");
+  });
+});
+
+describe("bundleCheckNotice", () => {
+  /**
+   * The load-bearing one. `available` means an offer is owed, and a notice
+   * would announce something is happening and then not do it — the exact
+   * confusion the Stage 4 consent split exists to remove. Returning null
+   * makes a caller that forgets to handle it say NOTHING rather than
+   * something wrong.
+   */
+  it("never turns an available update into a notice, silent or not", () => {
+    const check: BundleUpdateCheck = { kind: "available", version: "0.0.2" };
+    for (const silent of [true, false]) {
+      expect(bundleCheckNotice(check, { silent }), `silent=${silent}`).toBeNull();
+    }
+  });
+
+  /** A refusal is actionable, so it survives a silent (launch/focus) check —
+   *  the same rule bundleUpdateNotice applies, and it must not diverge. */
+  it("always reports a refusal, even silently", () => {
+    const check: BundleUpdateCheck = { kind: "refused", reason: "needs a newer app" };
+    for (const silent of [true, false]) {
+      const notice = bundleCheckNotice(check, { silent });
+      expect(notice?.severity, `silent=${silent}`).toBe("error");
+      expect(notice?.message).toBe(check.reason);
+    }
+  });
+
+  /** A launch check must not interrupt to say nothing happened; a manual one
+   *  must, because a menu item that can do nothing visible is broken. */
+  it("is silent about the boring outcomes only when asked to be", () => {
+    for (const check of [
+      { kind: "upToDate" } as const,
+      { kind: "failed", reason: "offline" } as const,
+    ]) {
+      expect(bundleCheckNotice(check, { silent: true }), check.kind).toBeNull();
+      expect(bundleCheckNotice(check, { silent: false }), check.kind).not.toBeNull();
+    }
+  });
+
+  /** The two enums are separate types for a reason; the shared vocabulary
+   *  between them must still agree, or the author sees the same situation
+   *  described two ways depending on which call reported it. */
+  it("words up-to-date identically to the install path", () => {
+    expect(bundleCheckNotice({ kind: "upToDate" })?.message).toBe(
+      bundleUpdateNotice({ kind: "upToDate" })?.message,
+    );
   });
 });

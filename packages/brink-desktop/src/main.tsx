@@ -65,6 +65,7 @@ import {
   saveBytesDialog,
   bundleReady,
   bundleUpdateCheck,
+  bundleUpdateApply,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -74,7 +75,7 @@ import {
 } from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
-import { bundleUpdateNotice } from "./bundle-update.js";
+import { bundleCheckNotice, bundleUpdateNotice } from "./bundle-update.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { exportStoryToInkb } from "./export.js";
@@ -914,6 +915,55 @@ function settleUpdateOffer(accepted: boolean): void {
 }
 
 /**
+ * Raise an update offer and resolve with the author's answer.
+ *
+ * **Shared by both update channels on purpose** (`docs/desktop-ota-spec.md`
+ * Stage 4, RULED 2026-09-15): from the author's side there is either an
+ * update or there isn't, and which channel carries it is our problem. One
+ * offer, one notification id, one pair of actions — so a bundle update and
+ * a shell update are indistinguishable from the outside.
+ *
+ * An update offer is a notification, not an interruption: a modal steals
+ * focus mid-sentence for something that can wait. With a project open it is
+ * a sticky toast carrying its own actions; the promise settles when the
+ * author dispatches one (see UPDATE_COMMANDS), so updater.ts's decision tree
+ * is unchanged.
+ */
+async function confirmUpdate(message: string): Promise<boolean> {
+  const api = current?.api;
+  if (!api) {
+    // Landing screen: no studio surface exists yet, so there is nowhere to
+    // put a toast. The native dialog stays the fallback.
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    return ask(`${message} Install and restart?`, {
+      title: "Update available",
+      kind: "info",
+      okLabel: "Install and Restart",
+      cancelLabel: "Later",
+    });
+  }
+  // A second check while an offer is still up replaces it; the older promise
+  // settles as declined so no caller is left hanging.
+  settleUpdateOffer(false);
+  return new Promise<boolean>((resolve) => {
+    pendingUpdateOffer = resolve;
+    api.notify({
+      id: UPDATE_NOTIFICATION_ID,
+      severity: "info",
+      source: "update",
+      message,
+      // Sticky: an offer that evaporates while you read it is worse than no
+      // offer at all.
+      timeoutMs: 0,
+      actions: [
+        { label: "Install and Restart", commandId: UPDATE_INSTALL_COMMAND },
+        { label: "Later", commandId: UPDATE_LATER_COMMAND },
+      ],
+    });
+  });
+}
+
+/**
  * Host commands backing the update toast's buttons. Toast actions dispatch
  * command ids (NotificationAction carries no callbacks), so the buttons
  * need real commands — contributed through the host extension seam like
@@ -977,44 +1027,7 @@ function updateApi(): UpdateApi {
         },
       };
     },
-    confirm: async (version) => {
-      // An update offer is a notification, not an interruption: a modal
-      // steals focus mid-sentence for something that can wait. With a
-      // project open it becomes a sticky toast carrying its own actions;
-      // the promise this returns is settled by whichever the author picks
-      // (see UPDATE_COMMANDS), so updater.ts's decision tree is unchanged.
-      const api = current?.api;
-      if (!api) {
-        // Landing screen: no studio surface exists yet, so there is nowhere
-        // to put a toast. The native dialog stays the fallback.
-        const { ask } = await import("@tauri-apps/plugin-dialog");
-        return ask(`Brink Studio ${version} is available. Install and restart?`, {
-          title: "Update available",
-          kind: "info",
-          okLabel: "Install and Restart",
-          cancelLabel: "Later",
-        });
-      }
-      // A second check while an offer is still up replaces it; the older
-      // promise settles as declined so no caller is left hanging.
-      settleUpdateOffer(false);
-      return new Promise<boolean>((resolve) => {
-        pendingUpdateOffer = resolve;
-        api.notify({
-          id: UPDATE_NOTIFICATION_ID,
-          severity: "info",
-          source: "update",
-          message: `Brink Studio ${version} is available.`,
-          // Sticky: an offer that evaporates while you read it is worse
-          // than no offer at all.
-          timeoutMs: 0,
-          actions: [
-            { label: "Install and Restart", commandId: UPDATE_INSTALL_COMMAND },
-            { label: "Later", commandId: UPDATE_LATER_COMMAND },
-          ],
-        });
-      });
-    },
+    confirm: async (version) => confirmUpdate(`Brink Studio ${version} is available.`),
     notify: (severity, message) => {
       // With a project open the studio's own surface is the right place; on
       // the landing screen there is no StudioApi yet, so fall back to a
@@ -1160,16 +1173,36 @@ void confirmBundleBoot(bundleReady).then((info) => {
  * rollback notice uses, so a check made with no project open is not lost.
  */
 async function checkBundleUpdate(options: { silent: boolean }): Promise<void> {
+  let check;
+  try {
+    check = await bundleUpdateCheck();
+  } catch (e: unknown) {
+    check = { kind: "failed" as const, reason: e instanceof Error ? e.message : String(e) };
+  }
+
+  if (check.kind !== "available") {
+    reportBundleNotice(bundleCheckNotice(check, { silent: options.silent }));
+    return;
+  }
+
+  // RULED 2026-09-15: the author cannot tell which channel is offering. The
+  // message deliberately carries NO version, because the bundle's version is
+  // an independent sequence (0.0.2 while the app is at 0.8.0) and naming it
+  // would both leak the mechanism and read as a downgrade.
+  if (!(await confirmUpdate("An update is available."))) return;
+
   let outcome;
   try {
-    outcome = await bundleUpdateCheck();
+    outcome = await bundleUpdateApply();
   } catch (e: unknown) {
-    outcome = {
-      kind: "failed" as const,
-      reason: e instanceof Error ? e.message : String(e),
-    };
+    outcome = { kind: "failed" as const, reason: e instanceof Error ? e.message : String(e) };
   }
-  const notice = bundleUpdateNotice(outcome, { silent: options.silent });
+  // Never silent: the author consented to this one, so its result is not noise.
+  reportBundleNotice(bundleUpdateNotice(outcome, { silent: false }));
+}
+
+/** Put a bundle notice on whichever surface exists, or hold it for one. */
+function reportBundleNotice(notice: { severity: "info" | "error"; message: string } | null): void {
   if (notice === null) return;
   const api = current?.api;
   if (api === undefined) {
