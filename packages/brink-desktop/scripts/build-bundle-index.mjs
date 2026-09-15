@@ -78,7 +78,7 @@ export const MAX_INDEX_ENTRIES = 50;
  *   stable install.
  *
  * @param {object} options
- * @param {{version: string, minShellVersion: string, channel?: string}} options.descriptor
+ * @param {{version: string, minShellVersion: string, channel?: string | null}} options.descriptor
  * @param {Uint8Array} options.archive The `.tar.gz` bytes.
  * @param {string} options.filename The archive's published filename.
  * @param {string} options.signature Base64 minisign signature of `archive`.
