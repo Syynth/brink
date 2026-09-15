@@ -8,7 +8,8 @@ const listen = vi.fn();
 vi.mock("@tauri-apps/api/core", () => ({ invoke: (...args: unknown[]) => invoke(...args) }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: (...args: unknown[]) => listen(...args) }));
 
-const { TauriFileProvider } = await import("../tauri-provider.js");
+const { TauriFileProvider, readAppSettings, writeAppSettings, parseUpdatePolicy, DEFAULT_UPDATE_POLICY } =
+  await import("../tauri-provider.js");
 
 type WatcherCallback = (event: { payload: { path: string; content: string | null } }) => void;
 
@@ -668,5 +669,71 @@ describe("TauriFileProvider.renameFile's follow-up content write (#2425 3-argume
     watcher.get()({ payload: { path: "new.brink", content: "pre-rewrite bytes" } });
 
     expect(seen).toEqual([]);
+  });
+});
+
+describe("app settings carry every field through a read (Stage 4)", () => {
+  it("preserves a pinned policy across a read/write round trip", async () => {
+    // The defect this pins: `readAppSettings` used to return ONLY
+    // `reopenLastProject`. Since `writeAppSettings` sends back what the read
+    // returned, and the Rust side fills absent fields from
+    // `#[serde(default)]`, toggling "reopen last project" silently reset the
+    // author's pin to Auto/Stable.
+    invoke.mockReset();
+    invoke.mockImplementation((cmd: string) => {
+      if (cmd === "read_app_settings") {
+        return Promise.resolve({
+          reopenLastProject: true,
+          updatePolicy: { mode: "pinned", version: "0.0.2" },
+        });
+      }
+      return Promise.resolve(undefined);
+    });
+
+    const settings = await readAppSettings();
+    expect(settings).toEqual({
+      reopenLastProject: true,
+      updatePolicy: { mode: "pinned", version: "0.0.2" },
+    });
+
+    // What the landing-screen checkbox does: modify one field, write it all
+    // back. Nothing else may move.
+    await writeAppSettings({ ...settings, reopenLastProject: false });
+    const write = invoke.mock.calls.find(([cmd]) => cmd === "write_app_settings");
+    expect(write?.[1]).toEqual({
+      settings: {
+        reopenLastProject: false,
+        updatePolicy: { mode: "pinned", version: "0.0.2" },
+      },
+    });
+  });
+
+  it("reads a settings file written before the policy existed as the default", async () => {
+    invoke.mockReset();
+    invoke.mockImplementation(() => Promise.resolve({ reopenLastProject: true }));
+    await expect(readAppSettings()).resolves.toEqual({
+      reopenLastProject: true,
+      updatePolicy: DEFAULT_UPDATE_POLICY,
+    });
+  });
+
+  it("defaults every unrecognised policy shape rather than freezing the install", () => {
+    // A malformed `pinned` with no version would otherwise pin to nothing
+    // and never update again, with nothing on screen to say why.
+    expect(parseUpdatePolicy({ mode: "pinned" })).toEqual(DEFAULT_UPDATE_POLICY);
+    expect(parseUpdatePolicy({ mode: "pinned", version: "" })).toEqual(DEFAULT_UPDATE_POLICY);
+    expect(parseUpdatePolicy({ mode: "sideways" })).toEqual(DEFAULT_UPDATE_POLICY);
+    expect(parseUpdatePolicy(null)).toEqual(DEFAULT_UPDATE_POLICY);
+    expect(parseUpdatePolicy("auto")).toEqual(DEFAULT_UPDATE_POLICY);
+    // An unknown channel reads as stable — the SAFE direction. Defaulting a
+    // typo to beta would opt an author into prereleases they never chose.
+    expect(parseUpdatePolicy({ mode: "auto", channel: "canary" })).toEqual({
+      mode: "auto",
+      channel: "stable",
+    });
+    expect(parseUpdatePolicy({ mode: "manual", channel: "beta" })).toEqual({
+      mode: "manual",
+      channel: "beta",
+    });
   });
 });

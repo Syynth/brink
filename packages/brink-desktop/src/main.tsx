@@ -66,6 +66,7 @@ import {
   bundleReady,
   bundleUpdateCheck,
   bundleUpdateApply,
+  bundleActivate,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -75,14 +76,18 @@ import {
 } from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
-import { bundleCheckNotice, bundleUpdateNotice } from "./bundle-update.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
 import { exportXliff as toXliff } from "@brink-lang/web";
 import { resolveFileOpenAction } from "./file-open.js";
-import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
+import { shouldAutoCheck } from "./updater.js";
+import {
+  checkForAnyUpdate,
+  type UnifiedUpdateApi,
+  type UpdateNotice,
+} from "./update-flow.js";
 import {
   UPDATE_CHECK_COMMAND,
   UPDATE_INSTALL_COMMAND,
@@ -258,13 +263,22 @@ async function renderLanding(error?: string): Promise<void> {
   // honored by bootLanding on the next launch (after a clean exit only).
   const reopenBox = root.querySelector<HTMLInputElement>("#reopen-last");
   if (reopenBox !== null) {
+    // Read-modify-write, never construct-from-scratch: `write_app_settings`
+    // replaces the whole file, so a settings object built from one checkbox
+    // would reset every other field (notably `updatePolicy`) to its serde
+    // default. Toggling "reopen last project" must not silently un-pin an
+    // author's bundle.
+    reopenBox.addEventListener("change", () => {
+      void readAppSettings()
+        .then((settings) =>
+          writeAppSettings({ ...settings, reopenLastProject: reopenBox.checked }),
+        )
+        .catch((e: unknown) => {
+          console.error("[brink-desktop] write_app_settings failed", e);
+        });
+    });
     void readAppSettings().then((settings) => {
       reopenBox.checked = settings.reopenLastProject;
-    });
-    reopenBox.addEventListener("change", () => {
-      void writeAppSettings({ reopenLastProject: reopenBox.checked }).catch((e: unknown) => {
-        console.error("[brink-desktop] write_app_settings failed", e);
-      });
     });
   }
 
@@ -434,7 +448,7 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
   // A bundle rollback reported before any studio existed (the common case —
   // the confirm runs at module scope, well before a project is opened) now
   // has a surface to land on.
-  flushBundleNotice();
+  flushUpdateNotices();
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
   // class. Clean ticks are no-ops inside the command. See `AUTOSAVE_MS`'s
@@ -884,12 +898,10 @@ void listen<string>("menu:view-toggle", (event) => {
 // share one path (and one throttle clock).
 void listen("menu:check-updates", () => {
   lastUpdateCheckAt = Date.now();
-  void checkForUpdates(updateApi());
-  // BOTH channels, from the one menu item (docs/desktop-ota-spec.md Stage 2:
-  // "it sits beside the full-app updater, not instead of it"). An author who
-  // asks whether they are up to date means the editor they are looking at,
-  // not one of two update mechanisms they have no reason to know about.
-  void checkBundleUpdate({ silent: false });
+  // ONE check that consults both channels and produces one answer. Stage 2
+  // fired two here, which is why a manual check used to raise two
+  // near-identical "up to date" toasts.
+  void checkForAnyUpdate(unifiedUpdateApi(), { silent: false });
 });
 
 /** One id for every update toast, so each stage REPLACES the last rather
@@ -994,77 +1006,10 @@ export const UPDATE_COMMANDS: Command[] = [
       // restart its clock, so alt-tabbing right afterwards doesn't
       // immediately fire a second round trip.
       lastUpdateCheckAt = Date.now();
-      void checkForUpdates(updateApi());
+      void checkForAnyUpdate(unifiedUpdateApi(), { silent: false });
     },
   },
 ];
-
-/**
- * Bind the injected {@link UpdateApi} to the real plugins (D4). The decision
- * tree itself lives in `updater.ts`, dependency-free and unit-tested; this is
- * only the wiring.
- */
-function updateApi(): UpdateApi {
-  return {
-    check: async () => {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update === null) return null;
-      return {
-        version: update.version,
-        downloadAndInstall: async () => {
-          // Amend the offer toast in place (same id) so the accepted
-          // update reports itself instead of going quiet until the app
-          // restarts under the author.
-          current?.api.notify({
-            id: UPDATE_NOTIFICATION_ID,
-            severity: "info",
-            source: "update",
-            message: `Downloading ${update.version}\u2026 the app will restart when it finishes.`,
-            timeoutMs: 0,
-          });
-          await update.downloadAndInstall();
-        },
-      };
-    },
-    confirm: async (version) => confirmUpdate(`Brink Studio ${version} is available.`),
-    notify: (severity, message) => {
-      // With a project open the studio's own surface is the right place; on
-      // the landing screen there is no StudioApi yet, so fall back to a
-      // native dialog rather than dropping the message on the floor.
-      const api = current?.api;
-      if (api) {
-        api.notify({
-          // Same id as the offer, so an outcome REPLACES the offer in place
-          // rather than stacking a second update toast beside it.
-          id: UPDATE_NOTIFICATION_ID,
-          severity,
-          source: "update",
-          message,
-          // A failed check or install is worth retrying without hunting
-          // through the menu bar. Errors are sticky by severity default.
-          actions:
-            severity === "error"
-              ? [{ label: "Try Again", commandId: UPDATE_CHECK_COMMAND }]
-              : undefined,
-        });
-        return;
-      }
-      void import("@tauri-apps/plugin-dialog").then(({ message: dialog }) =>
-        dialog(message, { title: "Brink Studio", kind: severity === "error" ? "error" : "info" }),
-      );
-    },
-    // Reuses the quit guard rather than a third save discipline — see
-    // updater.ts's module doc. A no-op when no project is open.
-    awaitSave: async () => {
-      if (current !== null) await awaitSaveAllBeforeQuit(current.api);
-    },
-    relaunch: async () => {
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
-    },
-  };
-}
 
 /** When the last check of any kind ran (epoch ms); 0 = never. */
 let lastUpdateCheckAt = 0;
@@ -1081,7 +1026,7 @@ async function autoCheckForUpdates(now: number = Date.now()): Promise<void> {
     return;
   }
   lastUpdateCheckAt = now;
-  await checkForUpdates(updateApi(), { silent: true });
+  await checkForAnyUpdate(unifiedUpdateApi(), { silent: true });
 }
 
 // Launch check (ruled 2026-08-22): silent, and deliberately delayed — the
@@ -1164,66 +1109,117 @@ void confirmBundleBoot(bundleReady).then((info) => {
   if (info === null) return;
   const message = rollbackMessage(info);
   if (message === null) return;
-  pendingBundleNotice = message;
-  flushBundleNotice();
+  pendingUpdateNotices.push({ severity: "error", message });
+  flushUpdateNotices();
 });
 
 /**
- * Run an OTA web-bundle check and report it through the same surface the
- * rollback notice uses, so a check made with no project open is not lost.
+ * Bind the unified flow to the real plugins and commands. The decision tree
+ * lives in `update-flow.ts`, dependency-free and unit-tested; this is only
+ * the wiring.
  */
-async function checkBundleUpdate(options: { silent: boolean }): Promise<void> {
-  let check;
-  try {
-    check = await bundleUpdateCheck();
-  } catch (e: unknown) {
-    check = { kind: "failed" as const, reason: e instanceof Error ? e.message : String(e) };
-  }
-
-  if (check.kind !== "available") {
-    reportBundleNotice(bundleCheckNotice(check, { silent: options.silent }));
-    return;
-  }
-
-  // RULED 2026-09-15: the author cannot tell which channel is offering. The
-  // message deliberately carries NO version, because the bundle's version is
-  // an independent sequence (0.0.2 while the app is at 0.8.0) and naming it
-  // would both leak the mechanism and read as a downgrade.
-  if (!(await confirmUpdate("An update is available."))) return;
-
-  let outcome;
-  try {
-    outcome = await bundleUpdateApply();
-  } catch (e: unknown) {
-    outcome = { kind: "failed" as const, reason: e instanceof Error ? e.message : String(e) };
-  }
-  // Never silent: the author consented to this one, so its result is not noise.
-  reportBundleNotice(bundleUpdateNotice(outcome, { silent: false }));
+function unifiedUpdateApi(): UnifiedUpdateApi {
+  return {
+    policy: async () => (await readAppSettings()).updatePolicy,
+    checkShell: async () => {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update === null) return null;
+      return {
+        version: update.version,
+        downloadAndInstall: async () => {
+          // Amend the offer in place (same id) so an accepted update
+          // reports itself instead of going quiet until the app restarts
+          // under the author.
+          reportUpdateNotice(
+            { severity: "info", message: "Downloading\u2026 the app will restart when it finishes." },
+            { sticky: true },
+          );
+          await update.downloadAndInstall();
+        },
+      };
+    },
+    checkBundle: bundleUpdateCheck,
+    applyBundle: bundleUpdateApply,
+    activateBundle: async () => {
+      await bundleActivate();
+      // The reload is what swaps the running code; bundleActivate only
+      // moves what the asset protocol serves.
+      window.location.reload();
+    },
+    relaunch: async () => {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    },
+    awaitSave: async () => {
+      if (current !== null) await awaitSaveAllBeforeQuit(current.api);
+    },
+    confirm: confirmUpdate,
+    notify: reportUpdateNotice,
+  };
 }
 
-/** Put a bundle notice on whichever surface exists, or hold it for one. */
-function reportBundleNotice(notice: { severity: "info" | "error"; message: string } | null): void {
-  if (notice === null) return;
+/**
+ * Put an update notice on whichever surface exists, or hold it until one
+ * does.
+ *
+ * Four things here were separately wrong before the unification, and each
+ * is fixed by there being ONE path rather than two:
+ *
+ * - it carries the notification id, so an outcome REPLACES the offer in
+ *   place instead of stacking a second update toast beside it;
+ * - it carries the notice's own severity \u2014 the bundle path used to hold a
+ *   bare string and re-emit everything as an error, so "update installed"
+ *   rendered red;
+ * - a failure offers "Try Again", which the bundle path never did;
+ * - with no studio mounted it falls back to a native dialog rather than a
+ *   `console.warn` the author will never see.
+ */
+function reportUpdateNotice(notice: UpdateNotice, options: { sticky?: boolean } = {}): void {
   const api = current?.api;
   if (api === undefined) {
-    pendingBundleNotice = notice.message;
-    flushBundleNotice();
+    pendingUpdateNotices.push(notice);
+    flushUpdateNotices();
     return;
   }
-  api.notify({ severity: notice.severity, source: "update", message: notice.message });
+  api.notify({
+    id: UPDATE_NOTIFICATION_ID,
+    severity: notice.severity,
+    source: "update",
+    message: notice.message,
+    ...(options.sticky === true ? { timeoutMs: 0 } : {}),
+    actions:
+      notice.severity === "error"
+        ? [{ label: "Try Again", commandId: UPDATE_CHECK_COMMAND }]
+        : undefined,
+  });
 }
 
-/** A rollback report waiting for a studio surface to show it on. */
-let pendingBundleNotice: string | null = null;
+/**
+ * Notices waiting for a surface to show them on.
+ *
+ * A QUEUE rather than one slot: the rollback report is raised at module
+ * scope, long before any project is open, and a launch update check can
+ * land while it is still waiting. With a single slot the second silently
+ * overwrote the first \u2014 and the first is the one telling the author why
+ * they are suddenly running older code.
+ */
+const pendingUpdateNotices: UpdateNotice[] = [];
 
-/** Deliver the pending rollback report if a studio is mounted. */
-function flushBundleNotice(): void {
-  if (pendingBundleNotice === null) return;
+/** Deliver anything held, once a surface exists. */
+function flushUpdateNotices(): void {
   const api = current?.api;
   if (api === undefined) {
-    console.warn(`[brink-desktop] ${pendingBundleNotice}`);
+    // No surface yet. A native dialog would be an interruption before the
+    // app has drawn, so these wait \u2014 but say so, since a notice that never
+    // arrives is indistinguishable from one that was never raised.
+    for (const notice of pendingUpdateNotices) {
+      console.warn(`[brink-desktop] ${notice.message}`);
+    }
     return;
   }
-  api.notify({ severity: "error", source: "update", message: pendingBundleNotice });
-  pendingBundleNotice = null;
+  while (pendingUpdateNotices.length > 0) {
+    const notice = pendingUpdateNotices.shift();
+    if (notice !== undefined) reportUpdateNotice(notice);
+  }
 }
