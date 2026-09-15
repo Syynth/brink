@@ -40,7 +40,7 @@ const scriptsDir = resolve(fileURLToPath(import.meta.url), "../../../scripts");
 // preflight script means adding its name here — one line — while the guard
 // assertions below apply to it automatically.
 const EXPECTED_SCRIPTS = [
-  "build-bundle-manifest.mjs",
+  "build-bundle-index.mjs",
   "build-update-manifest.mjs",
   "ensure-wasm.mjs",
 ];
