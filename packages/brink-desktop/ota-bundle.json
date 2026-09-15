@@ -24,9 +24,15 @@
     "commandsFingerprint: a pin, not a setting. It records the IPC surface",
     "minShellVersion was last judged against; the guard recomputes it and",
     "fails when they diverge, which is the prompt to decide whether the",
-    "change was breaking. Update it in the same commit as that decision."
+    "change was breaking. Update it in the same commit as that decision.",
+    "",
+    "NOTE the guard hashes command NAMES only. A changed response shape on",
+    "an existing command is breaking and the fingerprint will not move for",
+    "it \u2014 Stage 4's check/apply split changed bundle_update_check's return",
+    "type and was caught only because it also ADDED a command. Judge the",
+    "shapes by hand; the pin cannot do it for you."
   ],
   "version": "0.0.1",
   "minShellVersion": "0.8.0",
-  "commandsFingerprint": "dd1949c73c2c4da3"
+  "commandsFingerprint": "73eb24bf15fa63f6"
 }
