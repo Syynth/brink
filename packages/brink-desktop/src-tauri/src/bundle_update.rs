@@ -49,6 +49,96 @@ pub struct BundleManifest {
     /// Publication timestamp, carried for display only.
     #[serde(default)]
     pub pub_date: Option<String>,
+    /// Which stream this bundle belongs to.
+    ///
+    /// Defaults to stable so an entry written before channels existed reads
+    /// as the conservative choice rather than failing the whole index.
+    #[serde(default)]
+    pub channel: Channel,
+}
+
+/// Which stream of bundles an entry belongs to.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum Channel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+/// Every published bundle, in one file.
+///
+/// Replaces the per-channel `bundle-latest.json` because one fetch then
+/// serves all three jobs a policy can ask for: the newest entry on my
+/// channel, the list a picker renders, and the url a pinned version resolves
+/// to. At roughly 300 bytes an entry that is cheaper than the two round
+/// trips a split design would cost.
+///
+/// **Trust is unchanged by the merge.** Each entry carries its own archive's
+/// signature, checked by [`verify_and_unpack`] against the public key in
+/// `tauri.conf.json`, so a tampered index can at worst offer a differently
+/// signed valid bundle or one that fails verification. It cannot introduce
+/// unsigned code, and therefore needs no signature of its own.
+///
+/// Growth is bounded on the client by the caller's fetch cap; the publisher
+/// caps the entry count when it appends.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BundleIndex {
+    #[serde(default)]
+    pub entries: Vec<BundleManifest>,
+}
+
+/// What an update policy asks the index for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Target<'a> {
+    /// The newest entry on this channel.
+    Latest(Channel),
+    /// Exactly this version, whatever its channel or ordering.
+    Version(&'a str),
+}
+
+/// Find the entry a target names, or `None` when the index has nothing for it.
+///
+/// `Latest` keeps the FIRST of any duplicate-version entries rather than the
+/// last, so the answer does not depend on how a publisher happened to order
+/// its appends — the same determinism rule the rest of the project applies to
+/// iteration order.
+pub fn resolve<'i>(index: &'i BundleIndex, target: Target<'_>) -> Option<&'i BundleManifest> {
+    match target {
+        Target::Version(wanted) => index.entries.iter().find(|entry| entry.version == wanted),
+        Target::Latest(channel) => {
+            let mut best: Option<(&BundleManifest, semver::Version)> = None;
+            for entry in index.entries.iter().filter(|e| e.channel == channel) {
+                let Ok(parsed) = semver::Version::parse(&entry.version) else {
+                    continue;
+                };
+                if best.as_ref().is_none_or(|(_, seen)| parsed > *seen) {
+                    best = Some((entry, parsed));
+                }
+            }
+            best.map(|(entry, _)| entry)
+        }
+    }
+}
+
+/// Why the shell is asking, which decides whether ordering applies.
+///
+/// **A channel switch is an install, not an update** (RULED 2026-09-15).
+/// [`decide`] only installs strictly-newer versions, so moving beta to
+/// stable would otherwise be refused forever — a beta `0.2.0-beta.1` sorts
+/// above a stable `0.1.9`, and the author would be stranded on beta with no
+/// way back. Picking a past version to pin has the same shape.
+///
+/// The `minShellVersion` gate applies to both, which is why this is one
+/// parameter rather than two functions: a second entry point could drift
+/// into skipping the gate that keeps a bundle off a shell that cannot run it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Intent {
+    /// Offer only something newer than what is installed.
+    Update,
+    /// Install exactly what was asked for, ordering notwithstanding.
+    Switch,
 }
 
 /// Why an update was refused, or that there is nothing to do.
@@ -84,8 +174,39 @@ pub enum UpdateError {
 }
 
 /// Parse a manifest document.
-pub fn parse_manifest(text: &str) -> Result<BundleManifest, UpdateError> {
-    serde_json::from_str(text).map_err(|e| UpdateError::Manifest(e.to_string()))
+/// Parse the published index, **skipping entries that do not parse**.
+///
+/// Per-entry rather than all-or-nothing, and that is a deliberate blast-radius
+/// choice: every install fetches this one file, so a single malformed entry
+/// failing the whole document would take every install offline at once — from
+/// one bad publish, with no way to recover except republishing. Dropping the
+/// bad entry leaves every other version resolvable.
+///
+/// What it does NOT do is relax what an entry must contain. `minShellVersion`
+/// stays mandatory (no serde default), because it carries the only protection
+/// against OTA'd JS calling an IPC command the installed shell lacks — so an
+/// entry missing it is not an entry with a default, it is one that must never
+/// be offered. It is skipped, not repaired.
+///
+/// The document itself must still be JSON; that failure is the publisher's
+/// and is reported.
+pub fn parse_index(text: &str) -> Result<BundleIndex, UpdateError> {
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct RawIndex {
+        #[serde(default)]
+        entries: Vec<serde_json::Value>,
+    }
+
+    let raw: RawIndex =
+        serde_json::from_str(text).map_err(|e| UpdateError::Manifest(e.to_string()))?;
+    Ok(BundleIndex {
+        entries: raw
+            .entries
+            .into_iter()
+            .filter_map(|entry| serde_json::from_value(entry).ok())
+            .collect(),
+    })
 }
 
 /// Should this manifest be installed on this shell?
@@ -109,6 +230,7 @@ pub fn decide(
     manifest: &BundleManifest,
     shell_version: &str,
     installed: Option<&str>,
+    intent: Intent,
 ) -> UpdateDecision {
     let Ok(shell) = semver::Version::parse(shell_version) else {
         return UpdateDecision::Refuse(format!(
@@ -136,6 +258,17 @@ pub fn decide(
             manifest.version
         ));
     };
+    // A SWITCH is not an update and must not be judged by recency: moving
+    // from beta to stable, or back to a version the author pinned, goes
+    // "backwards" by design. Only the minShellVersion gate above applies.
+    if intent == Intent::Switch {
+        return if installed == Some(manifest.version.as_str()) {
+            UpdateDecision::UpToDate
+        } else {
+            UpdateDecision::Install
+        };
+    }
+
     match installed.map(semver::Version::parse) {
         // An unparseable INSTALLED version means the store is in a state
         // this code did not write. Refuse rather than overwrite it blindly.
@@ -292,9 +425,139 @@ pub fn verify_and_unpack(
 #[cfg(test)]
 mod tests {
     use super::{
-        decide, hash_matches, parse_manifest, signature_is_valid, unpack_verified,
-        verify_and_unpack, BundleManifest, UpdateDecision, UpdateError,
+        decide, hash_matches, parse_index, resolve, signature_is_valid, unpack_verified,
+        verify_and_unpack, BundleIndex, BundleManifest, Channel, Intent, Target, UpdateDecision,
+        UpdateError,
     };
+    /// Build an index entry.
+    fn entry(version: &str, channel: Channel) -> BundleManifest {
+        BundleManifest {
+            channel,
+            version: version.to_owned(),
+            min_shell_version: "0.8.0".to_owned(),
+            url: format!("https://example.invalid/{version}.tar.gz"),
+            sha256: "00".repeat(32),
+            signature: "sig".to_owned(),
+            pub_date: None,
+        }
+    }
+
+    fn index(entries: &[(&str, Channel)]) -> BundleIndex {
+        BundleIndex {
+            entries: entries.iter().map(|(v, c)| entry(v, *c)).collect(),
+        }
+    }
+
+    /// Latest-for-a-channel ignores the other channel entirely. Without
+    /// this, a beta published after a stable would be offered to every
+    /// stable install — the failure this whole field exists to prevent.
+    #[test]
+    fn latest_is_per_channel_and_ignores_the_other_stream() {
+        let published = index(&[
+            ("0.1.0", Channel::Stable),
+            ("0.2.0-beta.1", Channel::Beta),
+            ("0.1.9", Channel::Stable),
+        ]);
+
+        assert_eq!(
+            resolve(&published, Target::Latest(Channel::Stable)).map(|m| m.version.as_str()),
+            Some("0.1.9")
+        );
+        assert_eq!(
+            resolve(&published, Target::Latest(Channel::Beta)).map(|m| m.version.as_str()),
+            Some("0.2.0-beta.1")
+        );
+    }
+
+    /// An entry whose version is not semver must not sink the whole channel.
+    /// Skipping it leaves the rest resolvable; propagating would make one bad
+    /// publish take every install offline.
+    #[test]
+    fn an_unparseable_entry_is_skipped_rather_than_poisoning_the_channel() {
+        let published = index(&[
+            ("not-a-version", Channel::Stable),
+            ("0.1.0", Channel::Stable),
+        ]);
+        assert_eq!(
+            resolve(&published, Target::Latest(Channel::Stable)).map(|m| m.version.as_str()),
+            Some("0.1.0")
+        );
+    }
+
+    /// Targeting a version finds it whatever its channel — that is what
+    /// makes a pin a pin, and what lets an author pin a beta.
+    #[test]
+    fn a_targeted_version_resolves_across_channels_or_not_at_all() {
+        let published = index(&[("0.1.0", Channel::Stable), ("0.2.0-beta.1", Channel::Beta)]);
+
+        assert_eq!(
+            resolve(&published, Target::Version("0.2.0-beta.1")).map(|m| m.version.as_str()),
+            Some("0.2.0-beta.1")
+        );
+        assert!(resolve(&published, Target::Version("9.9.9")).is_none());
+    }
+
+    /// **The case that would strand someone on beta forever.**
+    ///
+    /// `Intent::Update` only installs strictly-newer versions, and a beta
+    /// sorts ABOVE the stable it precedes — so switching back to stable
+    /// reads as a downgrade and is refused. `Intent::Switch` exists for
+    /// exactly this, and the minShellVersion gate still applies to it.
+    #[test]
+    fn switching_back_to_stable_is_refused_as_an_update_and_allowed_as_a_switch() {
+        let stable = entry("0.1.9", Channel::Stable);
+        let installed_beta = Some("0.2.0-beta.1");
+
+        assert_eq!(
+            decide(&stable, "0.8.0", installed_beta, Intent::Update),
+            UpdateDecision::UpToDate,
+            "as an update this looks like a downgrade, and the author is stuck"
+        );
+        assert_eq!(
+            decide(&stable, "0.8.0", installed_beta, Intent::Switch),
+            UpdateDecision::Install,
+            "as a switch it is exactly what was asked for"
+        );
+    }
+
+    /// A switch still cannot put a bundle on a shell that cannot run it.
+    /// This is why `Intent` is a parameter rather than a second function:
+    /// a separate entry point could drift into skipping this gate.
+    #[test]
+    fn a_switch_still_obeys_min_shell_version() {
+        let needs_newer = BundleManifest {
+            min_shell_version: "9.9.9".to_owned(),
+            ..entry("0.1.0", Channel::Stable)
+        };
+        assert!(matches!(
+            decide(&needs_newer, "0.8.0", None, Intent::Switch),
+            UpdateDecision::Refuse(_)
+        ));
+    }
+
+    /// Re-switching to what is already active is a no-op, not a reinstall.
+    #[test]
+    fn switching_to_the_active_version_is_up_to_date() {
+        let same = entry("0.1.0", Channel::Stable);
+        assert_eq!(
+            decide(&same, "0.8.0", Some("0.1.0"), Intent::Switch),
+            UpdateDecision::UpToDate
+        );
+    }
+
+    /// An index written before channels existed reads as stable rather than
+    /// failing, so the first published index need not be rewritten.
+    #[test]
+    fn an_entry_without_a_channel_defaults_to_stable() {
+        let text = r#"{"entries":[{"version":"0.1.0","minShellVersion":"0.8.0",
+            "url":"https://example.invalid/a.tar.gz","sha256":"00","signature":"s"}]}"#;
+        let parsed = parse_index(text).expect("index should parse");
+        assert_eq!(
+            parsed.entries.first().map(|e| e.channel),
+            Some(Channel::Stable)
+        );
+    }
+
     use std::io::Write as _;
     use std::path::{Path, PathBuf};
 
@@ -336,6 +599,7 @@ mod tests {
 
     fn manifest(version: &str, min_shell: &str) -> BundleManifest {
         BundleManifest {
+            channel: Channel::Stable,
             version: version.to_owned(),
             min_shell_version: min_shell.to_owned(),
             url: "https://example.invalid/bundle.tar.gz".to_owned(),
@@ -372,40 +636,71 @@ mod tests {
     // ── Manifest ───────────────────────────────────────────────────
 
     #[test]
-    fn a_manifest_parses_from_the_documented_shape() {
-        let parsed = parse_manifest(
-            r#"{
+    fn an_entry_parses_from_the_documented_shape() {
+        let parsed = parse_index(
+            r#"{ "entries": [{
               "version": "0.7.1",
               "minShellVersion": "0.7.0",
               "url": "https://example.invalid/bundle-0.7.1.tar.gz",
               "sha256": "abc",
               "signature": "def",
-              "pubDate": "2026-09-14T00:00:00Z"
-            }"#,
+              "pubDate": "2026-09-14T00:00:00Z",
+              "channel": "beta"
+            }] }"#,
         )
         .expect("the shape documented in docs/desktop-ota-spec.md should parse");
-        assert_eq!(parsed.version, "0.7.1");
-        assert_eq!(parsed.min_shell_version, "0.7.0");
-        assert_eq!(parsed.pub_date.as_deref(), Some("2026-09-14T00:00:00Z"));
+        let entry = parsed.entries.first().expect("one entry");
+        assert_eq!(entry.version, "0.7.1");
+        assert_eq!(entry.min_shell_version, "0.7.0");
+        assert_eq!(entry.pub_date.as_deref(), Some("2026-09-14T00:00:00Z"));
+        assert_eq!(entry.channel, Channel::Beta);
     }
 
     /// `minShellVersion` carries the only protection against OTA'd JS
-    /// calling an IPC command the shell lacks, so a manifest without one is
-    /// not a manifest with a default — it is unusable.
+    /// calling an IPC command the shell lacks, so an entry without one is
+    /// not an entry with a default — it is one that must never be offered.
+    ///
+    /// It is DROPPED rather than repaired, and the rest of the index still
+    /// resolves: every install fetches this one file, so failing the whole
+    /// document over one bad entry would take every install offline from a
+    /// single bad publish.
     #[test]
-    fn a_manifest_without_min_shell_version_is_refused_at_parse() {
-        let err = parse_manifest(r#"{"version":"0.7.1","url":"u","sha256":"a","signature":"b"}"#);
-        assert!(
-            matches!(err, Err(UpdateError::Manifest(_))),
-            "minShellVersion must be mandatory, not defaulted: {err:?}"
+    fn an_entry_without_min_shell_version_is_dropped_without_taking_the_index_with_it() {
+        let parsed = parse_index(
+            r#"{ "entries": [
+              {"version":"0.7.1","url":"u","sha256":"a","signature":"b"},
+              {"version":"0.7.0","minShellVersion":"0.8.0","url":"u","sha256":"a","signature":"b"}
+            ] }"#,
+        )
+        .expect("a well-formed document with one bad entry still parses");
+
+        assert_eq!(
+            parsed.entries.len(),
+            1,
+            "the entry missing minShellVersion must not survive"
         );
+        assert_eq!(
+            parsed.entries.first().map(|e| e.version.as_str()),
+            Some("0.7.0")
+        );
+    }
+
+    /// The document itself failing is the publisher's problem and is
+    /// reported rather than silently read as an empty index — an empty index
+    /// looks exactly like "you are up to date", forever.
+    #[test]
+    fn a_malformed_index_document_is_an_error_not_an_empty_one() {
+        assert!(matches!(
+            parse_index("{ not json"),
+            Err(UpdateError::Manifest(_))
+        ));
     }
 
     // ── The decision gate ──────────────────────────────────────────
 
     #[test]
     fn a_bundle_needing_a_newer_shell_is_refused_with_a_reason() {
-        let decision = decide(&manifest("0.8.0", "0.8.0"), "0.7.0", None);
+        let decision = decide(&manifest("0.8.0", "0.8.0"), "0.7.0", None, Intent::Update);
         assert!(
             matches!(decision, UpdateDecision::Refuse(_)),
             "a bundle requiring a newer shell must be refused, got {decision:?}"
@@ -425,11 +720,16 @@ mod tests {
     #[test]
     fn a_refusal_is_distinct_from_up_to_date() {
         assert!(matches!(
-            decide(&manifest("0.9.0", "0.9.0"), "0.7.0", None),
+            decide(&manifest("0.9.0", "0.9.0"), "0.7.0", None, Intent::Update),
             UpdateDecision::Refuse(_)
         ));
         assert_eq!(
-            decide(&manifest("0.7.1", "0.7.0"), "0.7.0", Some("0.7.1")),
+            decide(
+                &manifest("0.7.1", "0.7.0"),
+                "0.7.0",
+                Some("0.7.1"),
+                Intent::Update
+            ),
             UpdateDecision::UpToDate
         );
     }
@@ -438,7 +738,12 @@ mod tests {
     fn an_equal_or_older_offer_is_up_to_date() {
         for offered in ["0.7.1", "0.7.0"] {
             assert_eq!(
-                decide(&manifest(offered, "0.7.0"), "0.7.0", Some("0.7.1")),
+                decide(
+                    &manifest(offered, "0.7.0"),
+                    "0.7.0",
+                    Some("0.7.1"),
+                    Intent::Update
+                ),
                 UpdateDecision::UpToDate,
                 "offered {offered} against installed 0.7.1"
             );
@@ -448,12 +753,17 @@ mod tests {
     #[test]
     fn a_newer_offer_installs_over_the_floor_and_over_a_bundle() {
         assert_eq!(
-            decide(&manifest("0.7.1", "0.7.0"), "0.7.0", None),
+            decide(&manifest("0.7.1", "0.7.0"), "0.7.0", None, Intent::Update),
             UpdateDecision::Install,
             "with the embedded floor active, anything runnable is an install"
         );
         assert_eq!(
-            decide(&manifest("0.7.2", "0.7.0"), "0.7.0", Some("0.7.1")),
+            decide(
+                &manifest("0.7.2", "0.7.0"),
+                "0.7.0",
+                Some("0.7.1"),
+                Intent::Update
+            ),
             UpdateDecision::Install
         );
     }
@@ -463,7 +773,7 @@ mod tests {
     #[test]
     fn a_shell_exactly_at_the_minimum_is_allowed() {
         assert_eq!(
-            decide(&manifest("0.7.1", "0.7.0"), "0.7.0", None),
+            decide(&manifest("0.7.1", "0.7.0"), "0.7.0", None, Intent::Update),
             UpdateDecision::Install
         );
     }
@@ -471,20 +781,40 @@ mod tests {
     #[test]
     fn unparseable_versions_refuse_rather_than_guess() {
         assert!(matches!(
-            decide(&manifest("0.7.1", "not-a-version"), "0.7.0", None),
+            decide(
+                &manifest("0.7.1", "not-a-version"),
+                "0.7.0",
+                None,
+                Intent::Update
+            ),
             UpdateDecision::Refuse(_)
         ));
         assert!(matches!(
-            decide(&manifest("also-not", "0.7.0"), "0.7.0", None),
+            decide(
+                &manifest("also-not", "0.7.0"),
+                "0.7.0",
+                None,
+                Intent::Update
+            ),
             UpdateDecision::Refuse(_)
         ));
         assert!(matches!(
-            decide(&manifest("0.7.1", "0.7.0"), "nonsense", None),
+            decide(
+                &manifest("0.7.1", "0.7.0"),
+                "nonsense",
+                None,
+                Intent::Update
+            ),
             UpdateDecision::Refuse(_)
         ));
         assert!(
             matches!(
-                decide(&manifest("0.7.1", "0.7.0"), "0.7.0", Some("garbage")),
+                decide(
+                    &manifest("0.7.1", "0.7.0"),
+                    "0.7.0",
+                    Some("garbage"),
+                    Intent::Update
+                ),
                 UpdateDecision::Refuse(_)
             ),
             "an unrecognisable INSTALLED version must not be silently overwritten"
