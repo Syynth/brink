@@ -44,7 +44,9 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   mountStudio,
+  SETTINGS_ICONS,
   type Command,
+  type SettingsSection,
   type StudioApi,
   type StudioHandle,
 } from "@brink-lang/studio";
@@ -67,6 +69,8 @@ import {
   bundleUpdateCheck,
   bundleUpdateApply,
   bundleActivate,
+  bundleAvailable,
+  spellcheckText,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -84,10 +88,13 @@ import { exportXliff as toXliff } from "@brink-lang/web";
 import { resolveFileOpenAction } from "./file-open.js";
 import { shouldAutoCheck } from "./updater.js";
 import {
+  applyCurrentPolicy,
   checkForAnyUpdate,
   type UnifiedUpdateApi,
   type UpdateNotice,
 } from "./update-flow.js";
+import { UpdateSettings, type UpdateSettingsApi } from "./UpdateSettings.js";
+import { desktopProseChecker } from "./desktop-prose-checker.js";
 import {
   UPDATE_CHECK_COMMAND,
   UPDATE_INSTALL_COMMAND,
@@ -412,6 +419,13 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     // The machine's fonts for Settings › Player › Font (#3439); the web
     // build has no such list and shows the curated one.
     systemFonts: () => systemFonts().then((fonts) => (fonts.length === 0 ? [] : fonts)),
+    // Settings › Updates. A host section, because an update channel and a
+    // bundle store mean nothing in the browser build.
+    settingsSections: [updateSettingsSection()],
+    // Spelling from the OS, everything else from Harper. Off macOS the
+    // command answers `unavailable` and Harper keeps its spelling pass, so
+    // this is safe to wire unconditionally.
+    proseChecker: (builtin) => desktopProseChecker(builtin, spellcheckText),
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -1156,6 +1170,48 @@ function unifiedUpdateApi(): UnifiedUpdateApi {
     },
     confirm: confirmUpdate,
     notify: reportUpdateNotice,
+  };
+}
+
+/**
+ * Settings › Updates, bound to the real commands.
+ *
+ * The section is a host section (`mountStudio`'s `settingsSections`) because
+ * an update channel and a bundle store mean nothing in the browser build —
+ * there is no installer there and nothing to pin.
+ *
+ * `applyCurrentPolicy` goes through the SAME install-and-activate path the
+ * toast uses, minus the consent prompt: the author picking a version in a
+ * list has already consented, and asking again would be the second dialog
+ * the unification exists to remove. What must not differ is everything after
+ * that — the save before the reload, and how installed-but-not-activated is
+ * reported.
+ */
+function updateSettingsSection(): SettingsSection {
+  const api: UpdateSettingsApi = {
+    readPolicy: async () => (await readAppSettings()).updatePolicy,
+    writePolicy: async (policy) => {
+      // Read-modify-write: `write_app_settings` replaces the whole file, so
+      // a settings object built from the policy alone would reset every
+      // other preference (see `readAppSettings`'s ⚠ note).
+      const settings = await readAppSettings();
+      await writeAppSettings({ ...settings, updatePolicy: policy });
+    },
+    listVersions: bundleAvailable,
+    applyCurrentPolicy: async () => {
+      await applyCurrentPolicy(unifiedUpdateApi());
+    },
+    checkNow: async () => {
+      await checkForAnyUpdate(unifiedUpdateApi());
+    },
+  };
+  return {
+    id: "host.brink.updates",
+    scope: "app",
+    title: "Updates",
+    keywords: "update updates channel stable beta pin pinned version rollback revert install",
+    icon: SETTINGS_ICONS.project,
+    body: <UpdateSettings api={api} />,
   };
 }
 

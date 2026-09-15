@@ -15,6 +15,9 @@ export { mountStudio, type MountStudioOptions, type StudioHandle } from "./mount
 // The `onFilesChanged` mount option's payload shapes, plus the save
 // command ids (dispatchable via `api.dispatch`).
 export type { FileChange, FileChangeType } from "@brink-lang/editor";
+
+// ── Prose checking (the `proseChecker` mount option) ────────────
+export type { ProseChecker, ProseLint } from "@brink-lang/editor";
 export { FILE_SAVE_COMMAND_ID, FILE_SAVE_ALL_COMMAND_ID } from "./file-commands.js";
 
 // ── Extension config (spec §8.1) ────────────────────────────────
@@ -45,6 +48,24 @@ export {
   type PublicElementInfo,
   type StudioApi,
   type StudioPublicState,
+} from "@brink/studio-ui";
+
+// ── Settings sections (the `settingsSections` mount option) ─────
+//
+// A host section is drawn by the same shell the built-ins are, so it needs
+// the same row primitives — otherwise it looks like a foreign panel wedged
+// into the rail, which is the thing a registry-driven settings page exists
+// to prevent. `SETTINGS_SECTION_IDS` is exported alongside them as the
+// reserved id set: a host section colliding with one is dropped.
+export {
+  SETTINGS_ICONS,
+  SETTINGS_SECTION_IDS,
+  SettingsGroup,
+  SettingsRow,
+  SettingsStepper,
+  SettingsToggle,
+  type SettingsSection,
+  type SettingsScope,
 } from "@brink/studio-ui";
 
 // ── Example extension (worked example, issues #95/#146) ─────────

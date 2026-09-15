@@ -22,6 +22,8 @@
  *     works — the app is not permanently wedged.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { studioMock } from "./studio-mock.js";
+import { tauriProviderMock } from "./tauri-provider-mock.js";
 
 const { destroyMock } = vi.hoisted(() => ({ destroyMock: vi.fn() }));
 
@@ -51,7 +53,7 @@ const mountStudio = vi.fn((..._args: unknown[]) => {
     unmount: vi.fn(),
   });
 });
-vi.mock("@brink-lang/studio", () => ({ mountStudio: (...args: unknown[]) => mountStudio(...args) }));
+vi.mock("@brink-lang/studio", () => studioMock((...args: unknown[]) => mountStudio(...args)));
 
 class FakeTauriFileProvider {
   constructor(private readonly root: string) {}
@@ -65,35 +67,8 @@ class FakeTauriFileProvider {
     return Promise.resolve();
   }
 }
-vi.mock("../tauri-provider.js", () => ({
+vi.mock("../tauri-provider.js", () => tauriProviderMock({
   TauriFileProvider: FakeTauriFileProvider,
-  pickProjectFolder: vi.fn(() => Promise.resolve(null)),
-  projectAnchorExists: vi.fn(() => Promise.resolve(true)),
-  pickProjectFile: vi.fn(() => Promise.resolve(null)),
-  discoverProjectConfig: vi.fn(() => Promise.resolve(null)),
-  createProject: vi.fn(() => Promise.resolve("")),
-  readAppSettings: vi.fn(() =>
-    Promise.resolve({
-      reopenLastProject: false,
-      updatePolicy: { mode: "auto", channel: "stable" },
-    }),
-  ),
-  writeAppSettings: vi.fn(() => Promise.resolve()),
-  previousExitClean: vi.fn(() => Promise.resolve(true)),
-  pruneRecent: vi.fn(() => Promise.resolve([])),
-  pushRecent: vi.fn(() => Promise.resolve([])),
-  readRecents: vi.fn(() => Promise.resolve([])),
-  saveBytesDialog: vi.fn(() => Promise.resolve(null)),
-  // The OTA boot confirmation runs at main.tsx module scope and is
-  // deliberately unconditional (docs/desktop-ota-spec.md Stage 2), so every
-  // mock of this module that drives main.tsx has to carry it.
-  bundleReady: vi.fn(() => Promise.resolve({ version: null, rolledBackFrom: null })),
-  bundleUpdateCheck: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
-  // `unifiedUpdateApi()` binds every channel capability when it is built,
-  // so the whole set has to be present even for a check that resolves
-  // "up to date" — a missing key is a module-namespace access that throws.
-  bundleUpdateApply: vi.fn(() => Promise.resolve({ kind: "upToDate" })),
-  bundleActivate: vi.fn(() => Promise.resolve()),
 }));
 
 describe("handleQuitRequested recovers from a rejected destroy() (#2401)", () => {

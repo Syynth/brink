@@ -178,7 +178,27 @@ async function offerShellUpdate(
  */
 async function offerBundleUpdate(api: UnifiedUpdateApi): Promise<UpdateResult> {
   if (!(await api.confirm("An update is available."))) return "declined";
+  return installAndActivate(api);
+}
 
+/**
+ * Install what the CURRENT policy resolves to and swap to it.
+ *
+ * Exported for the version picker in Settings, which has already asked the
+ * author — they clicked a specific version — and must not ask twice. It
+ * reuses this path rather than repeating it, because the parts after the
+ * consent are the parts that must never differ: the save, the activation,
+ * and what installed-but-not-activated is reported as.
+ *
+ * Takes no version: the shell re-resolves from the policy on disk, so a
+ * caller pins first and calls this second. That keeps the "apply installs
+ * only what the settings say" property the shell command was designed for.
+ */
+export async function applyCurrentPolicy(api: UnifiedUpdateApi): Promise<UpdateResult> {
+  return installAndActivate(api);
+}
+
+async function installAndActivate(api: UnifiedUpdateApi): Promise<UpdateResult> {
   let outcome: BundleUpdateOutcome;
   try {
     outcome = await api.applyBundle();
