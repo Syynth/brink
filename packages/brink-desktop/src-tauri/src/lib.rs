@@ -1074,6 +1074,17 @@ const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 /// fit — it exists to bound a hostile stream, not to police size.
 const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
 
+/// Fetch and parse the published index.
+///
+/// One function rather than three inlined copies, because every caller must
+/// apply the same fetch cap and the same per-entry leniency — a second
+/// hand-rolled fetch is how one of them ends up without the cap.
+async fn fetch_index() -> Result<bundle_update::BundleIndex, String> {
+    let bytes = fetch_bounded(BUNDLE_INDEX_URL, MAX_MANIFEST_BYTES).await?;
+    let text = String::from_utf8(bytes).map_err(|_| "the bundle index is not UTF-8".to_owned())?;
+    bundle_update::parse_index(&text).map_err(|e| e.to_string())
+}
+
 /// The manifest, fetched and judged against this shell and what is installed.
 ///
 /// The single place the decision is made, so `check` and `apply` cannot drift
@@ -1106,10 +1117,7 @@ async fn resolve_update(app: &tauri::AppHandle) -> Result<Resolution, String> {
         .unwrap_or_default()
         .update_policy;
 
-    let index_text = fetch_bounded(BUNDLE_INDEX_URL, MAX_MANIFEST_BYTES).await?;
-    let index_text =
-        String::from_utf8(index_text).map_err(|_| "the bundle index is not UTF-8".to_owned())?;
-    let index = bundle_update::parse_index(&index_text).map_err(|e| e.to_string())?;
+    let index = fetch_index().await?;
 
     // The policy decides both WHAT to look for and whether ordering applies.
     let (target, intent) = match &policy {
@@ -1169,6 +1177,117 @@ async fn bundle_update_check(app: tauri::AppHandle) -> BundleUpdateCheck {
         },
         Err(reason) => BundleUpdateCheck::Failed { reason },
     }
+}
+
+/// One row of the version picker.
+///
+/// Everything an author needs to choose between versions, and nothing that
+/// would let them choose a broken one silently: `blocked` carries the same
+/// refusal `bundle_update_apply` would give, computed by the same
+/// [`bundle_update::decide`] call, so a row the picker offers is a row the
+/// shell will actually install. A second predicate here would be free to
+/// drift from the gate that matters.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleOffer {
+    version: String,
+    channel: bundle_update::Channel,
+    min_shell_version: String,
+    pub_date: Option<String>,
+    /// Currently serving. At most one row carries this.
+    active: bool,
+    /// Already unpacked in the store, so switching to it is cheap.
+    ///
+    /// Reported rather than acted on: switching still runs the full
+    /// download-verify-unpack path, which re-checks the signature. Trusting
+    /// bytes already on disk would make the store, rather than the
+    /// publisher's key, the thing that decides what runs.
+    downloaded: bool,
+    /// Why this shell cannot run it, or `None` when it can.
+    blocked: Option<String>,
+}
+
+/// Every published bundle this shell knows about, newest first.
+///
+/// Fetches the index; downloads nothing. Ordering is by semver descending
+/// with unparseable versions last in index order — a picker must not depend
+/// on how a publisher happened to append.
+#[tauri::command]
+async fn bundle_available(app: tauri::AppHandle) -> Result<Vec<BundleOffer>, String> {
+    use tauri::Manager as _;
+
+    // Scoped so the `State` guard is not held across the await below.
+    let root = {
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
+    let state = bundles::read_state(&root);
+    let installed = state.version.clone();
+    let on_disk: std::collections::BTreeSet<String> =
+        state.version.into_iter().chain(state.history).collect();
+    let shell_version = app.package_info().version.to_string();
+
+    // Everything from here down is pure, and tested. What is left in the
+    // command is the part that needs a live `AppHandle` and the network —
+    // the R8 discipline: make the untestable part as small as it goes.
+    Ok(offers_from_index(
+        &fetch_index().await?,
+        &shell_version,
+        installed.as_deref(),
+        &on_disk,
+    ))
+}
+
+/// Build the picker rows. Pure, so the ordering and gate rules are testable
+/// without an app handle or a network.
+fn offers_from_index(
+    index: &bundle_update::BundleIndex,
+    shell_version: &str,
+    installed: Option<&str>,
+    on_disk: &std::collections::BTreeSet<String>,
+) -> Vec<BundleOffer> {
+    let mut offers: Vec<(Option<semver::Version>, BundleOffer)> = index
+        .entries
+        .iter()
+        .map(|entry| {
+            let blocked = match bundle_update::decide(
+                entry,
+                shell_version,
+                installed,
+                bundle_update::Intent::Switch,
+            ) {
+                bundle_update::UpdateDecision::Refuse(reason) => Some(reason),
+                bundle_update::UpdateDecision::Install
+                | bundle_update::UpdateDecision::UpToDate => None,
+            };
+            (
+                semver::Version::parse(&entry.version).ok(),
+                BundleOffer {
+                    version: entry.version.clone(),
+                    channel: entry.channel,
+                    min_shell_version: entry.min_shell_version.clone(),
+                    pub_date: entry.pub_date.clone(),
+                    active: installed == Some(entry.version.as_str()),
+                    downloaded: on_disk.contains(&entry.version),
+                    blocked,
+                },
+            )
+        })
+        .collect();
+
+    // `sort_by` is stable, so entries that do not parse keep their index
+    // order among themselves rather than landing wherever a comparison
+    // happened to put them.
+    offers.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(a), Some(b)) => b.cmp(a),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    offers.into_iter().map(|(_, offer)| offer).collect()
 }
 
 /// Install the available web-bundle update, if there still is one.
@@ -2491,6 +2610,7 @@ pub fn run() -> tauri::Result<()> {
             bundle_ready,
             bundle_activate,
             bundle_list,
+            bundle_available,
             spellcheck_text,
             bundle_update_check,
             bundle_update_apply,
@@ -5659,5 +5779,128 @@ mod system_fonts_tests {
             .map(str::to_owned),
         );
         assert_eq!(got, vec!["arial", "Arial Black", "Baskerville", "Menlo"]);
+    }
+}
+
+#[cfg(test)]
+mod bundle_offer_tests {
+    use super::*;
+    use bundle_update::{BundleIndex, BundleManifest, Channel};
+    use std::collections::BTreeSet;
+
+    fn entry(version: &str, min_shell: &str, channel: Channel) -> BundleManifest {
+        BundleManifest {
+            channel,
+            version: version.to_owned(),
+            min_shell_version: min_shell.to_owned(),
+            url: "https://example.invalid/bundle.tar.gz".to_owned(),
+            sha256: String::new(),
+            signature: String::new(),
+            pub_date: None,
+        }
+    }
+
+    fn versions(offers: &[BundleOffer]) -> Vec<&str> {
+        offers.iter().map(|o| o.version.as_str()).collect()
+    }
+
+    #[test]
+    fn rows_are_newest_first_regardless_of_publish_order() {
+        // The publisher appends; the picker must not inherit that order. A
+        // list that reads "0.0.1, 0.1.0, 0.0.9" makes the newest version
+        // something the author has to hunt for.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.0.1", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+                entry("0.0.9", "0.8.0", Channel::Beta),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        assert_eq!(versions(&offers), ["0.1.0", "0.0.9", "0.0.1"]);
+    }
+
+    #[test]
+    fn an_unparseable_version_sorts_last_in_index_order_rather_than_anywhere() {
+        // Deterministic placement for a row that cannot be compared: the
+        // repo's standing rule that iteration order never decides output.
+        let index = BundleIndex {
+            entries: vec![
+                entry("not-a-version", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+                entry("also-not", "0.8.0", Channel::Stable),
+                entry("0.2.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        assert_eq!(
+            versions(&offers),
+            ["0.2.0", "0.1.0", "not-a-version", "also-not"]
+        );
+    }
+
+    #[test]
+    fn a_row_needing_a_newer_shell_is_blocked_with_the_reason_apply_would_give() {
+        // The picker must not offer a version the shell would then refuse:
+        // that is an author choosing something, waiting for a download, and
+        // being told no. Same `decide` call, so the two cannot drift.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.2.0", "0.9.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        let blocked = offers[0].blocked.as_deref();
+        assert!(
+            blocked.is_some_and(|r| r.contains("0.9.0") && r.contains("0.8.0")),
+            "expected a minShellVersion refusal naming both versions, got {blocked:?}"
+        );
+        assert_eq!(offers[1].blocked, None);
+    }
+
+    #[test]
+    fn the_active_version_is_marked_and_is_not_blocked() {
+        // Switching to what is already running is a no-op, not a refusal —
+        // `decide` reports `UpToDate` for it, and a row rendered as blocked
+        // would read as "you cannot have the thing you already have".
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.2.0", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", Some("0.1.0"), &BTreeSet::new());
+        assert!(!offers[0].active, "0.2.0 is not what is running");
+        assert!(offers[1].active, "0.1.0 is");
+        assert_eq!(offers[1].blocked, None);
+    }
+
+    #[test]
+    fn downloaded_covers_the_history_as_well_as_the_active_version() {
+        // Retention keeps N=3, so the rows behind the active one are on disk
+        // too. Reporting only the active one would tell an author every
+        // rollback target needs a fresh download.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.3.0", "0.8.0", Channel::Stable),
+                entry("0.2.0", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let on_disk: BTreeSet<String> = ["0.2.0".to_owned(), "0.1.0".to_owned()].into();
+        let offers = offers_from_index(&index, "0.8.0", Some("0.2.0"), &on_disk);
+        assert_eq!(
+            offers.iter().map(|o| o.downloaded).collect::<Vec<_>>(),
+            [false, true, true]
+        );
+    }
+
+    #[test]
+    fn an_empty_index_is_an_empty_list_rather_than_an_error() {
+        // A channel with nothing published yet is a normal state on a fresh
+        // install, not a broken one.
+        let offers = offers_from_index(&BundleIndex::default(), "0.8.0", None, &BTreeSet::new());
+        assert!(offers.is_empty());
     }
 }
