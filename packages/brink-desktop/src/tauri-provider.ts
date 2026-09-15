@@ -504,6 +504,27 @@ export type BundleUpdateOutcome =
   /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
   | { kind: "failed"; reason: string };
 
+/**
+ * Serve the store's current bundle pointer without restarting the process
+ * (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * **Reload the webview afterwards — that reload is what swaps the running
+ * code.** This call only moves what the asset protocol serves.
+ *
+ * Save first, exactly as before a full relaunch: a reload destroys the
+ * document and every worker with it, so in-memory editor state is lost the
+ * same way. It is cheaper than a restart, not free.
+ *
+ * ⚠ The shell stamps the rollback sentinel before returning, and only the
+ * reloaded page calling `bundleReady` clears it. So a reload that never
+ * completes is reverted on the next launch — which is the safety net, and
+ * also why the reload must actually follow this call rather than being
+ * deferred behind a prompt.
+ */
+export async function bundleActivate(): Promise<BundleLaunchInfo> {
+  return invoke<BundleLaunchInfo>("bundle_activate");
+}
+
 /** What a check found. An offer, not an outcome — nothing is downloaded yet. */
 export type BundleUpdateCheck =
   | { kind: "upToDate" }

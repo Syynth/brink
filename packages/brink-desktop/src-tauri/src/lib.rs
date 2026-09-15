@@ -575,10 +575,44 @@ const BUNDLE_SCHEME: &str = "brink";
 struct BundleRuntime {
     /// `<app_data>/bundles`.
     root: PathBuf,
+    /// What is being served right now.
+    ///
+    /// Behind a lock because Stage 4 swaps it mid-session: a bundle is web
+    /// assets, so activating one is a pointer change plus a reload rather
+    /// than a process restart. Stage 2 captured this once in `setup`, which
+    /// made a reload inert — the webview re-requested assets and got the
+    /// same directory back.
+    ///
+    /// `RwLock` rather than `Mutex` because `serve_bundle_asset` reads it on
+    /// every single asset request and activation is rare.
+    active: std::sync::RwLock<ActiveBundle>,
+}
+
+/// The served bundle and what the frontend should be told about it.
+///
+/// One struct under one lock rather than two independently-locked fields:
+/// they must agree. A reader that saw a new `dir` with the previous launch's
+/// `info` would report a rollback that already happened, or miss one that
+/// just did.
+struct ActiveBundle {
     /// The active bundle's directory; `None` serves the embedded floor.
     dir: Option<PathBuf>,
-    /// This launch's decision, reported to the frontend by `bundle_ready`.
-    outcome: bundles::LaunchOutcome,
+    /// Reported to the frontend by `bundle_ready`, for this launch *or* for
+    /// the most recent activation — whichever happened last.
+    info: BundleLaunchInfo,
+}
+
+/// Read the active bundle under the lock, recovering from a poisoned one.
+///
+/// A panic elsewhere must not take the asset server down with it: the worst
+/// a stale-but-consistent `ActiveBundle` can do is serve the previous
+/// bundle, while refusing to read would serve nothing at all.
+fn with_active<T>(runtime: &BundleRuntime, read: impl FnOnce(&ActiveBundle) -> T) -> T {
+    let guard = runtime
+        .active
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    read(&guard)
 }
 
 /// What the frontend learns when it confirms it booted.
@@ -624,11 +658,15 @@ impl From<&bundles::LaunchOutcome> for BundleLaunchInfo {
 fn serve_bundle_asset(app: &tauri::AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
     use tauri::Manager;
 
+    // Read per request, not once at startup: Stage 4 swaps this pointer
+    // while the app is running.
     let from_bundle = app
         .try_state::<BundleRuntime>()
-        .and_then(|runtime| runtime.dir.clone())
+        .and_then(|runtime| with_active(&runtime, |active| active.dir.clone()))
         .and_then(|dir| bundles::resolve_asset(&dir, path))
         .and_then(|file| std::fs::read(&file).ok().map(|bytes| (file, bytes)));
+
+    let cache = cache_control_for(path);
 
     if let Some((file, bytes)) = from_bundle {
         // Tauri's own inference (content sniff, then URI), not a
@@ -637,6 +675,7 @@ fn serve_bundle_asset(app: &tauri::AppHandle, path: &str) -> tauri::http::Respon
         let mime = tauri::utils::mime_type::MimeType::parse(&bytes, &file.to_string_lossy());
         return tauri::http::Response::builder()
             .header(tauri::http::header::CONTENT_TYPE, mime)
+            .header(tauri::http::header::CACHE_CONTROL, cache)
             .body(bytes)
             .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR));
     }
@@ -644,9 +683,42 @@ fn serve_bundle_asset(app: &tauri::AppHandle, path: &str) -> tauri::http::Respon
     match app.asset_resolver().get(path.to_owned()) {
         Some(asset) => tauri::http::Response::builder()
             .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)
+            .header(tauri::http::header::CACHE_CONTROL, cache)
             .body(asset.bytes)
             .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)),
         None => empty_response(tauri::http::StatusCode::NOT_FOUND),
+    }
+}
+
+/// What to tell the webview about caching this path.
+///
+/// **`index.html` is the only unhashed URL a bundle serves.** Vite
+/// content-hashes every script, chunk, worker and asset, so those cannot go
+/// stale — a new bundle simply asks for different filenames. The entry
+/// document keeps one fixed URL across every version, so a cached copy would
+/// keep pointing at the *previous* bundle's hashed entry and an activation
+/// would silently do nothing.
+///
+/// That is why this matters more in Stage 4 than it did in Stage 2: a
+/// process restart tends to re-request the entry document anyway, but an
+/// in-session reload is exactly the case a webview cache would satisfy
+/// locally.
+///
+/// Everything else is marked immutable rather than merely cacheable, which
+/// is safe for the same reason: the filename changes when the bytes do.
+fn cache_control_for(request_path: &str) -> &'static str {
+    let trimmed = request_path.trim_start_matches('/');
+    // Case-insensitively, because macOS and Windows filesystems are: an
+    // `INDEX.HTML` served as cacheable would be the same silent-no-op bug
+    // this function exists to prevent, on exactly the platforms that ship.
+    let is_html = std::path::Path::new(trimmed)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+    let is_entry_document = trimmed.is_empty() || is_html;
+    if is_entry_document {
+        "no-store"
+    } else {
+        "public, max-age=31536000, immutable"
     }
 }
 
@@ -687,7 +759,69 @@ fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
         };
     };
     let _ = bundles::mark_ready(&runtime.root);
-    BundleLaunchInfo::from(&runtime.outcome)
+    // The ACTIVE bundle, which after an in-session activation is not the one
+    // this process launched with. Reporting the launch outcome here would
+    // re-announce a rollback that already happened, every time a reloaded
+    // bundle confirmed itself.
+    with_active(&runtime, |active| active.info.clone())
+}
+
+/// Serve the store's current pointer, without restarting the process.
+///
+/// The caller reloads the webview afterwards; that reload is what actually
+/// swaps the running code. Split that way because the shell cannot know when
+/// the frontend is ready to lose its in-memory state — saving first is the
+/// frontend's business (`awaitSaveAllBeforeQuit`), exactly as it is before a
+/// full relaunch.
+///
+/// ⚠ **Stamps the rollback sentinel before returning, and that ordering is
+/// the safety property.** Stage 2's sentinel was per *process launch*:
+/// stamped in `setup`, cleared when the frontend confirmed. A mid-session
+/// swap under that scheme is unwitnessed — a bundle that wedges the webview
+/// after activation would never be rolled back, which is the one thing the
+/// sentinel exists to prevent. Stamping here makes the handshake
+/// per-activation instead.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_activate(app: tauri::AppHandle) -> Result<BundleLaunchInfo, String> {
+    use tauri::Manager;
+
+    let runtime = app
+        .try_state::<BundleRuntime>()
+        .ok_or("the bundle store is not initialised")?;
+
+    // Takes no version: it activates whatever the STORE points at, so a
+    // caller cannot name a directory to serve. Choosing a different version
+    // is a separate operation that moves the pointer first.
+    let version = bundles::begin_activation(&runtime.root)
+        .map_err(|e| format!("could not stamp the rollback sentinel: {e}"))?;
+
+    let dir = version
+        .as_deref()
+        .and_then(|version| bundles::version_dir(&runtime.root, version));
+    let info = BundleLaunchInfo {
+        version,
+        // An activation the author asked for is not a rollback. A rollback
+        // is something the shell did TO them, and is reported by the launch
+        // that discovers it.
+        rolled_back_from: None,
+    };
+
+    let mut guard = runtime
+        .active
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = ActiveBundle {
+        dir,
+        info: info.clone(),
+    };
+    drop(guard);
+
+    Ok(info)
 }
 
 // ── OTA bundle updates (docs/desktop-ota-spec.md Stage 2; split in Stage 4) ──
@@ -2012,8 +2146,10 @@ pub fn run() -> tauri::Result<()> {
             };
             app.manage(BundleRuntime {
                 root: bundle_root,
-                dir: active_dir,
-                outcome,
+                active: std::sync::RwLock::new(ActiveBundle {
+                    info: BundleLaunchInfo::from(&outcome),
+                    dir: active_dir,
+                }),
             });
 
             // The window is built here rather than by `tauri.conf.json`
@@ -2083,6 +2219,7 @@ pub fn run() -> tauri::Result<()> {
             write_app_settings,
             previous_exit_clean,
             bundle_ready,
+            bundle_activate,
             bundle_update_check,
             bundle_update_apply,
         ])
@@ -4229,6 +4366,43 @@ on:
              hash or signature from the caller, the frontend can name which payload \
              gets installed — re-read the ⚠ note above bundle_update_check."
         );
+    }
+
+    /// The entry document must never be cached; everything else may be
+    /// cached forever.
+    ///
+    /// This is the third of the three things that made Stage 2's activation
+    /// a process restart, and the least visible: vite content-hashes every
+    /// script, chunk, worker and asset, so those cannot go stale — a new
+    /// bundle asks for different filenames. `index.html` keeps ONE fixed URL
+    /// across every version, so a cached copy would keep pointing at the
+    /// previous bundle's hashed entry and an activation would silently do
+    /// nothing at all.
+    ///
+    /// Silently is the operative word, and it is why this is a test rather
+    /// than a comment: the failure is a reload that appears to work.
+    #[test]
+    fn only_the_entry_document_is_served_uncacheable() {
+        for path in ["", "/", "/index.html", "index.html", "/nested/page.html"] {
+            assert_eq!(
+                cache_control_for(path),
+                "no-store",
+                "entry document {path:?} must not be cached"
+            );
+        }
+
+        for path in [
+            "/assets/index-a1b2c3.js",
+            "/assets/brink_web_bg-d4e5f6.wasm",
+            "/assets/session-worker-990011.js",
+            "/favicon.ico",
+        ] {
+            assert_eq!(
+                cache_control_for(path),
+                "public, max-age=31536000, immutable",
+                "content-hashed asset {path:?} should be cacheable"
+            );
+        }
     }
 
     /// Every command name in this file's own `generate_handler!` list, sorted.

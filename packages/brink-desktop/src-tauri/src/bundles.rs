@@ -268,6 +268,48 @@ pub fn begin_launch(root: &Path, now_ms: u64) -> (LaunchOutcome, BundleState) {
     (outcome, state)
 }
 
+/// Stamp the rollback sentinel for an IN-SESSION activation and report what
+/// will be served.
+///
+/// The sibling of [`begin_launch`], for the case that has no launch: Stage 4
+/// activates a bundle by swapping a pointer and reloading the webview, so the
+/// process that stamps the sentinel is the one already running.
+///
+/// Returns the version now pointed at, or `None` for the embedded floor.
+///
+/// Three things it deliberately does NOT do, each because [`begin_launch`]
+/// owns it:
+///
+/// - **It never rolls back.** A rollback is a verdict on a *previous*
+///   attempt, reached by finding a sentinel still set at startup. Acting on
+///   one here would judge the bundle the author is running right now, mid
+///   session.
+/// - **It never deletes anything.** Same reason.
+/// - **It does not move the pointer.** It stamps and reports; choosing which
+///   version to serve happens before this is called.
+///
+/// A pointer naming a version whose directory has gone is treated as no
+/// pointer at all — identical to [`begin_launch`]'s handling, so the two
+/// paths cannot disagree about what "present" means.
+pub fn begin_activation(root: &Path) -> std::io::Result<Option<String>> {
+    let mut state = read_state(root);
+
+    let serving = match state.version.clone() {
+        Some(version) if bundle_is_present(root, &version) => Some(version),
+        Some(_) => {
+            state.version = None;
+            None
+        }
+        None => None,
+    };
+
+    // The embedded floor needs no sentinel — it is the thing being fallen
+    // back TO, and cannot itself fail to boot. Same rule as `begin_launch`.
+    state.attempting.clone_from(&serving);
+    write_state(root, &state)?;
+    Ok(serving)
+}
+
 /// Whether `version`'s directory exists and holds an `index.html`.
 fn bundle_is_present(root: &Path, version: &str) -> bool {
     version_dir(root, version).is_some_and(|dir| dir.join(INDEX_FILE).is_file())
@@ -327,9 +369,9 @@ pub fn promote(root: &Path, version: &str, now_ms: u64) -> std::io::Result<Bundl
 #[cfg(test)]
 mod tests {
     use super::{
-        begin_launch, is_safe_component, mark_ready, percent_decode, promote, read_state,
-        resolve_asset, staging_dir, version_dir, write_state, BundleState, LaunchOutcome,
-        INDEX_FILE,
+        begin_activation, begin_launch, is_safe_component, mark_ready, percent_decode, promote,
+        read_state, resolve_asset, staging_dir, version_dir, write_state, BundleState,
+        LaunchOutcome, INDEX_FILE,
     };
     use std::path::{Path, PathBuf};
 
@@ -354,6 +396,132 @@ mod tests {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.0);
         }
+    }
+
+    /// Set the pointer directly. `install` lays down a version directory;
+    /// `promote` is the staging path and is not what these tests exercise.
+    fn point_at(root: &Path, version: Option<&str>, previous: Option<&str>) {
+        write_state(
+            root,
+            &BundleState {
+                version: version.map(str::to_owned),
+                previous: previous.map(str::to_owned),
+                installed_at_ms: Some(1),
+                attempting: None,
+            },
+        )
+        .expect("write state");
+    }
+
+    /// An in-session activation stamps the sentinel for the bundle it is
+    /// about to serve. Without this the whole Stage 4 swap is unwitnessed:
+    /// a bundle that wedges the webview after activation would clear
+    /// nothing, and the next launch would find no sentinel and conclude it
+    /// booted fine.
+    #[test]
+    fn begin_activation_stamps_the_sentinel_for_what_it_serves() {
+        let root = TempRoot::new("activation-stamps");
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), None);
+
+        let serving = begin_activation(root.path()).expect("activate");
+
+        assert_eq!(serving.as_deref(), Some("0.0.2"));
+        assert_eq!(
+            read_state(root.path()).attempting.as_deref(),
+            Some("0.0.2"),
+            "the sentinel must be set before the reload, not after"
+        );
+    }
+
+    /// The property the split between launch and activation exists to keep:
+    /// a wedged ACTIVATION is caught by the next launch exactly as a wedged
+    /// launch is. Nothing clears the sentinel but a booting frontend.
+    #[test]
+    fn an_activation_that_never_confirms_is_rolled_back_on_the_next_launch() {
+        let root = TempRoot::new("activation-wedges");
+        install(root.path(), "0.0.1", &[]);
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), Some("0.0.1"));
+
+        // Activated, then the webview never comes back.
+        begin_activation(root.path()).expect("activate");
+
+        let (outcome, _) = begin_launch(root.path(), 3);
+        assert_eq!(
+            outcome,
+            LaunchOutcome::RolledBack {
+                failed: "0.0.2".to_owned(),
+                now_serving: Some("0.0.1".to_owned()),
+            },
+            "a swap that wedged the webview must revert like a launch that did"
+        );
+    }
+
+    /// The mirror image, and the one that would make the feature useless if
+    /// it broke: an activation the frontend DOES confirm leaves nothing
+    /// behind, so the next launch simply serves it.
+    #[test]
+    fn a_confirmed_activation_leaves_no_sentinel() {
+        let root = TempRoot::new("activation-confirms");
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), None);
+        begin_activation(root.path()).expect("activate");
+
+        mark_ready(root.path()).expect("the reloaded bundle confirmed");
+
+        assert_eq!(read_state(root.path()).attempting, None);
+        let (outcome, _) = begin_launch(root.path(), 2);
+        assert_eq!(outcome, LaunchOutcome::Bundle("0.0.2".to_owned()));
+    }
+
+    /// `begin_activation` judges "present" the same way `begin_launch` does.
+    /// If the two disagreed, a pointer naming a deleted directory would be
+    /// stamped as the sentinel and then roll back a bundle that was never
+    /// at fault.
+    #[test]
+    fn begin_activation_treats_a_missing_directory_as_no_pointer() {
+        let root = TempRoot::new("activation-missing");
+        point_at(root.path(), Some("0.0.2"), None);
+
+        let serving = begin_activation(root.path()).expect("activate");
+
+        assert_eq!(serving, None, "falls back to the embedded floor");
+        assert_eq!(
+            read_state(root.path()).attempting,
+            None,
+            "the embedded floor needs no sentinel — it cannot fail to boot"
+        );
+    }
+
+    /// Activation must never deliver a rollback verdict of its own. A
+    /// rollback judges a PREVIOUS attempt and is reached by finding a
+    /// sentinel still set at startup; reaching one here would condemn the
+    /// bundle the author is running at that moment.
+    #[test]
+    fn begin_activation_never_deletes_or_rolls_back() {
+        let root = TempRoot::new("activation-no-rollback");
+        install(root.path(), "0.0.1", &[]);
+        install(root.path(), "0.0.2", &[]);
+        point_at(root.path(), Some("0.0.2"), Some("0.0.1"));
+        // A sentinel left over from an activation that never confirmed.
+        begin_activation(root.path()).expect("stamp once");
+
+        let serving = begin_activation(root.path()).expect("activate again");
+
+        assert_eq!(
+            serving.as_deref(),
+            Some("0.0.2"),
+            "still serving the pointer, not rolled back"
+        );
+        assert!(
+            version_dir(root.path(), "0.0.1")
+                .expect("safe")
+                .join(INDEX_FILE)
+                .is_file(),
+            "the previous bundle must survive — only begin_launch prunes"
+        );
+        assert_eq!(read_state(root.path()).previous.as_deref(), Some("0.0.1"));
     }
 
     /// Lay down `<root>/<version>/index.html` plus any extra files.
