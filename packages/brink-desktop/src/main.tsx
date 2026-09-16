@@ -95,6 +95,11 @@ import {
 } from "./update-flow.js";
 import { UpdateSettings, type UpdateSettingsApi } from "./UpdateSettings.js";
 import { desktopProseChecker } from "./desktop-prose-checker.js";
+import { SpellingSettings, type SpellingSettingsApi } from "./SpellingSettings.js";
+import {
+  readUseSystemSpellcheck,
+  writeUseSystemSpellcheck,
+} from "./spellcheck-preference.js";
 import {
   UPDATE_CHECK_COMMAND,
   UPDATE_INSTALL_COMMAND,
@@ -421,11 +426,14 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     systemFonts: () => systemFonts().then((fonts) => (fonts.length === 0 ? [] : fonts)),
     // Settings › Updates. A host section, because an update channel and a
     // bundle store mean nothing in the browser build.
-    settingsSections: [updateSettingsSection()],
+    settingsSections: [updateSettingsSection(), spellingSettingsSection()],
     // Spelling from the OS, everything else from Harper. Off macOS the
     // command answers `unavailable` and Harper keeps its spelling pass, so
     // this is safe to wire unconditionally.
-    proseChecker: (builtin) => desktopProseChecker(builtin, spellcheckText),
+    proseChecker: (builtin) =>
+      desktopProseChecker(builtin, spellcheckText, () =>
+        readUseSystemSpellcheck(globalThis.localStorage),
+      ),
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -1212,6 +1220,47 @@ function updateSettingsSection(): SettingsSection {
     keywords: "update updates channel stable beta pin pinned version rollback revert install",
     icon: SETTINGS_ICONS.project,
     body: <UpdateSettings api={api} />,
+  };
+}
+
+/**
+ * Settings › Spelling, bound to the preference and the platform probe.
+ *
+ * Toggling dispatches `compile.run` — the documented host route to a fresh
+ * compile — because a compile is what dispatches `refreshProseEffect` into
+ * every open view (`document-sessions.ts`). Without it the squiggles would
+ * keep whichever checker's answers they already had until the next edit,
+ * and a settings switch that appears to do nothing for a minute is
+ * indistinguishable from one that does not work.
+ */
+function spellingSettingsSection(): SettingsSection {
+  const api: SpellingSettingsApi = {
+    useSystem: () => readUseSystemSpellcheck(globalThis.localStorage),
+    setUseSystem: (next) => {
+      writeUseSystemSpellcheck(globalThis.localStorage, next);
+      current?.api.dispatch("compile.run");
+    },
+    // Asking is the only honest probe: availability is the shell's answer,
+    // not something to infer from the user agent. An empty document is the
+    // cheapest question that still gets a real one.
+    probeAvailable: async () => {
+      try {
+        return (await spellcheckText("", null, [])).kind === "checked";
+      } catch {
+        // A failed probe is not a claim that the platform lacks a checker —
+        // report available and let each check fall back on its own.
+        return true;
+      }
+    },
+  };
+  return {
+    id: "host.brink.spelling",
+    scope: "app",
+    title: "Spelling",
+    keywords:
+      "spelling spellcheck system native dictionary harper checker typo misspelled words",
+    icon: SETTINGS_ICONS.prose,
+    body: <SpellingSettings api={api} />,
   };
 }
 
