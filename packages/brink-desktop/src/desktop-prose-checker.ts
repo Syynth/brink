@@ -106,6 +106,11 @@ export function mergeLints(
  * Harper's spelling rather than no spelling. The seam's contract is that a
  * rejection leaves the previous squiggles standing, which is right for a
  * transient fault and wrong as an answer.
+ *
+ * `useSystem` returning false is the author's own opt-out, and it short-
+ * circuits BEFORE the platform call rather than discarding its answer after:
+ * a preference that still pays for the IPC on every keystroke is a
+ * preference that only half works.
  */
 export function desktopProseChecker(
   builtin: ProseChecker,
@@ -114,9 +119,14 @@ export function desktopProseChecker(
     language: string | null,
     dictionary: string[],
   ) => Promise<SpellcheckOutcome>,
+  useSystem: () => boolean = () => true,
 ): ProseChecker {
   return {
     async check(request): Promise<ProseLint[]> {
+      // Read per check, not once at construction: the settings toggle must
+      // take effect on the next check rather than on the next launch.
+      if (!useSystem()) return builtin.check(request);
+
       const [harper, outcome] = await Promise.all([
         builtin.check(request),
         spellcheck(
