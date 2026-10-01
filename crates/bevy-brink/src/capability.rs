@@ -850,7 +850,7 @@ mod tests {
         let ext = &manifest.externals[0];
         assert_eq!(ext.name, "get_position");
         assert_eq!(ext.effects.reads, vec!["Transform".to_string()]);
-        assert!(ext.effects.writes.is_empty());
+        assert!(ext.effects.writes.is_empty(), "{:?}", ext.effects.writes);
         assert_eq!(ext.effects.detect.get("Transform"), Some(&true));
 
         let serialized = serde_json::to_string(&manifest).expect("serialize back to json");

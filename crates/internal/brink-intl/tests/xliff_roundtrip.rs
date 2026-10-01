@@ -835,7 +835,7 @@ fn generate_and_compile_xliff() {
     let mut base_inkb = Vec::new();
     brink_format::write_inkb(&data, &mut base_inkb);
     let inkl = compile_locale_xliff(&base_inkb, &translated, "es").unwrap();
-    assert!(!inkl.is_empty());
+    assert!(!inkl.is_empty(), "expected non-empty");
 
     // Compare with JSON path: export → JSON → compile should produce identical bytes
     let lines_json = brink_intl::export_lines(&data, 0x1234);

@@ -177,7 +177,7 @@ fn signature_var_carries_inferred_type_and_local_bit() {
     let sig = sig_for(SymbolKind::Variable, "mood");
     assert_eq!(sig.name, "mood");
     assert_eq!(sig.kind, SymbolKind::Variable);
-    assert!(sig.params.is_empty());
+    assert!(sig.params.is_empty(), "{:?}", sig.params);
     assert_eq!(sig.value_type, Some(brink_analyzer::InferredType::Int));
     assert!(sig.is_local, "#@local VAR must set is_local");
 

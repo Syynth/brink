@@ -291,7 +291,11 @@ fn save_state_round_trips_a_struct_valued_global() {
     // And a fresh story reconciles it back correctly.
     let mut story2 = story_for(&data);
     let report = story2.load_state(&restored);
-    assert!(report.unknown_globals.is_empty());
+    assert!(
+        report.unknown_globals.is_empty(),
+        "{:?}",
+        report.unknown_globals
+    );
     assert_eq!(story2.variable("p"), Some(record));
 }
 

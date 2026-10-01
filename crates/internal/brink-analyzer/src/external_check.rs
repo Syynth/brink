@@ -1288,7 +1288,7 @@ mod tests {
             ExternalCheckSeverity::Error,
             true,
         );
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         let meta = meta_for_kind(&metas, &index, SymbolKind::Stitch, "hub.market");
         assert_eq!(meta.doc.as_deref(), Some("The market square."));
     }
@@ -1327,7 +1327,7 @@ mod tests {
             ExternalCheckSeverity::Off,
             true,
         );
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert!(!metas.is_empty());
     }
 
@@ -1373,7 +1373,7 @@ mod tests {
             true,
         );
         assert!(metas.is_empty());
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     // ── VAR/CONST/LIST value metadata ────────────────────────────

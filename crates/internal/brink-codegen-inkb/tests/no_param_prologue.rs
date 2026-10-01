@@ -136,7 +136,7 @@ fn a_container_without_parameters_is_unchanged() {
     let story = brink_codegen_inkb::emit(&program_with_params(Vec::new(), Vec::new())).unwrap();
     let callee = story.containers.iter().find(|c| c.id == id(2)).unwrap();
     assert_eq!(callee.param_count, 0);
-    assert!(!callee.bytecode.is_empty());
+    assert!(!callee.bytecode.is_empty(), "expected non-empty");
 }
 
 #[test]

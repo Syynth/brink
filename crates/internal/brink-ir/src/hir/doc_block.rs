@@ -166,7 +166,7 @@ mod tests {
             DocPolicy::EXTERNAL,
         );
         let doc = doc.expect("doc present");
-        assert!(issues.malformed.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
         assert_eq!(
             doc.doc.as_deref(),
             Some("Whether the player holds an item.")
@@ -182,7 +182,7 @@ mod tests {
     fn no_lines_is_none() {
         let (doc, issues) = parse_lines(&[], DocPolicy::VALUE);
         assert!(doc.is_none());
-        assert!(issues.malformed.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
     }
 
     #[test]
@@ -209,7 +209,7 @@ mod tests {
         );
         let doc = doc.expect("doc present");
         assert_eq!(issues.inapplicable.len(), 1);
-        assert!(doc.params.is_empty());
+        assert!(doc.params.is_empty(), "{:?}", doc.params);
         assert_eq!(doc.doc.as_deref(), Some("Player health."));
     }
 
@@ -224,7 +224,7 @@ mod tests {
             DocPolicy::EXTERNAL,
         );
         let doc = doc.expect("doc present");
-        assert!(issues.malformed.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
         assert_eq!(
             doc.params,
             vec![("c".to_string(), TypeRef("color".to_string()))]

@@ -264,7 +264,11 @@ fn depth_three_nesting_is_rejected_loudly() {
 fn nested_fn_is_not_yet_lowered() {
     let (hir, _manifest, diags) = lower_src("flow a() {\n  fn b() {\n    x\n  }\n}\n");
     assert_eq!(hir.knots.len(), 1);
-    assert!(hir.knots[0].stitches.is_empty());
+    assert!(
+        hir.knots[0].stitches.is_empty(),
+        "{:?}",
+        hir.knots[0].stitches
+    );
     assert!(diags.iter().any(|d| d.code == DiagnosticCode::E129));
 }
 
@@ -385,7 +389,11 @@ fn single_segment_use_decl_lowers_to_bare_false_import() {
     assert_eq!(hir.imports.len(), 1);
     assert_eq!(hir.imports[0].module, "story");
     assert!(!hir.imports[0].bare);
-    assert!(hir.imports[0].items.is_empty());
+    assert!(
+        hir.imports[0].items.is_empty(),
+        "{:?}",
+        hir.imports[0].items
+    );
 }
 
 /// …and aliasing *that* is a module-level alias, which ink's `Import` has no
@@ -397,7 +405,7 @@ fn single_segment_aliased_use_decl_is_flagged() {
         diags.iter().any(|d| d.code == DiagnosticCode::E129),
         "a module-level alias must be flagged: {diags:?}"
     );
-    assert!(hir.imports.is_empty());
+    assert!(hir.imports.is_empty(), "{:?}", hir.imports);
 }
 
 #[test]
@@ -428,8 +436,12 @@ fn module_block_is_flagged_and_flattened() {
 #[test]
 fn root_content_is_empty_without_a_main_flow() {
     let (hir, _manifest, _diags) = lower_src("flow a() {}\n");
-    assert!(hir.root_content.stmts.is_empty());
-    assert!(hir.includes.is_empty());
+    assert!(
+        hir.root_content.stmts.is_empty(),
+        "{:?}",
+        hir.root_content.stmts
+    );
+    assert!(hir.includes.is_empty(), "{:?}", hir.includes);
     assert!(hir.module.is_none());
 }
 
@@ -455,7 +467,7 @@ fn top_level_main_flow_synthesizes_a_root_divert() {
     };
     assert_eq!(path.segments.len(), 1);
     assert_eq!(path.segments[0].text, "main");
-    assert!(d.target.args.is_empty());
+    assert!(d.target.args.is_empty(), "{:?}", d.target.args);
     assert!(
         matches!(
             hir.root_content.tail(),
@@ -472,7 +484,11 @@ fn nested_main_flow_does_not_synthesize_an_entry() {
     // another flow is not the story's entry point.
     let (hir, _manifest, diags) = lower_src("flow outer() {\n  flow main() {\n    Hi.\n  }\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    assert!(hir.root_content.stmts.is_empty());
+    assert!(
+        hir.root_content.stmts.is_empty(),
+        "{:?}",
+        hir.root_content.stmts
+    );
 }
 
 #[test]
@@ -481,7 +497,11 @@ fn function_named_main_does_not_synthesize_an_entry() {
     // convention (a function is called for its value, not diverted into).
     let (hir, _manifest, diags) = lower_src("fn main() {\n  return;\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    assert!(hir.root_content.stmts.is_empty());
+    assert!(
+        hir.root_content.stmts.is_empty(),
+        "{:?}",
+        hir.root_content.stmts
+    );
 }
 
 #[test]
@@ -492,7 +512,11 @@ fn parameterized_main_flow_does_not_synthesize_an_entry() {
     // synthesized; `main` remains an ordinary, host-enterable flow.
     let (hir, _manifest, diags) = lower_src("flow main(who) {\n  Hi, {who}.\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
-    assert!(hir.root_content.stmts.is_empty());
+    assert!(
+        hir.root_content.stmts.is_empty(),
+        "{:?}",
+        hir.root_content.stmts
+    );
 }
 
 #[test]
@@ -848,8 +872,8 @@ fn a_self_closing_span_lowers_with_no_children_no_attrs() {
         })
         .expect("expected a Span part");
     assert_eq!(span.name, "pause");
-    assert!(span.attrs.is_empty());
-    assert!(span.children.is_empty());
+    assert!(span.attrs.is_empty(), "{:?}", span.attrs);
+    assert!(span.children.is_empty(), "{:?}", span.children);
 }
 
 #[test]
@@ -936,7 +960,7 @@ fn a_backslash_before_anything_else_is_a_parse_error_not_a_hir_diagnostic() {
     // the parser already wraps, which `lower_content_run`'s `N::ERROR` arm
     // silently skips (matching every other parse-error recovery site).
     let parse = brink_syntax_native::parse("flow a() {\n  \\n not an escape\n}\n");
-    assert!(!parse.errors().is_empty());
+    assert!(!parse.errors().is_empty(), "expected non-empty");
 }
 
 #[test]

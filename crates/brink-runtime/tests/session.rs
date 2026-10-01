@@ -710,7 +710,7 @@ fn snapshot_and_diff_track_list_membership_and_turns() {
 
     // Run to the first pause: this executes `~ t = l1 + l2` and prints it.
     let lines = run_to_pause(&mut session);
-    assert!(!lines.is_empty());
+    assert!(!lines.is_empty(), "expected non-empty");
     let after = session.snapshot();
 
     // `t` is a List global present in both, membership changed (added items).

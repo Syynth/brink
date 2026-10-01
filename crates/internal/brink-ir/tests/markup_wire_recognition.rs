@@ -163,7 +163,7 @@ fn a_point_marker_span_lowers_with_empty_children() {
             _ => None,
         })
         .expect("expected a <pause/> LinePart::Span");
-    assert!(span.is_empty());
+    assert!(span.is_empty(), "{span:?}");
 }
 
 #[test]
@@ -204,6 +204,6 @@ fn a_lone_point_marker_span_is_admitted_to_template_recognition() {
         panic!("expected LinePart::Span, got {:?}", parts[0]);
     };
     assert_eq!(name, "pause");
-    assert!(attrs.is_empty());
-    assert!(children.is_empty());
+    assert!(attrs.is_empty(), "{attrs:?}");
+    assert!(children.is_empty(), "{children:?}");
 }

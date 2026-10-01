@@ -78,7 +78,7 @@ fn visibility_section_omitted_when_empty() {
     // `roundtrip_alias_table`/`missing_alias_table_section_decodes_empty`
     // and `roundtrip_line_part_span`.)
     let data = i001_data();
-    assert!(data.private_defs.is_empty());
+    assert!(data.private_defs.is_empty(), "{:?}", data.private_defs);
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -452,7 +452,11 @@ fn missing_effect_rows_section_decodes_empty() {
     let index = read_inkb_index(&buf).unwrap();
     assert!(index.section_range(SectionKind::EffectRows).is_some());
     let recovered = read_inkb(&buf).unwrap();
-    assert!(recovered.effect_rows.is_empty());
+    assert!(
+        recovered.effect_rows.is_empty(),
+        "{:?}",
+        recovered.effect_rows
+    );
 }
 
 /// Build a minimal one-entry `EffectRows` section body with one call atom
@@ -638,7 +642,11 @@ fn missing_alias_table_section_decodes_empty() {
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
     let recovered = read_inkb(&buf).unwrap();
-    assert!(recovered.alias_table.is_empty());
+    assert!(
+        recovered.alias_table.is_empty(),
+        "{:?}",
+        recovered.alias_table
+    );
 }
 
 // ── Recursion-depth cap on VAL_ARRAY/VAL_MAP decode (#553, #561, #562) ──────
@@ -1535,7 +1543,7 @@ fn frame_shapes_section_omitted_when_empty() {
     // Behind the E052 fence every compiled story has no await frame shapes, so
     // the section is omitted entirely and existing stories stay byte-identical.
     let data = i001_data();
-    assert!(data.frame_shapes.is_empty());
+    assert!(data.frame_shapes.is_empty(), "{:?}", data.frame_shapes);
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -1550,7 +1558,11 @@ fn frame_shapes_section_omitted_when_empty() {
     );
 
     let recovered = read_inkb(&buf).unwrap();
-    assert!(recovered.frame_shapes.is_empty());
+    assert!(
+        recovered.frame_shapes.is_empty(),
+        "{:?}",
+        recovered.frame_shapes
+    );
 }
 
 #[test]
@@ -1562,7 +1574,11 @@ fn missing_frame_shapes_section_decodes_empty() {
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
     let index = read_inkb_index(&buf).unwrap();
-    assert!(read_section_frame_shapes(&buf, &index).unwrap().is_empty());
+    assert!(
+        read_section_frame_shapes(&buf, &index).unwrap().is_empty(),
+        "{:?}",
+        read_section_frame_shapes(&buf, &index).unwrap()
+    );
 }
 
 #[test]
@@ -1960,7 +1976,7 @@ fn roundtrip_invisible_container_flag() {
     use brink_format::CountingFlags;
 
     let mut data = i001_data();
-    assert!(!data.containers.is_empty());
+    assert!(!data.containers.is_empty(), "expected non-empty");
     // Mark a container invisible (the synthesized-continuation marker, §11.2).
     data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
 
@@ -2140,7 +2156,11 @@ fn roundtrip_line_variant_groups_section() {
 #[test]
 fn line_variant_groups_section_omitted_when_empty() {
     let data = i001_data();
-    assert!(data.line_variant_groups.is_empty());
+    assert!(
+        data.line_variant_groups.is_empty(),
+        "{:?}",
+        data.line_variant_groups
+    );
 
     let mut buf = Vec::new();
     write_inkb(&data, &mut buf);
@@ -2155,5 +2175,9 @@ fn line_variant_groups_section_omitted_when_empty() {
     );
 
     let recovered = read_inkb(&buf).unwrap();
-    assert!(recovered.line_variant_groups.is_empty());
+    assert!(
+        recovered.line_variant_groups.is_empty(),
+        "{:?}",
+        recovered.line_variant_groups
+    );
 }

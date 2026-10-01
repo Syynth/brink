@@ -740,7 +740,11 @@ mod tests {
         let mut walk = Walk::new(&root);
         let _: Vec<String> = relative_lossy(&root, walk.by_ref());
 
-        assert!(walk.pruned_with_sources().is_empty());
+        assert!(
+            walk.pruned_with_sources().is_empty(),
+            "{:?}",
+            walk.pruned_with_sources()
+        );
 
         fs::remove_dir_all(&root).expect("cleanup temp dir");
     }

@@ -480,7 +480,7 @@ E063 = \"warn\"
             "in written order"
         );
         assert_eq!(doc.keys("lints"), ["E063"]);
-        assert!(doc.keys("nowhere").is_empty());
+        assert!(doc.keys("nowhere").is_empty(), "{:?}", doc.keys("nowhere"));
         assert_eq!(doc.bool("lints", "deny-warnings"), None);
         assert_eq!(doc.integer("project", "indent"), None);
         assert_eq!(doc.bool("project", "entry"), None, "a string is not a bool");

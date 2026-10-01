@@ -2115,8 +2115,8 @@ mod tests {
         let (index, merge_diags) = merge_manifests(&files);
         let (resolutions, resolve_diags) = resolve_refs(&index, &files);
 
-        assert!(merge_diags.is_empty());
-        assert!(resolve_diags.is_empty());
+        assert!(merge_diags.is_empty(), "{merge_diags:?}");
+        assert!(resolve_diags.is_empty(), "{resolve_diags:?}");
         assert_eq!(resolutions.len(), 1);
         assert_eq!(resolutions[0].file, FileId(0));
     }
@@ -2136,7 +2136,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
     }
 
@@ -2155,7 +2155,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
         // The resolved ID should be for bedroom.look
         let info = index.symbols.get(&resolutions[0].target).unwrap();
@@ -2177,7 +2177,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(resolutions.is_empty());
+        assert!(resolutions.is_empty(), "{resolutions:?}");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E024);
     }
@@ -2271,7 +2271,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
         let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "Colors.red");
@@ -2295,8 +2295,8 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
-        assert!(resolutions.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
+        assert!(resolutions.is_empty(), "{resolutions:?}");
     }
 
     #[test]
@@ -2314,7 +2314,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
         let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "meeting.greet");
@@ -2335,7 +2335,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
     }
 
@@ -2354,7 +2354,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
     }
 
@@ -2373,7 +2373,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(resolutions.is_empty());
+        assert!(resolutions.is_empty(), "{resolutions:?}");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0].code, DiagnosticCode::E027);
     }
@@ -2393,7 +2393,7 @@ mod tests {
         let (index, _) = merge_manifests(&files);
         let (resolutions, diags) = resolve_refs(&index, &files);
 
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(resolutions.len(), 1);
         let info = index.symbols.get(&resolutions[0].target).unwrap();
         assert_eq!(info.name, "Color.red");
@@ -4020,7 +4020,7 @@ mod tests {
             &mut map,
             &mut diagnostics,
         );
-        assert!(map.is_empty());
+        assert!(map.is_empty(), "{map:?}");
         assert_eq!(diagnostics.len(), 1);
         assert_eq!(diagnostics[0].code, DiagnosticCode::E024);
         assert!(

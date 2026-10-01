@@ -128,7 +128,7 @@ fn choice_with_multiple_conditions() {
 fn choice_start_content_texts() {
     let sc = parse_first::<ChoiceStartContent>("* Hello world\n");
     let texts: Vec<_> = sc.texts().collect();
-    assert!(!texts.is_empty());
+    assert!(!texts.is_empty(), "expected non-empty");
 }
 
 #[test]

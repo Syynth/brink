@@ -2495,7 +2495,11 @@ mod debug_control_tests {
 
         assert!(session.debug_breakpoint_remove(id));
         let list = json(&session.debug_breakpoints().expect("debug_breakpoints"));
-        assert!(list.as_array().expect("array").is_empty());
+        assert!(
+            list.as_array().expect("array").is_empty(),
+            "{:?}",
+            list.as_array().expect("array")
+        );
         // A second remove of the same (now-gone) id reports false, not an error.
         assert!(!session.debug_breakpoint_remove(id));
     }

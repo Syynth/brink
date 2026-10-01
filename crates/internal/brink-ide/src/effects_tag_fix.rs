@@ -410,7 +410,7 @@ mod tests {
     fn legacy_parse_reads_clause_with_continuation() {
         let parsed = parse_legacy_effects("reads: gold, hp").expect("parses");
         assert_eq!(parsed.reads, vec!["gold", "hp"]);
-        assert!(parsed.writes.is_empty());
+        assert!(parsed.writes.is_empty(), "{:?}", parsed.writes);
         assert!(!parsed.pure);
     }
 
@@ -427,7 +427,7 @@ mod tests {
     fn legacy_parse_pure_flag() {
         let parsed = parse_legacy_effects("pure").expect("parses");
         assert!(parsed.pure);
-        assert!(parsed.reads.is_empty());
+        assert!(parsed.reads.is_empty(), "{:?}", parsed.reads);
     }
 
     #[test]

@@ -82,7 +82,11 @@ fn i078_hir() {
     // One choice, no explicit gather (empty continuation)
     assert_eq!(cs.choices.len(), 1);
     assert!(cs.continuation.label.is_none());
-    assert!(cs.continuation.stmts.is_empty());
+    assert!(
+        cs.continuation.stmts.is_empty(),
+        "{:?}",
+        cs.continuation.stmts
+    );
 
     let choice = &cs.choices[0];
 
@@ -91,7 +95,7 @@ fn i078_hir() {
     assert!(!choice.is_fallback);
     assert!(choice.label.is_none());
     assert!(choice.condition.is_none());
-    assert!(choice.tags.is_empty());
+    assert!(choice.tags.is_empty(), "{:?}", choice.tags);
 
     // No start content (nothing before `[`)
     assert!(choice.start_content.is_none());
@@ -103,7 +107,7 @@ fn i078_hir() {
         .expect("should have bracket_content");
     assert_eq!(bracket.parts.len(), 1);
     assert!(matches!(&bracket.parts[0], hir::ContentPart::Text(t) if t == "Option"));
-    assert!(bracket.tags.is_empty());
+    assert!(bracket.tags.is_empty(), "{:?}", bracket.tags);
 
     // No inner content (nothing after `]` on choice line)
     assert!(choice.inner_content.is_none());
@@ -117,15 +121,15 @@ fn i078_hir() {
     assert!(matches!(&choice.body.stmts[2], hir::Stmt::EndOfLine));
     assert_eq!(body_content.parts.len(), 1);
     assert!(matches!(&body_content.parts[0], hir::ContentPart::Text(t) if t == "Text"));
-    assert!(body_content.tags.is_empty());
+    assert!(body_content.tags.is_empty(), "{:?}", body_content.tags);
 
     // No knots, vars, etc.
-    assert!(hir.knots.is_empty());
-    assert!(hir.variables.is_empty());
-    assert!(hir.constants.is_empty());
-    assert!(hir.lists.is_empty());
-    assert!(hir.externals.is_empty());
-    assert!(hir.includes.is_empty());
+    assert!(hir.knots.is_empty(), "{:?}", hir.knots);
+    assert!(hir.variables.is_empty(), "{:?}", hir.variables);
+    assert!(hir.constants.is_empty(), "{:?}", hir.constants);
+    assert!(hir.lists.is_empty(), "{:?}", hir.lists);
+    assert!(hir.externals.is_empty(), "{:?}", hir.externals);
+    assert!(hir.includes.is_empty(), "{:?}", hir.includes);
 }
 
 // ═══════════════════════════════════════════════════════════════════════

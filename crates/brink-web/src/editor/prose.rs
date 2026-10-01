@@ -217,7 +217,7 @@ mod tests {
         // `a` and `1` are not proper nouns, and admitting them would let a
         // letter in from every identifier that contains one.
         assert_eq!(words("a1 b2 Cx"), vec!["Cx"]);
-        assert!(words("42").is_empty());
+        assert!(words("42").is_empty(), "{:?}", words("42"));
     }
 
     #[test]

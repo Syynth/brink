@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn empty_graph_has_no_components() {
         let g = CallGraph::new();
-        assert!(topo_order(&g).is_empty());
+        assert!(topo_order(&g).is_empty(), "{:?}", topo_order(&g));
     }
 
     #[test]

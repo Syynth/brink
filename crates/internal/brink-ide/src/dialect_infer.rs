@@ -1517,7 +1517,7 @@ mod tests {
         let texts: Vec<&str> = c.lines.iter().map(|l| l.text.as_str()).collect();
         let parsed = parse_source(&resolved, &texts);
         for learned in &r.learned {
-            assert!(!learned.support.is_empty());
+            assert!(!learned.support.is_empty(), "expected non-empty");
             assert_eq!(learned.support.len(), learned.total);
             for &i in &learned.support {
                 let expect = match c.lines[i].mark {

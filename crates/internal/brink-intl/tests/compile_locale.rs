@@ -48,8 +48,8 @@ fn compile_modified_text() {
     let mut lines = export_from_inkb(&inkb);
 
     // Modify the first line of the first scope to have different text
-    assert!(!lines.scopes.is_empty());
-    assert!(!lines.scopes[0].lines.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
+    assert!(!lines.scopes[0].lines.is_empty(), "expected non-empty");
     lines.scopes[0].lines[0].content = Some(ContentJson::Plain("Hola mundo\n".to_string()));
 
     let inkl_bytes = compile_locale(&inkb, &lines, "es").unwrap();
@@ -67,8 +67,8 @@ fn compile_with_audio() {
     let inkb = make_base_inkb();
     let mut lines = export_from_inkb(&inkb);
 
-    assert!(!lines.scopes.is_empty());
-    assert!(!lines.scopes[0].lines.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
+    assert!(!lines.scopes[0].lines.is_empty(), "expected non-empty");
     lines.scopes[0].lines[0].audio = Some("audio/greeting.wav".to_string());
 
     let inkl_bytes = compile_locale(&inkb, &lines, "en").unwrap();
@@ -117,8 +117,8 @@ fn error_line_count_mismatch() {
     let mut lines = export_from_inkb(&inkb);
 
     // Add an extra line to the first scope to create a count mismatch
-    assert!(!lines.scopes.is_empty());
-    assert!(!lines.scopes[0].lines.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
+    assert!(!lines.scopes[0].lines.is_empty(), "expected non-empty");
     lines.scopes[0].lines.push(brink_intl::LineJson {
         index: 99,
         content: Some(ContentJson::Plain("extra".to_string())),
@@ -141,7 +141,7 @@ fn error_invalid_scope_id() {
     let mut lines = export_from_inkb(&inkb);
 
     // Set a garbage scope id (no 0x prefix)
-    assert!(!lines.scopes.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
     lines.scopes[0].id = "not_a_hex_id".to_string();
 
     let err = compile_locale(&inkb, &lines, "en").unwrap_err();
@@ -158,8 +158,8 @@ fn error_slot_index_out_of_range() {
 
     // I001's line has plain content — zero slots in the base. A translated
     // template referencing slot 0 has no corresponding base slot.
-    assert!(!lines.scopes.is_empty());
-    assert!(!lines.scopes[0].lines.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
+    assert!(!lines.scopes[0].lines.is_empty(), "expected non-empty");
     lines.scopes[0].lines[0].content = Some(ContentJson::Template {
         template: vec![
             brink_intl::PartJson::Literal("Hola ".to_string()),
@@ -205,8 +205,8 @@ fn end_to_end_localize_and_run() {
     let mut lines = export_lines(&data, index.checksum);
 
     // Modify text — replace first line content with localized version
-    assert!(!lines.scopes.is_empty());
-    assert!(!lines.scopes[0].lines.is_empty());
+    assert!(!lines.scopes.is_empty(), "expected non-empty");
+    assert!(!lines.scopes[0].lines.is_empty(), "expected non-empty");
     let Some(ContentJson::Plain(original_text)) = &lines.scopes[0].lines[0].content else {
         unreachable!("I001 first line should be plain content")
     };

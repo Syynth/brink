@@ -58,12 +58,20 @@ mod extract_includes_tests {
 
     #[test]
     fn empty_source_returns_empty() {
-        assert!(extract_includes("").is_empty());
+        assert!(
+            extract_includes("").is_empty(),
+            "{:?}",
+            extract_includes("")
+        );
     }
 
     #[test]
     fn no_includes_returns_empty() {
-        assert!(extract_includes("=== knot ===\nhello\n").is_empty());
+        assert!(
+            extract_includes("=== knot ===\nhello\n").is_empty(),
+            "{:?}",
+            extract_includes("=== knot ===\nhello\n")
+        );
     }
 
     #[test]

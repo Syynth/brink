@@ -801,7 +801,11 @@ mod tests {
         let labels: Vec<_> = map.values.iter().map(|v| v.label.as_str()).collect();
         assert_eq!(labels, vec!["Harbor", "Old Temple"]);
         // Non-value-list slots carry no items.
-        assert!(call.slots[1].values.is_empty());
+        assert!(
+            call.slots[1].values.is_empty(),
+            "{:?}",
+            call.slots[1].values
+        );
     }
 
     #[test]
@@ -857,7 +861,11 @@ mod tests {
             .iter()
             .find(|c| c.callee == "go_region")
             .expect("call");
-        assert!(call.slots[0].values.is_empty());
+        assert!(
+            call.slots[0].values.is_empty(),
+            "{:?}",
+            call.slots[0].values
+        );
     }
 
     // ── Issue #1053: the argument-widget surface must be honest about an

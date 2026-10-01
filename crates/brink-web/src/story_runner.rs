@@ -1355,7 +1355,11 @@ mod debug_control_tests {
 
         assert!(runner.debug_breakpoint_remove(id));
         let list = json(&runner.debug_breakpoints().expect("debug_breakpoints"));
-        assert!(list.as_array().expect("array").is_empty());
+        assert!(
+            list.as_array().expect("array").is_empty(),
+            "{:?}",
+            list.as_array().expect("array")
+        );
     }
 
     #[test]

@@ -96,7 +96,7 @@ fn text_run_concat(root: &SyntaxNode) -> String {
 fn empty_source_parses() {
     let p = assert_lossless("");
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(p.errors().is_empty());
+    assert!(p.errors().is_empty(), "{:?}", p.errors());
 }
 
 // ── Charter exhibit (docs/native-surface-charter.md §9) ─────────────

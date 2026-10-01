@@ -2082,7 +2082,11 @@ mod tests {
 
         assert!(!hir.imports[0].bare);
         assert_eq!(hir.imports[0].module, "story::market");
-        assert!(hir.imports[0].items.is_empty());
+        assert!(
+            hir.imports[0].items.is_empty(),
+            "{:?}",
+            hir.imports[0].items
+        );
 
         assert!(hir.imports[1].bare);
         assert_eq!(hir.imports[1].module, "story::market::barter");

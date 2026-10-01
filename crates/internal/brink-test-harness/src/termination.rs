@@ -140,7 +140,7 @@ mod tests {
         );
         assert_eq!(steps[0].outcome, StepOutcome::Done, "prior turn untouched");
         assert_eq!(steps[1].text, "");
-        assert!(steps[1].tags.is_empty());
+        assert!(steps[1].tags.is_empty(), "{:?}", steps[1].tags);
         assert_eq!(steps[1].outcome, StepOutcome::Ended);
     }
 
