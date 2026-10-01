@@ -142,7 +142,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     verify_clean(&db, "initial load")?;
 
-    let mut checkpoints: Vec<(usize, Vec<IngredientMemory>)> = vec![(0, checkpoint(&db, 0, 0))];
+    let mut checkpoints: Vec<(usize, Vec<IngredientMemory>)> = vec![(0, checkpoint(&mut db, 0, 0))];
 
     let mut rng = Lcg::new(EDIT_DRIVER_SEED);
     let mut tally = EditTally::default();
@@ -172,7 +172,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if edit_index % CHECKPOINT_EVERY == 0 || edit_index == edits {
             let idx = checkpoints.len();
-            checkpoints.push((edit_index, checkpoint(&db, idx, edit_index)));
+            checkpoints.push((edit_index, checkpoint(&mut db, idx, edit_index)));
         }
     }
 
@@ -586,7 +586,7 @@ fn generate_scratch_file(slot: usize, variant: u64) -> String {
 
 // ── Output ───────────────────────────────────────────────────────────
 
-fn checkpoint(db: &ProjectDb, checkpoint_idx: usize, edits: usize) -> Vec<IngredientMemory> {
+fn checkpoint(db: &mut ProjectDb, checkpoint_idx: usize, edits: usize) -> Vec<IngredientMemory> {
     let rows = db.memory_snapshot();
     for m in &rows {
         row(checkpoint_idx, edits, m);

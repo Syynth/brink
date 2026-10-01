@@ -76,7 +76,7 @@ pub struct ResolvedProject {
     pub resolutions: ResolutionMap,
 }
 
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn resolutions_index_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -148,7 +148,7 @@ pub(crate) fn resolutions_index_query(
 /// without going through [`contributor_diagnostics_query`]'s own gate, so a
 /// non-source document must be excluded here too or its bogus ink-lowered
 /// HIR still reaches `brink_analyzer::per_file_diagnostics`.
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn per_file_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -284,7 +284,7 @@ pub(crate) fn external_meta_query(db: &dyn salsa::Database, project: ProjectInpu
 /// `Eq`, and every other file's call-site memo stays fully validated
 /// without re-executing. `Arc`-wrapped for the same pointer-identity
 /// reason as [`per_file_diagnostics_query`].
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn call_site_metas_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -303,7 +303,7 @@ pub(crate) fn call_site_metas_query(
 /// Y leaves file X's memo fully validated (same `Arc`), not re-executed.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn value_meta_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -330,7 +330,7 @@ pub(crate) fn value_meta_query(
 /// path applies before walking any file).
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn call_site_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -369,7 +369,7 @@ pub(crate) fn call_site_diagnostics_query(
 /// cell than the one this file's own resolution binds.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn effects_assertion_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -415,7 +415,7 @@ pub(crate) fn effects_assertion_diagnostics_query(
 /// the monolithic path's whole-project `effects_project` table.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn await_purity_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -548,7 +548,7 @@ fn expected_conventions_module(db: &dyn salsa::Database, project: ProjectInput) 
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647), matching
 /// every other per-file diagnostic query in this module.
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn conventions_confinement_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -970,7 +970,7 @@ pub(crate) fn conventions_projection_query(
 /// effect-inference-free.
 ///
 /// `lru = 4096`: per-file runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 4096)]
+#[salsa::tracked(returns(clone), lru = 4096)]
 pub(crate) fn comparator_contract_diagnostics_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -1460,7 +1460,7 @@ pub(crate) fn diagnostics_query(
 /// `fg4a_dependency_edges.rs`.
 ///
 /// [`partition_diagnostics`]: super::partition_diagnostics
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     let files = project.files(db);
     let Some(entry) = project.entry(db) else {
@@ -1519,7 +1519,7 @@ pub(crate) fn has_errors_query(db: &dyn salsa::Database, project: ProjectInput) 
 /// closes that gap: an unrelated file's error still surfaces through
 /// `diagnostics_query`/`db.diagnostics(file)` (both still whole-project,
 /// unchanged), it just no longer blocks a different entry's build.
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn has_errors_in_closure_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     let Some(entry) = project.entry(db) else {
         return false;
