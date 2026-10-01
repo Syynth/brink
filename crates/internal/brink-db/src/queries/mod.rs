@@ -384,6 +384,7 @@ impl Default for BrinkDatabase {
 /// disk loads both go through `set_text`.
 #[salsa::input]
 pub(crate) struct SourceFile {
+    #[returns(clone)]
     pub file_id: FileId,
     #[returns(ref)]
     pub path: String,
@@ -398,6 +399,7 @@ pub(crate) struct SourceFile {
 pub(crate) struct ProjectInput {
     #[returns(ref)]
     pub files: Vec<SourceFile>,
+    #[returns(clone)]
     pub entry: Option<FileId>,
     #[returns(ref)]
     pub analysis_options: AnalysisOptions,
@@ -465,7 +467,7 @@ pub(crate) fn resolved_dialect_query(
 }
 
 /// Memo payload wrapper for `no_eq` queries whose output type lives
-/// upstream without a `salsa::Update` impl (#3064 B2). Semantics: the
+/// upstream with no `PartialEq` to backdate on (#3064 B2). Semantics: the
 /// memo never backdates — correct wherever every re-execution implies a
 /// genuinely changed output (per-segment projections re-execute only
 /// when their segment's content changed; the assembly re-executes every
@@ -481,29 +483,10 @@ impl<T> std::fmt::Debug for NoEqArc<T> {
     }
 }
 
-#[expect(
-    unsafe_code,
-    reason = "salsa::Update is an unsafe trait by design; this is the \
-              always-replace impl a derive would emit for a local type. \
-              The body is a plain pointer write per the trait's documented \
-              contract."
-)]
-// SAFETY: always replaces the old value and reports it changed — the
-// most conservative legal `Update` behavior (never falsely "unchanged").
-unsafe impl<T: 'static> salsa::Update for NoEqArc<T> {
-    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
-        // SAFETY: caller guarantees `old_pointer` is valid per the trait
-        // contract; plain replacement drops the old value normally.
-        unsafe { *old_pointer = new_value };
-        true
-    }
-}
-
 /// Memo payload for [`resolved_dialect_query`]: `ResolvedDialect` holds
-/// compiled regexes (no `Eq`, no derivable `salsa::Update`), so this
-/// newtype carries the manual always-replace `Update` impl the `no_eq`
-/// memo needs — the query re-executes only on a config change, when
-/// "changed" is the correct verdict by construction.
+/// compiled regexes (no `Eq`), so the memo is `no_eq` — the query
+/// re-executes only on a config change, when "changed" is the correct
+/// verdict by construction.
 #[derive(Clone)]
 pub(crate) struct ResolvedDialectHandle(pub Option<Arc<brink_ir::ResolvedDialect>>);
 
@@ -512,25 +495,6 @@ impl std::fmt::Debug for ResolvedDialectHandle {
         f.debug_tuple("ResolvedDialectHandle")
             .field(&self.0.is_some())
             .finish()
-    }
-}
-
-#[expect(
-    unsafe_code,
-    reason = "salsa::Update is an unsafe trait by design; this is the \
-              always-replace impl `#[derive(salsa::Update)]` would emit if \
-              `ResolvedDialect` were local (it lives in brink-ir, which \
-              deliberately has no salsa dependency). The body is a plain \
-              pointer write per the trait's documented contract."
-)]
-// SAFETY: always replaces the old value and reports it changed — the
-// most conservative legal `Update` behavior (never falsely "unchanged").
-unsafe impl salsa::Update for ResolvedDialectHandle {
-    unsafe fn maybe_update(old_pointer: *mut Self, new_value: Self) -> bool {
-        // SAFETY: caller guarantees `old_pointer` is valid per the trait
-        // contract; plain replacement drops the old value normally.
-        unsafe { *old_pointer = new_value };
-        true
     }
 }
 
@@ -1325,6 +1289,7 @@ pub(crate) fn resolve_query(
 /// (issue #530), rather than relying on uniqueness of the id alone.
 #[salsa::interned]
 pub(crate) struct DefKey<'db> {
+    #[returns(clone)]
     pub def: DefinitionId,
 }
 
@@ -1363,7 +1328,7 @@ pub(crate) struct DefKey<'db> {
 /// far above realistic project scale and never evicts in steady state).
 /// `heap_size = heap_size::signature_heap_size`: one of the five #538
 /// estimators — #537 named `signature` the widest-fanout per-def memo.
-#[salsa::tracked(lru = 16384, heap_size = heap_size::signature_heap_size)]
+#[salsa::tracked(returns(clone), lru = 16384, heap_size = heap_size::signature_heap_size)]
 pub(crate) fn signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1410,7 +1375,7 @@ pub(crate) fn signature_query<'db>(
 /// (issue #538/#530): the output is the identical `Option<Arc<Sig>>` shape
 /// `signature_query` already estimates, so the same walk is reused rather
 /// than duplicated — see `heap_size.rs`'s module doc.
-#[salsa::tracked(lru = 4096, heap_size = heap_size::signature_heap_size)]
+#[salsa::tracked(returns(clone), lru = 4096, heap_size = heap_size::signature_heap_size)]
 pub(crate) fn local_signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1521,7 +1486,7 @@ pub(crate) struct DefBody {
 /// heap_size::def_body_heap_size`: one of the five #538 estimators — #537
 /// named `def_body` (holds a full HIR `Block` clone per def) one of the
 /// two dominant Arc-hidden-payload families.
-#[salsa::tracked(lru = 16384, heap_size = heap_size::def_body_heap_size)]
+#[salsa::tracked(returns(clone), lru = 16384, heap_size = heap_size::def_body_heap_size)]
 pub(crate) fn def_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1562,7 +1527,7 @@ pub(crate) fn def_body_query<'db>(
 /// this query exists to keep narrow, for zero behavioral benefit.
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn referenced_globals_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1611,7 +1576,7 @@ pub(crate) fn referenced_globals_query<'db>(
 /// would only widen this per-def query's dependency edge for no benefit.
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn call_edges_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1758,7 +1723,7 @@ pub(crate) struct SolvedScc {
 /// `heap_size = heap_size::solve_scc_heap_size`: one of the five #538
 /// estimators — #537 named `solve_scc` (holds signatures+bodies per SCC)
 /// the other dominant Arc-hidden-payload family alongside `def_body`.
-#[salsa::tracked(lru = 16384, heap_size = heap_size::solve_scc_heap_size)]
+#[salsa::tracked(returns(clone), lru = 16384, heap_size = heap_size::solve_scc_heap_size)]
 pub(crate) fn solve_scc_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1859,7 +1824,7 @@ pub(crate) fn solve_scc_query<'db>(
 /// `None` contract as [`signature_query`]/[`infer_body_query`].
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn inferred_signature_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1883,7 +1848,7 @@ pub(crate) fn inferred_signature_query<'db>(
 /// manifest can never change the *structural* atom sets it keeps.
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn def_effect_atoms_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1925,7 +1890,7 @@ pub(crate) fn def_effect_atoms_query<'db>(
 /// any component's minimum member (defensive — never panics on a stale key).
 ///
 /// `lru = 16384`: per-def (per-SCC) runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn effects_scc_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -1981,7 +1946,7 @@ pub(crate) fn effects_scc_query<'db>(
 /// and `diagnostics` still do not read it.
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647).
-#[salsa::tracked(lru = 16384)]
+#[salsa::tracked(returns(clone), lru = 16384)]
 pub(crate) fn effects_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -2094,7 +2059,7 @@ pub(crate) fn type_inference_query(
 ///
 /// `lru = 16384`: per-def runaway-guard ceiling (issue #647). `heap_size =
 /// heap_size::infer_body_heap_size`: one of the five #538 estimators.
-#[salsa::tracked(lru = 16384, heap_size = heap_size::infer_body_heap_size)]
+#[salsa::tracked(returns(clone), lru = 16384, heap_size = heap_size::infer_body_heap_size)]
 pub(crate) fn infer_body_query<'db>(
     db: &'db dyn salsa::Database,
     project: ProjectInput,
@@ -2374,7 +2339,7 @@ impl PartialEq for PreludeDeclsResult {
 /// without the same NameId-free-projection-plus-relocation redesign
 /// `StructShapeData` did for structs alone — out of this slice's scope, see
 /// the PR description).
-#[salsa::tracked(no_eq)]
+#[salsa::tracked(returns(clone), no_eq)]
 pub(crate) fn lir_prelude_decls_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -2451,7 +2416,9 @@ pub(crate) fn lir_prelude_decls_query(
 /// keying would carry.
 #[salsa::interned]
 pub(crate) struct KnotChunkKey<'db> {
+    #[returns(clone)]
     pub file: FileId,
+    #[returns(clone)]
     pub knot_index: u32,
 }
 
@@ -2507,7 +2474,7 @@ impl PartialEq for ChunkLoweringCtxResult {
 /// [`type_policy_query`], and the files' `path` fields), so no chunk memo
 /// gains or loses an invalidation edge: anything that re-executes this
 /// re-executed every chunk before.
-#[salsa::tracked(no_eq)]
+#[salsa::tracked(returns(clone), no_eq)]
 pub(crate) fn chunk_lowering_ctx_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -2552,7 +2519,7 @@ pub(crate) fn chunk_lowering_ctx_query(
 /// shapes are unchanged keeps its chunk `Arc` across the edit. `no_eq`:
 /// `ScopeChunk` has no `PartialEq` (holds `lir::Container`), so this never
 /// backdates — the link re-runs and re-anchors on `StoryData`'s `Eq`.
-#[salsa::tracked(no_eq)]
+#[salsa::tracked(returns(clone), no_eq)]
 pub(crate) fn lir_knot_chunk_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -2621,7 +2588,7 @@ pub(crate) fn lir_knot_chunk_query(
 /// (`AnalysisOptions::type_policy()` — explicit `types` or the dialect-keyed
 /// default), so the cutoff argument is unchanged: same narrow `TypePolicy`
 /// value, resolved one query-hop later.
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> TypePolicy {
     project.analysis_options(db).type_policy()
 }
@@ -2634,7 +2601,7 @@ pub(crate) fn type_policy_query(db: &dyn salsa::Database, project: ProjectInput)
 /// edit (registering a host manifest, say) would force the `no_eq` lowering
 /// memo to fully re-execute. `LintPolicy`'s derived `Eq` gives the same
 /// cheap-cutoff property `TypePolicy` already has here.
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn lint_policy_query(
     db: &dyn salsa::Database,
     project: ProjectInput,
@@ -2655,7 +2622,7 @@ pub(crate) fn lint_policy_query(
 /// property `TypePolicy`/`LintPolicy` already have here: an options edit
 /// that leaves `.emit_debug_info` unchanged backdates this projection and
 /// leaves `story_data_query`'s `Arc<StoryData>` pointer-identical.
-#[salsa::tracked]
+#[salsa::tracked(returns(clone))]
 pub(crate) fn debug_info_policy_query(db: &dyn salsa::Database, project: ProjectInput) -> bool {
     project.analysis_options(db).emit_debug_info
 }
@@ -2674,7 +2641,7 @@ pub(crate) fn debug_info_policy_query(db: &dyn salsa::Database, project: Project
 /// lowering when only a file outside `entry`'s closure is broken. The
 /// per-file lowering below was already scoped to `topological_order(entry)`
 /// (issue #815) regardless of which gate is used here.
-#[salsa::tracked(no_eq)]
+#[salsa::tracked(returns(clone), no_eq)]
 pub(crate) fn lir_lowering_query(db: &dyn salsa::Database, project: ProjectInput) -> LirLowering {
     if project.entry(db).is_none() {
         return LirLowering::default();
