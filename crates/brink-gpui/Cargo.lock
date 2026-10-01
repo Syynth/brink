@@ -838,7 +838,7 @@ checksum = "36f64beae40a84da1b4b26ff2761a5b895c12adc41dc25aaee1c4f2bbfe97a6e"
 
 [[package]]
 name = "brink-analyzer"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -851,7 +851,7 @@ dependencies = [
 
 [[package]]
 name = "brink-codegen-inkb"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-format",
  "brink-ir",
@@ -859,7 +859,7 @@ dependencies = [
 
 [[package]]
 name = "brink-compiler"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-codegen-inkb",
  "brink-driver",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "brink-db"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-analyzer",
  "brink-codegen-inkb",
@@ -889,7 +889,7 @@ dependencies = [
 
 [[package]]
 name = "brink-driver"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-analyzer",
  "brink-db",
@@ -902,7 +902,7 @@ dependencies = [
 
 [[package]]
 name = "brink-environment"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-compiler",
  "brink-driver",
@@ -917,7 +917,7 @@ dependencies = [
 
 [[package]]
 name = "brink-fmt"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-ir",
  "brink-project-config",
@@ -927,7 +927,7 @@ dependencies = [
 
 [[package]]
 name = "brink-format"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "bitflags 2.13.1",
  "glam",
@@ -1003,7 +1003,7 @@ dependencies = [
 
 [[package]]
 name = "brink-ide"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-analyzer",
  "brink-db",
@@ -1022,7 +1022,7 @@ dependencies = [
 
 [[package]]
 name = "brink-intl"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-format",
  "icu_locale_core",
@@ -1035,7 +1035,7 @@ dependencies = [
 
 [[package]]
 name = "brink-ir"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "bitflags 2.13.1",
  "brink-format",
@@ -1051,7 +1051,7 @@ dependencies = [
 
 [[package]]
 name = "brink-project-config"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-source-tree",
  "serde",
@@ -1062,7 +1062,7 @@ dependencies = [
 
 [[package]]
 name = "brink-prose"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "getrandom 0.3.4",
  "harper-core",
@@ -1073,7 +1073,7 @@ dependencies = [
 
 [[package]]
 name = "brink-runtime"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "brink-format",
  "glam",
@@ -1083,18 +1083,18 @@ dependencies = [
 
 [[package]]
 name = "brink-source-tree"
-version = "0.0.16"
+version = "0.0.17"
 
 [[package]]
 name = "brink-syntax"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "rowan",
 ]
 
 [[package]]
 name = "brink-syntax-native"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "rowan",
 ]
@@ -8178,9 +8178,9 @@ dependencies = [
 
 [[package]]
 name = "salsa"
-version = "0.27.2"
+version = "0.28.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ffbaab832e2ea754afda4a738f987dd1e8bd30c9e5d8c981ee6a3934386095e2"
+checksum = "27d2e6e19e39591cd99c01ac4141544b4d012cfd0831348629b8187fa9fe6d34"
 dependencies = [
  "boxcar",
  "crossbeam-queue",
@@ -8202,20 +8202,19 @@ dependencies = [
 
 [[package]]
 name = "salsa-macro-rules"
-version = "0.27.2"
+version = "0.28.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "de6872462ac73d39969a836273c24163e6a26a4e08f5114fcd80e25af30ea9c6"
+checksum = "baf90a551c38f25ed8489111d3d5827aa18e1b85963f5e6a298505b1d1e2cb7e"
 
 [[package]]
 name = "salsa-macros"
-version = "0.27.2"
+version = "0.28.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76bc78ffaf65b1a9175818592c5130aa10b1bb245a905722fd4db87cea8a8457"
+checksum = "69dd77f86ec10e72e314f4ddf7c44c8d349e73cdff1aad524ba9668603fb0549"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
- "synstructure",
+ "syn 3.0.4",
 ]
 
 [[package]]
@@ -11512,7 +11511,7 @@ checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "xliff2"
-version = "0.0.16"
+version = "0.0.17"
 dependencies = [
  "quick-xml",
  "thiserror 2.0.20",

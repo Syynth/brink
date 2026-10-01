@@ -68,7 +68,7 @@ pub struct IngredientMemory {
 /// `memory_usage` only reports what actually has memo/instance data), so the
 /// row set itself can grow across a session as more of the query graph gets
 /// exercised for the first time.
-pub(crate) fn snapshot(db: &BrinkDatabase) -> Vec<IngredientMemory> {
+pub(crate) fn snapshot(db: &mut BrinkDatabase) -> Vec<IngredientMemory> {
     let info = <dyn salsa::Database>::memory_usage(db);
 
     let mut rows: Vec<IngredientMemory> = info

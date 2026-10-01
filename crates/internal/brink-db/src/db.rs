@@ -1106,9 +1106,11 @@ impl ProjectDb {
     /// ingredient (input/tracked struct or memoized query function), sorted
     /// for deterministic output. Behind the `memory-introspection` feature
     /// (issue #529); see `brink-test-harness`'s `editor_session_bench`.
+    /// `&mut self` because salsa (0.28.5+) requires exclusive database
+    /// access to read memory usage.
     #[cfg(feature = "memory-introspection")]
-    pub fn memory_snapshot(&self) -> Vec<crate::memory::IngredientMemory> {
-        crate::memory::snapshot(&self.salsa)
+    pub fn memory_snapshot(&mut self) -> Vec<crate::memory::IngredientMemory> {
+        crate::memory::snapshot(&mut self.salsa)
     }
 
     // ── Internal helpers ──────────────────────────────────────────────
