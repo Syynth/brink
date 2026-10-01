@@ -465,7 +465,7 @@ mod tests {
         // instead of quietly doing more than the author asked.
         let sup = parse_suppressions("// brink-disable-file\nHello\n");
         assert!(!sup.disable_file);
-        assert!(sup.file_codes.is_empty());
+        assert!(sup.file_codes.is_empty(), "{:?}", sup.file_codes);
         assert_eq!(sup.malformed.len(), 1, "{:?}", sup.malformed);
         assert_eq!(sup.malformed[0].text, "brink-disable-file");
     }
@@ -488,7 +488,7 @@ mod tests {
     #[test]
     fn a_file_directive_naming_only_unknown_codes_is_malformed() {
         let sup = parse_suppressions("// brink-disable-file XXXX\nHello\n");
-        assert!(sup.file_codes.is_empty());
+        assert!(sup.file_codes.is_empty(), "{:?}", sup.file_codes);
         assert_eq!(sup.malformed.len(), 1, "{:?}", sup.malformed);
     }
 
@@ -613,7 +613,7 @@ mod tests {
             code: DiagnosticCode::E025,
         }];
         let result = apply_suppressions(file_id, source, diags, &sup);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
@@ -628,7 +628,7 @@ mod tests {
             code: DiagnosticCode::E025,
         }];
         let result = apply_suppressions(file_id, source, diags, &sup);
-        assert!(result.is_empty());
+        assert!(result.is_empty(), "{result:?}");
     }
 
     #[test]
@@ -667,7 +667,7 @@ mod tests {
             code: DiagnosticCode::E025,
         }];
         let result = apply_suppressions(file_id, source, diags, &sup);
-        assert!(result.is_empty()); // suppressed and expectation met
+        assert!(result.is_empty(), "{result:?}"); // suppressed and expectation met
     }
 
     #[test]

@@ -982,16 +982,28 @@ mod tests {
 
         let empty_parse = brink_syntax_native::parse(empty_src);
         let scoped_parse = brink_syntax_native::parse(scoped_src);
-        assert!(empty_parse.errors().is_empty());
-        assert!(scoped_parse.errors().is_empty());
+        assert!(
+            empty_parse.errors().is_empty(),
+            "{:?}",
+            empty_parse.errors()
+        );
+        assert!(
+            scoped_parse.errors().is_empty(),
+            "{:?}",
+            scoped_parse.errors()
+        );
 
         let (empty_hir, _, empty_diags) =
             brink_ir::hir::lower_native::lower(brink_ir::FileId(0), &empty_parse.tree());
         let (scoped_hir, _, scoped_diags) =
             brink_ir::hir::lower_native::lower(brink_ir::FileId(0), &scoped_parse.tree());
-        assert!(empty_diags.is_empty());
-        assert!(scoped_diags.is_empty());
-        assert!(empty_hir.allow_scopes.is_empty());
+        assert!(empty_diags.is_empty(), "{empty_diags:?}");
+        assert!(scoped_diags.is_empty(), "{scoped_diags:?}");
+        assert!(
+            empty_hir.allow_scopes.is_empty(),
+            "{:?}",
+            empty_hir.allow_scopes
+        );
         assert_eq!(scoped_hir.allow_scopes.len(), 1);
 
         let empty_size = hir_file_heap(&empty_hir);

@@ -574,7 +574,11 @@ mod tests {
             Some("0.0.1".to_owned())
         );
         assert_eq!(read_state(root.path()).version.as_deref(), Some("0.0.1"));
-        assert!(read_state(root.path()).history.is_empty());
+        assert!(
+            read_state(root.path()).history.is_empty(),
+            "{:?}",
+            read_state(root.path()).history
+        );
     }
 
     /// A history entry whose directory has gone is dropped rather than

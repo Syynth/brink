@@ -866,7 +866,7 @@ Welcome.
         .filter(|d| d.code == DiagnosticCode::E024)
         .collect();
     assert!(unresolved.is_empty(), "unresolved: {unresolved:?}");
-    assert!(!result.resolutions.is_empty());
+    assert!(!result.resolutions.is_empty(), "expected non-empty");
 }
 
 #[test]

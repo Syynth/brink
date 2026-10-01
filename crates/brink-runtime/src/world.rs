@@ -1470,7 +1470,11 @@ mod policy_tests {
         let resolved = ResolvedPolicy::resolve(&program, &policy).expect("resolves");
 
         // Fast path: no per-slot table populated.
-        assert!(resolved.global_scopes.is_empty());
+        assert!(
+            resolved.global_scopes.is_empty(),
+            "{:?}",
+            resolved.global_scopes
+        );
         assert!(resolved.knot_scopes.is_empty());
 
         let gold_slot = program.global_index("gold").expect("gold declared");
@@ -2313,7 +2317,11 @@ mod subtree_scope_tests {
 
         // Fast path: no per-slot/per-knot table populated, matching
         // `all_world()` exactly.
-        assert!(resolved.global_scopes.is_empty());
+        assert!(
+            resolved.global_scopes.is_empty(),
+            "{:?}",
+            resolved.global_scopes
+        );
         assert!(resolved.knot_scopes.is_empty());
 
         let guard_talk_id = program
@@ -2511,7 +2519,11 @@ mod compiled_defaults_tests {
         let resolved =
             ResolvedPolicy::resolve(&program, &WorldPolicy::default()).expect("resolves");
         // The all-World fast path allocates nothing.
-        assert!(resolved.global_scopes.is_empty());
+        assert!(
+            resolved.global_scopes.is_empty(),
+            "{:?}",
+            resolved.global_scopes
+        );
         assert!(resolved.knot_scopes.is_empty());
     }
 

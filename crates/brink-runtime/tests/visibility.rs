@@ -142,7 +142,7 @@ fn spawn_flow_by_id_refused_for_private_def() {
         Err(RuntimeError::PrivateAccess { .. })
     ));
     // The refused spawn must not have registered a flow under the name.
-    assert!(s.flow_names().is_empty());
+    assert!(s.flow_names().is_empty(), "{:?}", s.flow_names());
 }
 
 #[test]
@@ -183,7 +183,7 @@ fn spawn_flow_shared_by_id_refused_for_private_def() {
         s.spawn_flow_shared("f", Some(hidden_idx)),
         Err(RuntimeError::PrivateAccess { .. })
     ));
-    assert!(s.flow_names().is_empty());
+    assert!(s.flow_names().is_empty(), "{:?}", s.flow_names());
 }
 
 #[test]

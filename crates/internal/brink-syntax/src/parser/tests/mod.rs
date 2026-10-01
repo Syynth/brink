@@ -38,7 +38,7 @@ fn check(src: &str) {
 fn empty_source() {
     check_lossless("");
     let p = parse("");
-    assert!(p.errors().is_empty());
+    assert!(p.errors().is_empty(), "{:?}", p.errors());
 }
 
 #[test]
@@ -51,7 +51,7 @@ fn hello_world_content() {
     let src = "Hello, world!\n";
     check_lossless(src);
     let p = parse(src);
-    assert!(p.errors().is_empty());
+    assert!(p.errors().is_empty(), "{:?}", p.errors());
 }
 
 #[test]

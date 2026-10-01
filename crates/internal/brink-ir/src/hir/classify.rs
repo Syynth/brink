@@ -521,7 +521,7 @@ mod tests {
         let result = classify_line(&p, TextSize::from(0), "EXT. THE DOCK");
         assert!(result.is_empty());
         assert_eq!(result.matched, None);
-        assert!(result.shadowed.is_empty());
+        assert!(result.shadowed.is_empty(), "{:?}", result.shadowed);
     }
 
     #[test]
@@ -531,7 +531,7 @@ mod tests {
         let matched = result.matched.expect("expected a match");
         assert_eq!(matched.handler.text, "interior");
         assert_eq!(matched.order, 10);
-        assert!(result.shadowed.is_empty());
+        assert!(result.shadowed.is_empty(), "{:?}", result.shadowed);
     }
 
     /// The ruled semantics (2026-08-02): the walk keeps going and records

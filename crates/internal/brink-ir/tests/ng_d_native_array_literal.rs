@@ -66,7 +66,7 @@ fn empty_array_literal_lowers_to_an_empty_array_literal() {
     let Expr::ArrayLiteral(a) = clean_var_initializer("var a = []\n") else {
         panic!("[] must lower to Expr::ArrayLiteral");
     };
-    assert!(a.elements.is_empty());
+    assert!(a.elements.is_empty(), "{:?}", a.elements);
 }
 
 #[test]

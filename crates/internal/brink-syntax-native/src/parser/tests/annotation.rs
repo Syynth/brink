@@ -606,7 +606,7 @@ fn annotation_line_excess_closers_recovers_without_panic() {
     // name). Must still round-trip losslessly with no panic.
     let src = "@[name)))))]\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(p.errors().iter().any(|e| e.message.contains("R_BRACKET")));
 }
 
@@ -797,7 +797,7 @@ fn annotation_args_many_unmatched_openers_stays_linear_without_panic() {
     // in time linear in input length.
     let src = format!("@[name{}]\n", "(".repeat(2000));
     let p = assert_lossless(&src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]

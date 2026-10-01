@@ -936,7 +936,7 @@ fn invisible_container_flag_roundtrips_through_inkt() {
     use brink_format::CountingFlags;
 
     let mut data = i001_data();
-    assert!(!data.containers.is_empty());
+    assert!(!data.containers.is_empty(), "expected non-empty");
     data.containers[0].counting_flags |= CountingFlags::INVISIBLE;
 
     let mut buf = String::new();

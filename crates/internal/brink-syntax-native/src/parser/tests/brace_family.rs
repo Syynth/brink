@@ -738,7 +738,7 @@ fn truncated_if_with_no_expression_recovers() {
 fn truncated_match_with_no_subject_recovers() {
     let src = "flow f() {\n  {match}\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK));
 }
 
@@ -746,21 +746,21 @@ fn truncated_match_with_no_subject_recovers() {
 fn unclosed_conditional_at_eof_recovers() {
     let src = "flow f() {\n  {if hp > 0 { You live.\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
 fn unclosed_alternation_at_eof_recovers() {
     let src = "flow f() {\n  {~ red|blue\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
 fn unclosed_match_arm_list_recovers() {
     let src = "flow f() {\n  {match mood { calm => \n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -770,14 +770,14 @@ fn if_missing_body_opener_recovers() {
     // shape), not an infinite loop.
     let src = "flow f() {\n  {if hp > 0 no opener here}\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
 fn match_arm_missing_fat_arrow_recovers() {
     let src = "flow f() {\n  {match mood { calm Peaceful }}\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -931,7 +931,7 @@ fn bare_brace_immediately_followed_by_close_is_multiline_shape_not_alternation()
     // not silently swallowed as a zero-branch alternation.
     let src = "flow f() {\n  {\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::ALTERNATION_BLOCK));
     assert!(!has_node_kind(&p.syntax(), SyntaxKind::CONDITIONAL_BLOCK));
 }

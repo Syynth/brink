@@ -657,7 +657,11 @@ mod tests {
     /// behind the E052 fence, only — case).
     #[test]
     fn no_await_no_shapes() {
-        assert!(shapes("Hello.\n=== knot ===\nHi {name}\n-> END\n").is_empty());
+        assert!(
+            shapes("Hello.\n=== knot ===\nHi {name}\n-> END\n").is_empty(),
+            "{:?}",
+            shapes("Hello.\n=== knot ===\nHi {name}\n-> END\n")
+        );
     }
 
     /// A local read *after* the park (here in trailing narrative) crosses it.

@@ -2517,7 +2517,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     /// Issue #1674: `E157`'s default severity is `Info`, not `Warning` — the
@@ -2536,7 +2536,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(options.lints.overrides.get("E157"), Some(&LintLevel::Warn));
     }
 
@@ -2702,7 +2702,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(
             options.conventions.as_deref(),
             Some("scenes/conventions.brink")
@@ -2716,7 +2716,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_project_config(&config, false, false);
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(options.conventions, None);
     }
 
@@ -2768,7 +2768,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_lint_overrides(&overrides, None);
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(options.lints.overrides.get("E014"), Some(&LintLevel::Deny));
     }
 
@@ -2778,7 +2778,7 @@ EXTERNAL add_state(who)
 
         let warnings = options.apply_lint_overrides(&BTreeMap::new(), Some(true));
 
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert!(options.lints.deny_warnings);
     }
 

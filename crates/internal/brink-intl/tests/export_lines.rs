@@ -43,7 +43,7 @@ fn empty_scopes_are_omitted() {
         source_checksum: 0,
     };
     let lines_json = brink_intl::export_lines(&data, 0);
-    assert!(lines_json.scopes.is_empty());
+    assert!(lines_json.scopes.is_empty(), "{:?}", lines_json.scopes);
 }
 
 #[test]

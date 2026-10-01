@@ -650,10 +650,16 @@ mod tests {
         let hir = build_native(CLAIMING_SRC);
         let files = [(FileId(0), &hir)];
         let modules = ModuleMap::new();
-        assert!(conventions_confinement_diagnostics(&files, &modules, None).is_empty());
+        assert!(
+            conventions_confinement_diagnostics(&files, &modules, None).is_empty(),
+            "{:?}",
+            conventions_confinement_diagnostics(&files, &modules, None)
+        );
         assert!(
             conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
-                .is_empty()
+                .is_empty(),
+            "{:?}",
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
         );
     }
 
@@ -735,10 +741,16 @@ mod tests {
         let hir = build_native("flow main() {\n  hi\n}\n");
         let files = [(FileId(0), &hir)];
         let modules = ModuleMap::new();
-        assert!(conventions_confinement_diagnostics(&files, &modules, None).is_empty());
+        assert!(
+            conventions_confinement_diagnostics(&files, &modules, None).is_empty(),
+            "{:?}",
+            conventions_confinement_diagnostics(&files, &modules, None)
+        );
         assert!(
             conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
-                .is_empty()
+                .is_empty(),
+            "{:?}",
+            conventions_confinement_diagnostics(&files, &modules, Some("conventions.brink"))
         );
     }
 }

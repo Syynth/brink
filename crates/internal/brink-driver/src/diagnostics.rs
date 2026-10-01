@@ -77,8 +77,8 @@ mod tests {
         let db = ProjectDb::new();
         let analysis = empty_analysis();
         let report = collect_diagnostics(&db, &analysis, None);
-        assert!(report.errors.is_empty());
-        assert!(report.warnings.is_empty());
+        assert!(report.errors.is_empty(), "{:?}", report.errors);
+        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
     }
 
     #[test]
@@ -90,7 +90,7 @@ mod tests {
         let entry = db.file_id("test.ink");
         let report = collect_diagnostics(&db, &analysis, entry);
         // The missing knot name should produce an error
-        assert!(!report.errors.is_empty());
+        assert!(!report.errors.is_empty(), "expected non-empty");
     }
 
     fn run_analysis(db: &ProjectDb) -> AnalysisResult {

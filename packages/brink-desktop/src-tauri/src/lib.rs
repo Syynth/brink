@@ -2458,14 +2458,6 @@ fn build_menu(
               `crates/bevy-brink/src/flow.rs` already declined for the same \
               reason."
 )]
-#[expect(
-    clippy::exit,
-    reason = "the flagged `process::exit(101)` is inside `tauri::generate_context!`'s \
-              own expansion — tauri-codegen's `inner()` fallback for a panicking \
-              context-creation thread — not code this crate writes. Unlike \
-              `expect_used`, `clippy::exit` does not suppress itself inside an \
-              external macro's expansion, so the site has to be silenced here."
-)]
 pub fn run() -> tauri::Result<()> {
     use tauri::Emitter;
 
@@ -4971,7 +4963,7 @@ on:
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .unwrap_or_default();
-        assert!(second.is_empty());
+        assert!(second.is_empty(), "{second:?}");
     }
 
     /// A fresh, uniquely-named scratch file path under the OS temp dir —

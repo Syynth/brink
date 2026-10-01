@@ -2763,7 +2763,11 @@ mod tests {
     /// keeps `lower_coalesce_chain` from being entered for anything else.
     #[test]
     fn coalesce_chain_spine_is_empty_for_a_non_coalescing_expr() {
-        assert!(coalesce_chain_spine(&hir::Expr::Int(1)).is_empty());
+        assert!(
+            coalesce_chain_spine(&hir::Expr::Int(1)).is_empty(),
+            "{:?}",
+            coalesce_chain_spine(&hir::Expr::Int(1))
+        );
         assert!(
             coalesce_chain_spine(&hir::Expr::Infix(hir::InfixExpr::new(
                 synthetic_infix_prov(),
@@ -2771,7 +2775,14 @@ mod tests {
                 crate::InfixOp::Or,
                 hir::Expr::Int(2),
             )))
-            .is_empty()
+            .is_empty(),
+            "{:?}",
+            coalesce_chain_spine(&hir::Expr::Infix(hir::InfixExpr::new(
+                synthetic_infix_prov(),
+                hir::Expr::Int(1),
+                crate::InfixOp::Or,
+                hir::Expr::Int(2),
+            )))
         );
     }
 }

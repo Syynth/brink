@@ -184,7 +184,7 @@ mod tests {
         ));
         assert!(matches!(h.call("async", &[]), ExternalResult::Pending));
         assert_eq!(h.report().live, vec!["get".to_owned(), "async".to_owned()]);
-        assert!(h.report().fallback.is_empty());
+        assert!(h.report().fallback.is_empty(), "{:?}", h.report().fallback);
     }
 
     #[test]
@@ -198,7 +198,7 @@ mod tests {
         );
         assert!(matches!(h.call("act", &[]), ExternalResult::Fallback));
         assert_eq!(h.report().fallback, vec!["act".to_owned()]);
-        assert!(h.report().live.is_empty());
+        assert!(h.report().live.is_empty(), "{:?}", h.report().live);
     }
 
     #[test]

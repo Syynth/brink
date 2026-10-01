@@ -183,8 +183,8 @@ fn fix_all_on_a_fixpoint_applies_nothing() {
     );
 
     assert_eq!(again.rounds, 0);
-    assert!(again.applied.is_empty());
-    assert!(again.remaining.is_empty());
+    assert!(again.applied.is_empty(), "{:?}", again.applied);
+    assert!(again.remaining.is_empty(), "{:?}", again.remaining);
     assert!(!again.cap_hit);
 }
 
@@ -221,7 +221,7 @@ fn a_zero_round_cap_applies_nothing_and_still_reports() {
     let report = fix_all(&mut session, &Select::all(), &promoted(), 0);
 
     assert_eq!(report.rounds, 0);
-    assert!(report.applied.is_empty());
+    assert!(report.applied.is_empty(), "{:?}", report.applied);
     assert!(report.cap_hit);
     assert_eq!(report.remaining.len(), 2);
 }
@@ -253,7 +253,11 @@ fn one_round_fixes_both_surfaces_across_files() {
     let round = apply_round(&FixCx::new(session.db()), &Select::all(), &promoted());
 
     assert_eq!(round.applied.len(), 2, "no collision: different files");
-    assert!(round.skipped_overlap.is_empty());
+    assert!(
+        round.skipped_overlap.is_empty(),
+        "{:?}",
+        round.skipped_overlap
+    );
     let files: Vec<String> = round
         .edits
         .iter()
@@ -330,7 +334,7 @@ fn a_rounds_edits_come_back_sorted_by_file_then_offset() {
 fn the_default_policy_batches_no_suggested_fix() {
     let session = two_imports_one_file();
     let round = apply_round(&FixCx::new(session.db()), &Select::all(), &FixPolicy::new());
-    assert!(round.applied.is_empty());
+    assert!(round.applied.is_empty(), "{:?}", round.applied);
     assert!(round.edits.is_empty());
 }
 
@@ -341,7 +345,7 @@ fn an_off_code_is_not_batched() {
     let policy = FixPolicy::new().with(DiagnosticCode::E025, FixMode::Off);
     let select = Select::all().with_codes(vec![DiagnosticCode::E025]);
     let round = apply_round(&FixCx::new(session.db()), &select, &policy);
-    assert!(round.applied.is_empty());
+    assert!(round.applied.is_empty(), "{:?}", round.applied);
 }
 
 /// `Select::codes` restricts the diagnostics; a code with no diagnostics
@@ -554,7 +558,11 @@ fn plan_does_not_collide_across_files() {
         candidate(DiagnosticCode::E025, "b", vec![(1, 10, 10)]),
     ]);
     assert_eq!(round.edits.len(), 2);
-    assert!(round.skipped_overlap.is_empty());
+    assert!(
+        round.skipped_overlap.is_empty(),
+        "{:?}",
+        round.skipped_overlap
+    );
 }
 
 /// A fix is atomic: a candidate whose *second* edit collides is deferred
@@ -596,8 +604,12 @@ fn plan_keeps_every_edit_of_a_cross_file_fix() {
 fn plan_drops_an_edit_less_fix() {
     let round = plan(vec![candidate(DiagnosticCode::E014, "empty", vec![])]);
     assert!(round.edits.is_empty());
-    assert!(round.applied.is_empty());
-    assert!(round.skipped_overlap.is_empty());
+    assert!(round.applied.is_empty(), "{:?}", round.applied);
+    assert!(
+        round.skipped_overlap.is_empty(),
+        "{:?}",
+        round.skipped_overlap
+    );
 }
 
 /// The ordering is a total order over the candidate set, so shuffling the

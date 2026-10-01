@@ -63,8 +63,8 @@ fn insertion_leaves_new_line_untranslated() {
     translate_all(&mut existing, "JA");
 
     // Insert a new line into the first scope of new_export.
-    assert!(!new_export.scopes.is_empty());
-    assert!(!new_export.scopes[0].lines.is_empty());
+    assert!(!new_export.scopes.is_empty(), "expected non-empty");
+    assert!(!new_export.scopes[0].lines.is_empty(), "expected non-empty");
     let new_line = LineJson {
         index: 999,
         content: Some(ContentJson::Plain("brand new line\n".to_string())),
@@ -96,7 +96,7 @@ fn deletion_preserves_remaining_translations() {
 
     // Remove a line from new_export (simulate deletion in source).
     let mut trimmed_export = new_export.clone();
-    assert!(!trimmed_export.scopes.is_empty());
+    assert!(!trimmed_export.scopes.is_empty(), "expected non-empty");
     if trimmed_export.scopes[0].lines.len() > 1 {
         trimmed_export.scopes[0].lines.remove(0);
     }
@@ -118,8 +118,8 @@ fn edit_preserves_old_translation_with_new_hash() {
     translate_all(&mut existing, "DE");
 
     // Change the hash of the first line to simulate source text edit.
-    assert!(!new_export.scopes.is_empty());
-    assert!(!new_export.scopes[0].lines.is_empty());
+    assert!(!new_export.scopes.is_empty(), "expected non-empty");
+    assert!(!new_export.scopes[0].lines.is_empty(), "expected non-empty");
     let original_translation = existing.scopes[0].lines[0].content.clone();
     new_export.scopes[0].lines[0].hash = "deadbeefdeadbeef".to_string();
 
@@ -192,7 +192,7 @@ fn multiple_changes_in_same_scope() {
     translate_all(&mut existing, "IT");
 
     // Simulate: first line edited, new line inserted at end.
-    assert!(!new_export.scopes.is_empty());
+    assert!(!new_export.scopes.is_empty(), "expected non-empty");
     let scope = &mut new_export.scopes[0];
     if !scope.lines.is_empty() {
         scope.lines[0].hash = "aaaaaaaaaaaaaaaa".to_string();
@@ -225,8 +225,8 @@ fn audio_refs_preserved_through_regeneration() {
     let mut existing = export_from_base();
 
     // Add audio to first line of existing.
-    assert!(!existing.scopes.is_empty());
-    assert!(!existing.scopes[0].lines.is_empty());
+    assert!(!existing.scopes.is_empty(), "expected non-empty");
+    assert!(!existing.scopes[0].lines.is_empty(), "expected non-empty");
     existing.scopes[0].lines[0].audio = Some("audio/greeting.ogg".to_string());
 
     let result = regenerate_lines(&new_export, &existing, &[]);

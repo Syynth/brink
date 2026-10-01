@@ -1050,7 +1050,7 @@ mod tests {
         let SubUnit::Segment(seg) = &doc.files[0].units[0].sub_units[0] else {
             unreachable!()
         };
-        assert!(seg.source.elements.is_empty());
+        assert!(seg.source.elements.is_empty(), "{:?}", seg.source.elements);
     }
 
     // ── #1442: unit ids are keyed on scope-id, not display name ─────────

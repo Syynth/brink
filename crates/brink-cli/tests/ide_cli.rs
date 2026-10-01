@@ -752,7 +752,11 @@ fn move_file_json_preview_has_the_mutation_shape() {
     assert!(v["diff"].is_string(), "diff present: {v}");
     assert!(v["files"].is_array(), "files present: {v}");
     assert_eq!(v["safe"], true, "clean move is safe: {v}");
-    assert!(v["introducedDiagnostics"].as_array().unwrap().is_empty());
+    assert!(
+        v["introducedDiagnostics"].as_array().unwrap().is_empty(),
+        "{:?}",
+        v["introducedDiagnostics"].as_array().unwrap()
+    );
     fs::remove_dir_all(&dir).ok();
 }
 

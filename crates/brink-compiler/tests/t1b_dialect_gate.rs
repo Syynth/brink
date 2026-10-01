@@ -122,14 +122,14 @@ fn strict_ink_rejects_indexed_assignment() {
 fn brink_dialect_compiles_a_logic_block() {
     let source = "~ {\ntemp x = 0\nx = x + 1\n}\nHello, world!\n";
     let out = compile_mem_with_dialect(source, Dialect::Brink).unwrap();
-    assert!(!out.data.containers.is_empty());
+    assert!(!out.data.containers.is_empty(), "expected non-empty");
 }
 
 #[test]
 fn brink_dialect_compiles_an_array_literal() {
     let source = "VAR x = 0\n~ x = #[1, 2, 3]\nHello, world!\n";
     let out = compile_mem_with_dialect(source, Dialect::Brink).unwrap();
-    assert!(!out.data.containers.is_empty());
+    assert!(!out.data.containers.is_empty(), "expected non-empty");
 }
 
 // ── Plain ink is unaffected by either dialect ─────────────────────────
@@ -138,14 +138,14 @@ fn brink_dialect_compiles_an_array_literal() {
 fn plain_ink_compiles_under_strict_ink() {
     let source = "VAR x = 5\n~ x = x + 1\nHello, world!\n";
     let out = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap();
-    assert!(!out.data.containers.is_empty());
+    assert!(!out.data.containers.is_empty(), "expected non-empty");
 }
 
 #[test]
 fn plain_ink_compiles_under_brink_dialect() {
     let source = "VAR x = 5\n~ x = x + 1\nHello, world!\n";
     let out = compile_mem_with_dialect(source, Dialect::Brink).unwrap();
-    assert!(!out.data.containers.is_empty());
+    assert!(!out.data.containers.is_empty(), "expected non-empty");
 }
 
 /// `if`/`while`/`for`/`break`/`continue`/`in` are contextual keywords — a
@@ -157,7 +157,7 @@ fn contextual_keyword_words_as_plain_identifiers_are_unaffected() {
     let source = "VAR for = 1\nVAR if = 0\n~ if = for + 1\nHello, world!\n";
     for dialect in [Dialect::StrictInk, Dialect::Brink] {
         let out = compile_mem_with_dialect(source, dialect).unwrap();
-        assert!(!out.data.containers.is_empty());
+        assert!(!out.data.containers.is_empty(), "expected non-empty");
     }
 }
 
@@ -179,7 +179,7 @@ fn contextual_keyword_words_as_plain_identifiers_are_unaffected() {
 fn disable_all_lets_a_logic_block_compile_correctly_under_strict_ink() {
     let source = "// brink-disable-all\nHello\n~ {\ntemp x = 0\nx = x + 1\n}\nWorld\n";
     let out = compile_mem_with_dialect(source, Dialect::StrictInk).unwrap();
-    assert!(!out.data.containers.is_empty());
+    assert!(!out.data.containers.is_empty(), "expected non-empty");
 }
 
 #[test]

@@ -547,7 +547,7 @@ fn else_not_immediately_followed_by_a_brace_is_not_treated_as_an_else_branch_att
     // whenever `else_branch` runs.
     let src = "flow f() {\n  {?\n    * a\n    else nope\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(
         !has_node_kind(&p.syntax(), SyntaxKind::ELSE_BRANCH),
         "no ELSE_BRANCH should be attempted when `else` isn't followed by `{{`"
@@ -596,7 +596,7 @@ fn multiple_splices_mixed_with_choices_in_one_point() {
 fn splice_missing_a_target_path_does_not_panic() {
     let src = "flow f() {\n  {?\n    <-\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::SPLICE));
 }
 
@@ -617,7 +617,7 @@ fn choice_point_with_no_choices_parses_with_no_errors() {
 fn unclosed_choice_point_brace_recovers_without_panicking() {
     let src = "flow f() {\n  {?\n    * a\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_POINT));
 }
 
@@ -640,7 +640,7 @@ fn bullet_with_no_content_parses_with_an_empty_start_content() {
 fn unclosed_bracket_recovers_without_panicking() {
     let src = "flow f() {\n  {?\n    * [text\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(
         &p.syntax(),
         SyntaxKind::CHOICE_BRACKET_CONTENT
@@ -651,7 +651,7 @@ fn unclosed_bracket_recovers_without_panicking() {
 fn malformed_guard_missing_condition_does_not_panic() {
     let src = "flow f() {\n  {?\n    * {if} text\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::CHOICE_GUARD));
 }
 
@@ -664,7 +664,7 @@ fn malformed_label_non_ident_falls_back_to_prose_without_panicking() {
     // forward progress).
     let src = "flow f() {\n  {?\n    * (1) text\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     let label = p
         .syntax()
         .descendants()
@@ -681,7 +681,7 @@ fn garbage_inside_choice_point_recovers_token_by_token() {
     // forward progress rather than spinning or panicking.
     let src = "flow f() {\n  {?\n    = = =\n    * a\n  }\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::ERROR));
     // Recovery didn't eat the whole rest of the point: the trailing real
     // choice line still parses as a CHOICE.

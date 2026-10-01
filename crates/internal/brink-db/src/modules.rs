@@ -675,7 +675,7 @@ mod tests {
     fn undeclared_file_is_stem_module_not_qualifying() {
         let inputs = vec![input(0, "story", None)];
         let (map, diags) = resolve_modules(&inputs, &IncludeGraph::new());
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         let m = &map[&FileId(0)];
         assert_eq!(m.name, "story");
         assert!(!m.declared);
@@ -685,7 +685,7 @@ mod tests {
     fn declared_module_qualifies() {
         let inputs = vec![input(0, "story", Some("quest"))];
         let (map, diags) = resolve_modules(&inputs, &IncludeGraph::new());
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         let m = &map[&FileId(0)];
         assert_eq!(m.name, "quest");
         assert!(m.declared);
@@ -698,7 +698,7 @@ mod tests {
         let mut graph = IncludeGraph::new();
         graph.update(FileId(0), vec![FileId(1)]);
         let (map, diags) = resolve_modules(&inputs, &graph);
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         let m = &map[&FileId(1)];
         assert_eq!(m.name, "quest", "included file inherits includer's module");
         assert!(m.declared);
@@ -726,7 +726,7 @@ mod tests {
         let mut graph = IncludeGraph::new();
         graph.update(FileId(0), vec![FileId(1)]);
         let (map, diags) = resolve_modules(&inputs, &graph);
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(map[&FileId(1)].name, "part");
         assert!(!map[&FileId(1)].declared);
     }

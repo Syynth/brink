@@ -1265,8 +1265,12 @@ mod tests {
         .expect("lenient load never errors");
 
         assert_eq!(report.dead_ephemeral, vec![("Transient".to_string(), id)]);
-        assert!(report.rebound.is_empty());
-        assert!(report.dead_by_resolve.is_empty());
+        assert!(report.rebound.is_empty(), "{:?}", report.rebound);
+        assert!(
+            report.dead_by_resolve.is_empty(),
+            "{:?}",
+            report.dead_by_resolve
+        );
     }
 
     // ── next_id reservation across dead/ephemeral tokens (review finding) ──

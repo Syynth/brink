@@ -221,7 +221,11 @@ mod tests {
         let old = manifest_of("=== hub ===\nHi.\n-> END\n");
         let new = manifest_of("=== hub ===\nHi.\n-> END\n");
 
-        assert!(detect_undeclared_renames(&old, &new).is_empty());
+        assert!(
+            detect_undeclared_renames(&old, &new).is_empty(),
+            "{:?}",
+            detect_undeclared_renames(&old, &new)
+        );
     }
 
     #[test]
@@ -254,7 +258,11 @@ mod tests {
         let old = "=== hub ===\nHi.\n-> END\n=== market ===\nHi.\n-> END\n";
         let new = "=== plaza ===\nHi.\n-> END\n=== bazaar ===\nHi.\n-> END\n";
 
-        assert!(detect_undeclared_renames(&manifest_of(old), &manifest_of(new)).is_empty());
+        assert!(
+            detect_undeclared_renames(&manifest_of(old), &manifest_of(new)).is_empty(),
+            "{:?}",
+            detect_undeclared_renames(&manifest_of(old), &manifest_of(new))
+        );
     }
 
     #[test]
@@ -264,7 +272,11 @@ mod tests {
         let old = manifest_of("=== hub ===\nHi.\n-> END\n");
         let new = manifest_of("=== plaza ===\n#@was(hub)\nHi.\n-> END\n");
 
-        assert!(detect_undeclared_renames(&old, &new).is_empty());
+        assert!(
+            detect_undeclared_renames(&old, &new).is_empty(),
+            "{:?}",
+            detect_undeclared_renames(&old, &new)
+        );
     }
 
     #[test]

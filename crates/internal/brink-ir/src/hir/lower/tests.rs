@@ -295,7 +295,7 @@ fn classify_recognizes_logic_line() {
 fn accumulator_content_with_glue_suppresses_eol() {
     let source = "Hello<>\n";
     let (block, diags) = lower_body(source);
-    assert!(diags.is_empty());
+    assert!(diags.is_empty(), "{diags:?}");
     // Glue suppresses EndOfLine — should have Content only, no EndOfLine
     assert!(
         matches!(&block.stmts[0], Stmt::Content(c) if !c.parts.is_empty()),
@@ -521,7 +521,11 @@ fn local_directive_marks_var() {
     assert_eq!(hir.variables.len(), 1);
     assert!(hir.variables[0].is_local);
     // Erasure: the directive never becomes a content tag.
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
@@ -537,7 +541,11 @@ fn local_directive_marks_knot_from_top_of_body() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     assert_eq!(hir.knots.len(), 1);
     assert!(hir.knots[0].is_local);
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
@@ -575,14 +583,22 @@ fn directive_above_content_line_is_e045() {
     let (hir, diags) = lower_hir("#@local\njust text\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E045]);
     // Still erased — never a runtime tag.
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
 fn inline_directive_tag_is_e045() {
     let (hir, diags) = lower_hir("some text #@local\n");
     assert_eq!(codes(&diags), vec![DiagnosticCode::E045]);
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
@@ -668,7 +684,11 @@ fn effects_directive_parses_reads_writes_calls_on_a_knot() {
     assert_eq!(assertion.reads, vec!["gold".to_string()]);
     assert_eq!(assertion.writes, vec!["alarm".to_string()]);
     assert_eq!(assertion.calls, vec!["audio".to_string()]);
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
@@ -705,9 +725,9 @@ fn effects_pure_sugar_sets_pure_with_empty_lists() {
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
     let assertion = hir.knots[0].effects_assertion.as_ref().expect("present");
     assert!(assertion.pure);
-    assert!(assertion.reads.is_empty());
-    assert!(assertion.writes.is_empty());
-    assert!(assertion.calls.is_empty());
+    assert!(assertion.reads.is_empty(), "{:?}", assertion.reads);
+    assert!(assertion.writes.is_empty(), "{:?}", assertion.writes);
+    assert!(assertion.calls.is_empty(), "{:?}", assertion.calls);
 }
 
 #[test]
@@ -1247,7 +1267,11 @@ fn import_qualified_form_extracted() {
     assert_eq!(hir.imports.len(), 1);
     assert_eq!(hir.imports[0].module, "quest_3");
     assert!(!hir.imports[0].bare);
-    assert!(hir.imports[0].items.is_empty());
+    assert!(
+        hir.imports[0].items.is_empty(),
+        "{:?}",
+        hir.imports[0].items
+    );
 }
 
 #[test]
@@ -1293,7 +1317,11 @@ fn visibility_directives_collected_for_gate() {
     assert_eq!(hir.visibility.len(), 1);
     assert_eq!(hir.visibility[0].mark, crate::VisibilityMark::Private);
     // Erasure: the directive never becomes a content tag.
-    assert!(all_content_tags(&hir).is_empty());
+    assert!(
+        all_content_tags(&hir).is_empty(),
+        "{:?}",
+        all_content_tags(&hir)
+    );
 }
 
 #[test]
