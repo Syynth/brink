@@ -14,15 +14,19 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
+use gpui_component::menu::AppMenuBar;
 use gpui_component::{ActiveTheme, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
-    CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow, Unbound,
+    CommandRegistry, OpenKeymap, OpenSettings, TogglePalette, ToggleToolWindow, Unbound,
     bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
 };
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
-use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
-use crate::rail::{RAIL_WIDTH, RailButton, rail};
+use crate::menus::{
+    APP_GROUP, APP_NAME, About, HELP_GROUP, MenuPlatform, MenuSpec, Minimize, Quit, Zoom,
+};
+use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem};
+use crate::rail::{RailButton, rail};
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
 use crate::settings_appearance::AppearanceSection;
@@ -151,10 +155,14 @@ pub struct Workspace {
     status: Vec<StatusCell>,
     /// Every command, in registration order (`crate::commands`).
     commands: CommandRegistry,
-    /// The palette or the menu while open, with what had focus before it —
-    /// restored before the chosen command runs, so it runs where the
-    /// author was.
+    /// The palette while open, with what had focus before it — restored
+    /// before the chosen command runs, so it runs where the author was.
     overlay: Option<(Entity<Palette>, Option<FocusHandle>, Subscription)>,
+    /// Which registry groups go in which menu (`crate::menus`). Empty until
+    /// the app says, and no menus are installed before then.
+    menu_layout: Vec<MenuSpec>,
+    /// The in-window menu bar, off the Mac — where there is no native one.
+    menu_bar: Option<Entity<AppMenuBar>>,
     /// The Settings window while open, with the focus to restore.
     settings: Option<(Entity<SettingsModal>, Option<FocusHandle>, Subscription)>,
     /// The registered settings sections (`crate::settings_modal`).
@@ -222,6 +230,8 @@ impl Workspace {
             status: Vec::new(),
             commands: CommandRegistry::default(),
             overlay: None,
+            menu_layout: Vec::new(),
+            menu_bar: (MenuPlatform::current() == MenuPlatform::Other).then(|| AppMenuBar::new(cx)),
             settings: None,
             sections: Vec::new(),
             tier: Tier::Wide,
@@ -260,7 +270,17 @@ impl Workspace {
             Some("cmd-shift-p"),
             cx,
         );
-        this.register_command("App", "Settings\u{2026}", OpenSettings, Some("cmd-,"), cx);
+        this.register_command(
+            APP_GROUP,
+            "Settings\u{2026}",
+            OpenSettings,
+            Some("cmd-,"),
+            cx,
+        );
+        // The only way the app's quit hook (which saves the window's
+        // shape) is ever reached: a kill signal does not run it.
+        this.register_command(APP_GROUP, "Quit", Quit, Some("cmd-q"), cx);
+        this.register_command(HELP_GROUP, "Keyboard Shortcuts", OpenKeymap, None, cx);
         // One command per theme — the studio's `theme.select.<id>`.
         for theme in theme::builtin() {
             this.register_command(
@@ -368,6 +388,29 @@ impl Workspace {
     fn apply_keymap(&self, cx: &mut Context<Self>) {
         let overrides = AppSettings::get(cx).keymap;
         cx.bind_keys(keymap_bindings(self.commands.commands(), &overrides));
+        // A native menu reads its key equivalents when it is installed.
+        self.install_menus(cx);
+    }
+
+    /// Say which registry groups go in which menu, and install the menu
+    /// bar. The app calls this once its commands are registered; a command
+    /// registered later still lands in it (`register_command_in`).
+    pub fn set_menu_layout(&mut self, layout: Vec<MenuSpec>, cx: &mut Context<Self>) {
+        self.menu_layout = layout;
+        self.install_menus(cx);
+    }
+
+    /// Rebuild the menu bar from the registry. The native bar is the
+    /// application's, not the window's: the window that last rebuilt it
+    /// owns it, and every window's registry holds the same commands.
+    fn install_menus(&self, cx: &mut Context<Self>) {
+        if self.menu_layout.is_empty() {
+            return;
+        }
+        crate::menus::install(self.commands.commands(), &self.menu_layout, cx);
+        if let Some(bar) = &self.menu_bar {
+            bar.update(cx, |bar, cx| bar.reload(cx));
+        }
     }
 
     /// Give a chord to the command at `index`, displacing whoever held
@@ -431,6 +474,7 @@ impl Workspace {
         let overrides = AppSettings::get(cx).keymap;
         let bindings = keymap_bindings(&self.commands.commands()[ix..=ix], &overrides);
         cx.bind_keys(bindings);
+        self.install_menus(cx);
     }
 
     #[must_use]
@@ -832,19 +876,11 @@ impl Workspace {
             .collect()
     }
 
-    /// Open the palette or the menu, or close it if that one is already up.
-    pub fn toggle_overlay(
-        &mut self,
-        mode: PaletteMode,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        if let Some((palette, _, _)) = &self.overlay {
-            let same = palette.read(cx).mode() == mode;
+    /// Open the palette, or close it if it is already up.
+    pub fn toggle_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.overlay.is_some() {
             self.close_overlay(window, cx);
-            if same {
-                return;
-            }
+            return;
         }
         // Enablement is asked of the window NOW, against the focus the
         // author has — before the overlay takes it. Per action, not from
@@ -862,7 +898,7 @@ impl Workspace {
             })
             .collect();
         let previous = window.focused(cx);
-        let palette = cx.new(|cx| Palette::new(mode, items, window, cx));
+        let palette = cx.new(|cx| Palette::new(items, window, cx));
         let subscription = cx.subscribe_in(
             &palette,
             window,
@@ -889,16 +925,11 @@ impl Workspace {
         }
     }
 
-    fn render_overlay(&self, window: &Window, cx: &App) -> Option<AnyElement> {
+    fn render_overlay(&self, window: &Window) -> Option<AnyElement> {
         let (palette, _, _) = self.overlay.as_ref()?;
-        // The palette floats top-centre; the menu hangs off the hamburger.
-        let position = match palette.read(cx).mode() {
-            PaletteMode::Palette => {
-                let width = window.viewport_size().width;
-                point((width - px(PALETTE_WIDTH)) / 2., px(64.))
-            }
-            PaletteMode::Menu => point(RAIL_WIDTH + px(4.), px(40.)),
-        };
+        // Top-centre.
+        let width = window.viewport_size().width;
+        let position = point((width - px(PALETTE_WIDTH)) / 2., px(64.));
         Some(
             deferred(
                 anchored()
@@ -1204,19 +1235,8 @@ impl Render for Workspace {
         let switcher = self.view_switcher(cx);
         let status = self.render_status(cx);
         let notices = self.render_notices(cx);
-        let overlay = self.render_overlay(window, cx);
+        let overlay = self.render_overlay(window);
         let settings_window = self.render_settings(window, cx);
-        // Studio §6: the hamburger at the top of the left strip, opening the
-        // registry-generated menu.
-        let hamburger = Button::new("hamburger")
-            .ghost()
-            .compact()
-            .tooltip("Menu")
-            .on_click(cx.listener(|this, _, window, cx| {
-                this.toggle_overlay(PaletteMode::Menu, window, cx);
-            }))
-            .child("\u{2630}")
-            .into_any_element();
 
         let theme = cx.theme();
         v_flex()
@@ -1241,10 +1261,7 @@ impl Render for Workspace {
                 this.set_editor_view(EditorView::Continuous, window, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
-                this.toggle_overlay(PaletteMode::Palette, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ToggleMenu, window, cx| {
-                this.toggle_overlay(PaletteMode::Menu, window, cx);
+                this.toggle_palette(window, cx);
             }))
             .on_action(cx.listener(|this, action: &ToggleToolWindow, window, cx| {
                 this.toggle_tool_window(&action.id, window, cx);
@@ -1256,6 +1273,13 @@ impl Render for Workspace {
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.open_settings(None, window, cx);
             }))
+            .on_action(cx.listener(|this, _: &OpenKeymap, window, cx| {
+                this.open_settings(Some("keymap"), window, cx);
+            }))
+            // The menu bar's window-scoped standard items (`crate::menus`).
+            .on_action(cx.listener(|_, _: &About, window, cx| about(window, cx)))
+            .on_action(cx.listener(|_, _: &Minimize, window, _| window.minimize_window()))
+            .on_action(cx.listener(|_, _: &Zoom, window, _| window.zoom_window()))
             .child(
                 // No app name: the window and the Dock already say which
                 // app this is. `justify_end` keeps the switcher at the right
@@ -1267,6 +1291,12 @@ impl Render for Workspace {
                         .flex_1()
                         .items_center()
                         .justify_end()
+                        // Off the Mac, the menus live here (`crate::menus`).
+                        .children(
+                            self.menu_bar
+                                .clone()
+                                .map(|bar| div().flex_1().min_w_0().h_full().child(bar)),
+                        )
                         .child(switcher),
                 ),
             )
@@ -1274,14 +1304,7 @@ impl Render for Workspace {
                 h_flex()
                     .flex_1()
                     .min_h_0()
-                    .child(rail(
-                        RailEdge::Left,
-                        &buttons,
-                        Some(hamburger),
-                        click.clone(),
-                        window,
-                        cx,
-                    ))
+                    .child(rail(RailEdge::Left, &buttons, click.clone(), window, cx))
                     .child(
                         div()
                             .flex_1()
@@ -1289,7 +1312,7 @@ impl Render for Workspace {
                             .h_full()
                             .child(self.dock_area.clone()),
                     )
-                    .child(rail(RailEdge::Right, &buttons, None, click, window, cx)),
+                    .child(rail(RailEdge::Right, &buttons, click, window, cx)),
             )
             .child(status)
             // Above the status bar, as §7.5 places it, and after the docks
@@ -1298,6 +1321,26 @@ impl Render for Workspace {
             .children(overlay)
             .children(settings_window)
     }
+}
+
+/// The About box: what this is. The native panel macOS draws for
+/// "About" is not reachable through gpui, so it is a dialog on every
+/// platform.
+fn about(window: &mut Window, cx: &mut App) {
+    crate::menus::open_dialog(window, cx, |dialog, _window, _cx| {
+        dialog
+            .title(SharedString::from(format!("About {APP_NAME}")))
+            .w(px(360.))
+            .content(|content, _window, cx| {
+                let muted = cx.theme().muted_foreground;
+                content.child(v_flex().gap_1().child("The brink studio.").child(
+                    div().text_sm().text_color(muted).child(
+                        "A narrative language, compiler, runtime and studio \u{2014} \
+                             for .brink and for ink.",
+                    ),
+                ))
+            })
+    });
 }
 
 #[cfg(test)]

@@ -46,6 +46,7 @@ use std::path::PathBuf;
 use brink_gpui_model::play::PlayCommand;
 use brink_gpui_model::query::{ConvertTarget, QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
+use brink_gpui_shell::menus::MenuSpec;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
@@ -144,15 +145,13 @@ actions!(
         /// Close the tab you are in: the focused centre tab, else the
         /// active document. Asks first when the file has unsaved edits.
         CloseTab,
-        /// Close the studio, saving the window's shape on the way out.
-        Quit,
     ]
 );
 
 /// Reopen a project from the recents. Data-carrying, so each recent is
-/// its own palette entry rather than a submenu the palette cannot model —
-/// `no_json` because the path is the whole payload and nothing outside
-/// the app builds one.
+/// its own command — a palette entry, and an item in the menu bar's
+/// "Open Recent" submenu — `no_json` because the path is the whole payload
+/// and nothing outside the app builds one.
 #[derive(Clone, PartialEq, Eq, gpui::Action)]
 #[action(namespace = brink, no_json)]
 struct OpenRecentProject {
@@ -513,9 +512,6 @@ impl Studio {
                 Some("cmd-p"),
                 cx,
             );
-            // An app with no Quit command is a gap on its own, and it is
-            // also the only way the quit hook below is ever reached: a
-            // kill signal does not run it.
             workspace.register_command(
                 "View",
                 "Maximize Editor",
@@ -534,9 +530,14 @@ impl Studio {
             // project THIS window opened is not among them: it is
             // remembered after this runs, so a window never offers to
             // reopen itself.
+            //
+            // Their own group, so the menu bar can make them a submenu; the
+            // palette reads them as "Open Recent: harbour (stories)" just as
+            // it did when the prefix was in the title.
             for path in brink_gpui_shell::settings::AppSettings::get(cx).recents {
-                let title = format!("Open Recent: {}", recent_label(&path));
-                workspace.register_command("File", title, OpenRecentProject { path }, None, cx);
+                let title = recent_label(&path);
+                let action = OpenRecentProject { path };
+                workspace.register_command("Open Recent", title, action, None, cx);
             }
             workspace.register_command_in(
                 "Go",
@@ -547,7 +548,31 @@ impl Studio {
                 cx,
             );
             workspace.register_command("File", "Undo File Operation", UndoFileOp, None, cx);
-            workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
+            // The menu bar (`brink_gpui_shell::menus`): which of the groups
+            // above go in which menu. Groups, never commands — a command
+            // registered into a group is in the bar with no edit here, and
+            // a group left out still gets a menu of its own. The shell adds
+            // the App, Window and Help menus around these.
+            workspace.set_menu_layout(
+                vec![
+                    MenuSpec::new("File").group("File").submenu("Open Recent"),
+                    // Line conversion is writing, not tidying (see its
+                    // registration), so it stays with the text.
+                    MenuSpec::new("Edit")
+                        .text_editing()
+                        .group("Find")
+                        .group("Search")
+                        .submenu("Line"),
+                    MenuSpec::new("View").group("View").submenu("Theme"),
+                    MenuSpec::new("Go").group("Go"),
+                    MenuSpec::new("Refactor").group("Refactor").group("Fix"),
+                    MenuSpec::new("Story")
+                        .group("Play")
+                        .group("Debug")
+                        .group("Program"),
+                ],
+                cx,
+            );
             // After every tool window is registered: their `open()`
             // defaults decide the first run, and a saved shape overrides
             // them (`Workspace::apply_layout`).
@@ -1723,11 +1748,6 @@ impl Studio {
         }
     }
 
-    fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
-        // `on_app_quit` does the saving; this is the door to it.
-        cx.quit();
-    }
-
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
         self.play_at(None, window, cx);
     }
@@ -1942,7 +1962,6 @@ impl Render for Studio {
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::close_tab_by_id))
-            .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.
@@ -2016,6 +2035,9 @@ fn main() {
         .with_assets(gpui_kit_assets::Assets)
         .run(move |cx| {
             gpui_component::init(cx);
+            // Quit, Hide and the platform's own chords — before any window,
+            // since the menu bar is the application's.
+            brink_gpui_shell::menus::init(cx);
             // The persisted settings and their theme, before the first paint.
             brink_gpui_shell::settings::init(cx);
             brink_gpui_shell::theme::init(cx);

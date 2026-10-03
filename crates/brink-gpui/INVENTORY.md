@@ -337,8 +337,10 @@ the summary strip, `cmd-shift-f`.
 
 ### Commands — palette, menu, keymap (`shell/src/commands.rs`, `palette.rs`)
 
-Built: one registry, `cmd-shift-p`, the hamburger menu, `cmd-1…9`
-toggles, view switching, per-theme commands, overrides from settings.
+Built: one registry, `cmd-shift-p`, the menu bar (native on macOS, the
+kit's in-window `AppMenuBar` elsewhere; `shell/src/menus.rs`, #3624; it
+replaced the `☰` menu), `cmd-1…9` toggles, view switching, per-theme
+commands, overrides from settings.
 
 | Left out | Kind | Note |
 |---|---|---|

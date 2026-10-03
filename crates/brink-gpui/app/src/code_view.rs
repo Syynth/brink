@@ -448,7 +448,9 @@ fn confirm_close(
 ) {
     let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
     let path = Rc::new(path);
-    window.open_dialog(cx, move |dialog, _window, _cx| {
+    // Through the shell's helper: File → Close Tab in the in-window menu
+    // bar would otherwise pull focus back out of the prompt.
+    brink_gpui_shell::menus::open_dialog(window, cx, move |dialog, _window, _cx| {
         let save = {
             let (code, project, path) = (code.clone(), project.clone(), path.clone());
             move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {

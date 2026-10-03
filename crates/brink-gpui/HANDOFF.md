@@ -131,7 +131,7 @@ Inky Dark, the panel grouped, a row click opening the file at the note, a
 deleted note leaving.
 
 **Commands** (2026-09-05, spec §4.5): every shortcut, the palette
-(`cmd-shift-p`), the hamburger menu and the `cmd-1…9` tool-window toggles
+(`cmd-shift-p`), the menu bar (the `☰` menu until #3624) and the `cmd-1…9` tool-window toggles
 go through one registry (`shell/src/commands.rs`); the app registers its
 commands with `Workspace::register_command`. Verified headless: palette
 filter + Enter switches views; the menu lists View/File groups with keys;
