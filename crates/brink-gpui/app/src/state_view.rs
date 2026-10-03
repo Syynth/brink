@@ -71,6 +71,8 @@ pub struct StateView {
     busy: bool,
     /// Bumped per request so a stale answer is dropped.
     generation: u64,
+    /// The Player's `session_key` at the last refresh.
+    seen: Option<(u64, usize, usize, bool, bool)>,
     collapsed: BTreeSet<String>,
     rows: Vec<Row>,
     focus: FocusHandle,
@@ -83,8 +85,18 @@ impl EventEmitter<PanelEvent> for StateView {}
 impl StateView {
     pub fn new(project: Entity<Project>, player: Entity<Player>, cx: &mut Context<Self>) -> Self {
         // The Player changes the story's state without an event of its
-        // own — it notifies — so this observes the entity.
-        let watch = cx.observe(&player, |this: &mut Self, _, cx| this.refresh(cx));
+        // own — it notifies — so this observes the entity. But it is also
+        // notified when nothing moved (docked, it is notified as its tab is
+        // drawn), and a snapshot per notify was a worker query per frame
+        // while the Player was on screen. So only a session that moved is
+        // asked about.
+        let watch = cx.observe(&player, |this: &mut Self, player, cx| {
+            let key = player.read(cx).session_key();
+            if this.seen != Some(key) {
+                this.seen = Some(key);
+                this.refresh(cx);
+            }
+        });
         // Marks are the project's, and they move without the story
         // moving — a toggle with nothing running still has to show.
         let marks = cx.subscribe(
@@ -102,6 +114,7 @@ impl StateView {
             state: None,
             busy: false,
             generation: 0,
+            seen: None,
             collapsed: BTreeSet::new(),
             rows: Vec::new(),
             focus: cx.focus_handle(),
@@ -556,10 +569,14 @@ impl ToolWindow for StateView {
 
 impl Render for StateView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // Being rendered is being shown, and a state read is cheap — but
-        // only ask when there is nothing to show, or the panel would
-        // re-ask on every frame.
-        if self.state.is_none() && !self.busy && self.player.read(cx).is_docked() {
+        // Being rendered is being shown, so a panel that has never asked
+        // about this session asks now. Only once per session: "nothing to
+        // show" is also the ANSWER for a story that has ended, and asking
+        // again whenever the answer was empty re-asked on every frame —
+        // each answer notifies, which draws, which asked again.
+        let key = self.player.read(cx).session_key();
+        if self.seen != Some(key) && !self.busy && self.player.read(cx).is_docked() {
+            self.seen = Some(key);
             self.refresh(cx);
         }
         let header = self.render_header(cx);
