@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18](https://github.com/Syynth/brink/compare/brink-source-tree-v0.0.17...brink-source-tree-v0.0.18) - 2026-10-03
+
+### Other
+
+- bump the pinned toolchain to Rust 1.99.0 ([#3620](https://github.com/Syynth/brink/pull/3620))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-source-tree-v0.0.11...brink-source-tree-v0.0.15) - 2026-08-23
 
 ### Fixed
