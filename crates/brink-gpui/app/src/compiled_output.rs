@@ -422,7 +422,10 @@ impl BasePanel for CompiledOutputView {
 
 impl Panel for CompiledOutputView {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Compiled Output")
+        brink_gpui_shell::tool_window::tab_title(
+            gpui_component::IconName::FileText,
+            "Compiled Output",
+        )
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

@@ -37,6 +37,7 @@ use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::project::Project;
+use brink_gpui_shell::icons;
 
 /// Rows drawn before the list scrolls, and the overlay's width.
 const MAX_VISIBLE_ROWS: usize = 12;
@@ -69,15 +70,15 @@ pub enum Kind {
 
 impl Kind {
     #[must_use]
-    pub fn icon(self) -> &'static str {
+    pub fn icon(self) -> icons::BrinkIcon {
         match self {
             // The outline file, not the entry or draft variants: those say
             // something about the file's ROLE, which this list does not.
-            Self::File => crate::icons::FILE,
+            Self::File => brink_gpui_shell::icons::BrinkIcon::Drop,
             // Outline, by the Binder's fill rule: filled means collapsed
             // over content, and nothing here is collapsed.
-            Self::Knot => crate::icons::KNOT,
-            Self::Stitch => crate::icons::STITCH,
+            Self::Knot => brink_gpui_shell::icons::BrinkIcon::Knot,
+            Self::Stitch => brink_gpui_shell::icons::BrinkIcon::Stitch,
         }
     }
 }
@@ -355,11 +356,16 @@ impl QuickOpen {
                 // A fixed slot, so the titles line up whatever the icon:
                 // a ragged left edge is harder to scan than no icon at all.
                 // 13px is the Binder's size, since these are its icons.
-                .child(div().w(px(16.)).flex_none().child(crate::icons::icon(
-                    item.kind.icon(),
-                    px(13.),
-                    theme.muted_foreground,
-                )))
+                .child(
+                    div()
+                        .w(px(16.))
+                        .flex_none()
+                        .child(brink_gpui_shell::icons::icon(
+                            item.kind.icon(),
+                            px(13.),
+                            theme.muted_foreground,
+                        )),
+                )
                 .child(div().child(item.title.clone()))
                 .children(item.detail.as_ref().map(|d| {
                     div()

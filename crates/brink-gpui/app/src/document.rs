@@ -83,6 +83,12 @@ pub struct Document {
     /// The tab group holding this document, from the dock's `on_added_to`.
     /// What [`Document::activate`] selects the tab through.
     group: Option<WeakEntity<TabGroup>>,
+    /// A reveal asked for before the editor had ever been laid out, kept
+    /// until it has one. See [`Document::reveal`].
+    pending_reveal: Option<Range<usize>>,
+    /// Whether a frame has been rendered — which is what gives the editor
+    /// the layout a scroll-into-view is computed against.
+    laid_out: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -255,6 +261,8 @@ impl Document {
             factory,
             folds,
             group: None,
+            pending_reveal: None,
+            laid_out: false,
             _subscriptions: vec![on_change, on_project, on_theme, on_settings],
         };
         // The editor may normalise what it was given (line endings); if it
@@ -324,7 +332,25 @@ impl Document {
     /// editor — `docs/studio-shell-spec.md` §6.1's `editor.reveal`, with the
     /// selection standing in for the studio's flash-highlight. An empty
     /// span (what a Binder row emits) just places the caret.
-    pub fn reveal(&self, span: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+    /// Put the caret on `span` and bring it into view.
+    ///
+    /// The caret always lands. The SCROLL to it does not: the kit's
+    /// scroll-into-view opens with `let Some(last_layout) = … else {
+    /// return; }` and the same for `last_bounds`, so a reveal issued
+    /// before the editor's first frame moves the caret and silently
+    /// leaves the viewport where it was. That is every reveal into a file
+    /// the click itself opened — from the Player, Problems, the Binder —
+    /// and it is why clicking such a row twice used to work when clicking
+    /// it once did not.
+    ///
+    /// So a reveal with no layout behind it is kept and re-run once there
+    /// is one ([`Render::render`] below). Deferred rather than looped: the
+    /// frame that hands the editor its layout is the frame we are asking
+    /// about, so the earliest honest moment is the one after it.
+    pub fn reveal(&mut self, span: Range<usize>, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.laid_out {
+            self.pending_reveal = Some(span.clone());
+        }
         self.editor.update(cx, |state, cx| {
             let position = state.text().offset_to_position(span.start);
             state.set_cursor_position(position, window, cx);
@@ -1509,7 +1535,22 @@ impl gpui_component::dock::Panel for Document {
 }
 
 impl gpui::Render for Document {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
+        // This frame is what gives the editor its layout, so a reveal that
+        // arrived before it had one can only be honoured on the NEXT one.
+        if self.laid_out {
+            if let Some(span) = self.pending_reveal.take() {
+                cx.defer_in(window, move |this, window, cx| {
+                    this.reveal(span, window, cx);
+                });
+            }
+        } else {
+            self.laid_out = true;
+            // Ask for that next frame; nothing else here would.
+            if self.pending_reveal.is_some() {
+                cx.notify();
+            }
+        }
         // A mounted library file is not the author's to change. Read-only
         // belongs on the ELEMENT (the `Editor` pushes its own flag into
         // the state every render — see `compiled_output.rs`, where a

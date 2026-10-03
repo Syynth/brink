@@ -44,8 +44,8 @@ use gpui_component::{
 };
 
 use crate::document::highlighter_factory;
-use crate::icons;
 use crate::project::{Project, ProjectEvent};
+use brink_gpui_shell::icons;
 
 /// A mounted section: its editor, and the height its file needs.
 type Section = (Entity<EditorState>, f32);
@@ -587,7 +587,11 @@ fn heading(path: &str, cx: &App) -> impl IntoElement {
         .border_t_1()
         .border_b_1()
         .border_color(theme.border)
-        .child(icons::icon(icons::FILE, px(12.), theme.muted_foreground))
+        .child(icons::icon(
+            icons::BrinkIcon::Drop,
+            px(12.),
+            theme.muted_foreground,
+        ))
         .child(
             div()
                 .text_xs()

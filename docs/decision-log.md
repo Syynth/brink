@@ -5617,3 +5617,48 @@
 - **SCOPE:** moderate
 - **WHAT:** When a Rust toolchain bump introduces new pedantic (or otherwise enabled) clippy lints, each one is evaluated on its merits at the time of the bump. The default lean is to fix the code to satisfy it rather than add it to the workspace "Pedantic allows" list, but that is not absolute — a lint judged genuinely noisy can still be allowed. First application: Rust 1.99's `assert_is_empty` (290 sites) was adopted rather than allowed. Clippy's own `--fix` rewrite (`assert_eq!(x, [] as [T; 0])`) is unusable here — it trips the workspace's `trivial_casts = "deny"` — so the house form is the message form, which the lint exempts: `assert!(x.is_empty(), "{x:?}")` (or `"{:?}", expr` for a non-identifier) and `assert!(!x.is_empty(), "expected non-empty")`.
 - **WHY:** The allow list is meant to hold only what is genuinely noisy or premature; reflexively allowlisting every new lint to unblock a bump would erode the pedantic baseline one release at a time. Evaluating each lint when it lands is the point where the cost/benefit is cheapest to judge — e.g. `assert_is_empty` buys failure output that prints the offending value.
+
+## On the ink surface, brink must not be stricter at runtime than ink
+- **WHEN:** 2026-09-09
+- **PROJECT:** brink
+- **SYSTEM:** `brink-runtime` / ink-surface conformance — extends "inkjs is trusted as the reference" (2026-09-04) from compile-time answers to runtime behaviour
+- **SCOPE:** architectural
+- **STATUS:** tentative
+- **WHAT:** Runtime tolerance on an `.ink` project is measured against ink's, asymmetrically. A story shape that faults in inkjs **may** fault in brink — matching a fault is not a defect. A shape that inkjs runs through and brink faults on **is** a defect, and is worked as one. The comparison instrument is `tools/inkjs-oracle`, per the existing ruling that trusts it as the stand-in for the C# runtime.
+- **WHY:** an author compiling an ink project has a working mental model of what ink accepts, built by running it. Being stricter than ink breaks stories that ink runs, with no recourse and no way for the author to tell a brink bug from their own — the failure is indistinguishable from the toolchain being broken. Being *equally* strict costs them nothing, because ink already refused. The asymmetry is the point: matching ink's errors is free, exceeding them is a story the author cannot write.
+- **FIRST APPLICATION:** `LIST_COUNT` feeding an Int into a switch over list values (`Equal(Int, List)`). Checked against inkjs: it faults there too, so brink's fault is correct and no tolerance work is owed. The same check surfaced a *different* divergence in the same repro — ink delivers the line the faulting turn had already produced and brink discards it (#3587) — which is on the other side of the rule and is filed as a defect.
+
+## The native studio's icons are files, and lucide covers everything that is not domain
+- **WHEN:** 2026-09-09
+- **PROJECT:** brink
+- **SYSTEM:** `brink-gpui` shell (`shell/src/icons.rs`, `shell/assets/icons/`)
+- **SCOPE:** moderate (a subsystem convention, and the seam every future icon goes through)
+- **WHAT:** Icons are `.svg` FILES under `crates/brink-gpui/shell/assets/icons/`, turned into a `BrinkIcon` enum at compile time by the kit's `icon_named!`. They live in the shell, not the feature crate, so both tiers can use them. Which set to draw from is a rule, not a case-by-case call: **generic chrome comes from the 101 lucide icons `gpui-kit-assets` already ships** (play, pause, settings, panels, chevrons), and **only the domain is hand-authored here** — the droplet family, knot, stitch, function, the entry mark. One `AssetSource` serves ours and delegates the rest to the kit's.
+- **WHY:** the previous arrangement was 23 inline SVG strings in the feature crate, and it failed three ways at once: the shell could not reach them, they rendered as a bare `Svg` rather than an `Icon` so no kit widget would accept one (which turned "put an icon on that tab" into "rewrite that widget"), and adding one meant editing Rust. Files plus `icon_named!` fix all three and make a new icon a file drop. The lucide half is about effort going where it is worth spending: hand-drawing a settings gear is work with no payoff, while the droplet and the knot carry meaning the studio invented and nothing off the shelf has.
+- **WHAT THIS DOES NOT REOPEN:** the domain icons were ported from `packages/studio-ui/src/icons.tsx` verbatim on purpose, so both studios read the same and the geometry stays comparable. Moving them into files changes their storage, not a single path — and re-drawing them by eye would throw that away.
+- **THE ONE HAZARD, GUARDED:** `icon_named!` hardcodes every path as `icons/<filename>` whatever directory it read, so our files and the kit's share one namespace and a shared name silently shadows theirs — including inside kit internals. Hence `drop.svg` not `file.svg`, `find.svg` not `search.svg`, and a test over the whole set rather than a note asking the next person to remember.
+
+## The native studio asks before unsaved work is lost: Save / Don't Save / Cancel
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Closing a project window, or quitting, while any file has unsaved edits shows a prompt naming the dirty files with three choices: **Save** (write them all, then close or quit, and stay open if any write fails), **Don't Save** (discard and close or quit), **Cancel** (do nothing). Quitting asks once per project window that has dirty files. This deliberately differs from the Tauri app, which saves silently on close and quit (#2444). The Tauri app should eventually follow this rule.
+- **WHY:** Two reasons. Discarding edits is a real need, and a silent save forces them onto disk with no way to say no. Asking is also what native macOS document apps do, and the gpui studio is meant to feel native. The failed-write case keeps the window open because "Save" that silently loses a file is the exact failure this rule exists to prevent.
+
+## Native studio project lifecycle: a landing window, Close Project, launch and Open
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** (1) **Close Project** closes that project's window (through the unsaved-work prompt above); when it was the last window, a **landing window** opens, so the app never sits with no windows. (2) **Launch with no argument** shows the landing window, unless "Reopen last project on launch" is ticked, in which case the last project opens; the test-fixture fallback is removed. (3) The landing window **matches the Tauri app's #3021 landing**: the lockup, **New Project…** (creates `main.ink` + `brink.toml` in a chosen folder), **Open…** (a FILE: a `.ink` that becomes the entry point, or a `brink.toml` — the two doors of the 2026-08-23 "A project is anchored on a FILE" ruling; a folder is not a door, and folder recents survive only as legacy entries), the recents list with INK/TOML badges, and the reopen checkbox (honoured only after a clean exit, as in the Tauri app). *(Corrected 2026-10-05: the first version of this entry listed "a folder" among Open's choices, from a mis-described option; "match Tauri" is what was chosen, and Tauri has no folder door.)*
+- **WHY:** Each gpui window is built around one project root, so Close Project is closing a window rather than swapping its contents. Opening the landing window when the last one closes keeps the macOS convention of an app that stays alive while still giving the author a way back in. Matching the Tauri landing keeps the two studios' front door the same, so an author moving between them meets the same choices.
+
+## The native studio is verified headlessly, not by driving the screen
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate (the verification road for every gpui UI slice)
+- **WHAT:** UI behaviour in `crates/brink-gpui` is verified through an in-process headless harness (`app/src/harness.rs`): the real `Studio` on gpui's test platform via `HeadlessAppContext`, with real text shaping (cosmic-text) and the Metal headless renderer for screenshots. It drives the studio with actions, keystrokes and typed text, answers prompts through a harness prompt builder, keeps settings in a temp directory, and writes PNGs. Driving the running app from outside (computer use) is not the verification road. gpui's leak check is opt-in per harness until #3628 is fixed, with an ignored canary test waiting on it.
+- **WHY:** gpui stops rendering a window as soon as anything covers it, so background control sees stale frames, and the only alternative was a full-screen takeover of the maintainer's machine. The harness needs no screen, is deterministic, runs as `cargo test`, and becomes the regression gate this workspace has lacked. It wraps production code rather than threading test hooks through it; the one production seam is `settings::init_at`, so a test can never write the author's real settings.
+||||||| 13bcc1bc1
