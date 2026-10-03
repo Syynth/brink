@@ -1,31 +1,22 @@
-//! The command palette and the hamburger menu — `docs/studio-shell-spec.md`
-//! §6: "a shell overlay listing enabled commands, fuzzy-filtered, showing
-//! keybindings", and "a grouped menu generated from the command registry —
-//! no hand-maintained menu structure".
+//! The command palette — `docs/studio-shell-spec.md` §6: "a shell overlay
+//! listing enabled commands, fuzzy-filtered, showing keybindings".
 //!
-//! One overlay, two modes. The palette ranks the registry against what is
-//! typed; the menu lists it grouped, with no input. Both dispatch the
+//! It ranks the registry against what is typed and dispatches the chosen
 //! command's action back through the workspace, which restores focus to
 //! where it was first — a command must run against the surface the author
-//! was in, not against the palette's own input.
+//! was in, not against the palette's own input. The grouped menu the spec
+//! also asks for is the menu bar now (`crate::menus`, #3624), generated
+//! from the same registry.
 
 use gpui::prelude::*;
 use gpui::{
     Action, AnyElement, App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable,
-    IntoElement, KeyDownEvent, Render, SharedString, Subscription, Window, div, px, uniform_list,
+    IntoElement, KeyDownEvent, Render, Subscription, Window, div, px, uniform_list,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
 use crate::commands::{Command, display_keystroke, rank_titles};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PaletteMode {
-    /// Fuzzy-filtered, flat.
-    Palette,
-    /// Grouped, complete, no input — the hamburger.
-    Menu,
-}
 
 /// What the overlay was opened over: the registry, snapshotted with each
 /// command's enablement as gpui reported it at that moment.
@@ -40,18 +31,11 @@ pub enum PaletteEvent {
     Dismiss,
 }
 
-/// A drawn row: a group heading (menu mode) or a command.
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum Row {
-    Heading(SharedString),
-    Item(usize),
-}
-
 pub struct Palette {
-    mode: PaletteMode,
     items: Vec<PaletteItem>,
-    rows: Vec<Row>,
-    /// Index into `rows`; always an `Item` when there is one.
+    /// Indices into `items`, best match first.
+    rows: Vec<usize>,
+    /// Index into `rows`.
     selected: usize,
     input: Entity<InputState>,
     query: String,
@@ -65,12 +49,7 @@ const MAX_VISIBLE_ROWS: usize = 12;
 pub const PALETTE_WIDTH: f32 = 480.0;
 
 impl Palette {
-    pub fn new(
-        mode: PaletteMode,
-        items: Vec<PaletteItem>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(items: Vec<PaletteItem>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Type a command\u{2026}"));
         let subscription = cx.subscribe(
             &input,
@@ -84,7 +63,6 @@ impl Palette {
             },
         );
         let mut this = Self {
-            mode,
             items,
             rows: Vec::new(),
             selected: 0,
@@ -97,90 +75,34 @@ impl Palette {
         this
     }
 
-    #[must_use]
-    pub fn mode(&self) -> PaletteMode {
-        self.mode
-    }
-
-    /// Where keys should land: the input in palette mode, the list itself
-    /// in menu mode.
+    /// Keys land in the input.
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
-        match self.mode {
-            PaletteMode::Palette => self.input.update(cx, |input, cx| input.focus(window, cx)),
-            PaletteMode::Menu => window.focus(&self.focus, cx),
-        }
+        self.input.update(cx, |input, cx| input.focus(window, cx));
     }
 
     fn rebuild(&mut self, cx: &mut Context<Self>) {
-        self.rows = match self.mode {
-            PaletteMode::Palette => {
-                let titles: Vec<(String, String)> = self
-                    .items
-                    .iter()
-                    .map(|i| (i.command.title.to_string(), i.command.full_title()))
-                    .collect();
-                rank_titles(&titles, &self.query)
-                    .into_iter()
-                    .map(Row::Item)
-                    .collect()
-            }
-            PaletteMode::Menu => {
-                // Groups in first-appearance order — registration order,
-                // which is the order features started in.
-                let mut rows = Vec::new();
-                let mut seen: Vec<&SharedString> = Vec::new();
-                for item in &self.items {
-                    if !seen.contains(&&item.command.group) {
-                        seen.push(&item.command.group);
-                    }
-                }
-                for group in seen {
-                    rows.push(Row::Heading(group.clone()));
-                    rows.extend(
-                        self.items
-                            .iter()
-                            .enumerate()
-                            .filter(|(_, i)| &i.command.group == group)
-                            .map(|(ix, _)| Row::Item(ix)),
-                    );
-                }
-                rows
-            }
-        };
-        self.selected = self.next_item_from(0, 1).unwrap_or(0);
+        let titles: Vec<(String, String)> = self
+            .items
+            .iter()
+            .map(|i| (i.command.title.to_string(), i.command.full_title()))
+            .collect();
+        self.rows = rank_titles(&titles, &self.query);
+        self.selected = 0;
         cx.notify();
     }
 
-    /// The nearest `Item` row from `from` stepping by `step`, wrapping.
-    fn next_item_from(&self, from: usize, step: isize) -> Option<usize> {
-        let n = self.rows.len();
-        if n == 0 {
-            return None;
-        }
-        let mut ix = from;
-        for _ in 0..n {
-            if matches!(self.rows[ix], Row::Item(_)) {
-                return Some(ix);
-            }
-            ix = (ix as isize + step).rem_euclid(n as isize) as usize;
-        }
-        None
-    }
-
+    /// Step the selection, wrapping.
     fn move_selection(&mut self, step: isize, cx: &mut Context<Self>) {
         let n = self.rows.len();
         if n == 0 {
             return;
         }
-        let start = (self.selected as isize + step).rem_euclid(n as isize) as usize;
-        if let Some(ix) = self.next_item_from(start, step) {
-            self.selected = ix;
-            cx.notify();
-        }
+        self.selected = (self.selected as isize + step).rem_euclid(n as isize) as usize;
+        cx.notify();
     }
 
     fn confirm(&mut self, cx: &mut Context<Self>) {
-        if let Some(Row::Item(ix)) = self.rows.get(self.selected)
+        if let Some(ix) = self.rows.get(self.selected)
             && let Some(item) = self.items.get(*ix)
             && item.enabled
         {
@@ -204,56 +126,40 @@ impl Palette {
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
         let (fg, muted, accent) = (theme.foreground, theme.muted_foreground, theme.accent);
-        match &self.rows[ix] {
-            Row::Heading(group) => div()
-                .h(px(ROW_HEIGHT))
-                .px_3()
-                .flex()
-                .items_end()
-                .pb_1()
-                .text_xs()
-                .text_color(muted)
-                .child(group.to_uppercase())
-                .into_any_element(),
-            Row::Item(item_ix) => {
-                let item = &self.items[*item_ix];
-                let selected = ix == self.selected;
-                let colour = if item.enabled { fg } else { muted };
-                let keystroke = item.command.keystroke.as_deref().map(display_keystroke);
-                h_flex()
-                    .id(("palette-row", ix))
-                    .h(px(ROW_HEIGHT))
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .when(selected, |el| el.bg(accent))
-                    .when(self.mode == PaletteMode::Palette, |el| {
-                        el.child(
-                            div()
-                                .text_color(muted)
-                                .child(format!("{}:", item.command.group)),
-                        )
-                    })
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .overflow_hidden()
-                            .text_ellipsis()
-                            .whitespace_nowrap()
-                            .text_color(colour)
-                            .child(item.command.title.clone()),
-                    )
-                    .children(keystroke.map(|k| div().text_xs().text_color(muted).child(k)))
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.selected = ix;
-                        this.confirm(cx);
-                    }))
-                    .into_any_element()
-            }
-        }
+        let item = &self.items[self.rows[ix]];
+        let selected = ix == self.selected;
+        let colour = if item.enabled { fg } else { muted };
+        let keystroke = item.command.keystroke.as_deref().map(display_keystroke);
+        h_flex()
+            .id(("palette-row", ix))
+            .h(px(ROW_HEIGHT))
+            .px_3()
+            .gap_2()
+            .items_center()
+            .rounded_sm()
+            .cursor_pointer()
+            .when(selected, |el| el.bg(accent))
+            .child(
+                div()
+                    .text_color(muted)
+                    .child(format!("{}:", item.command.group)),
+            )
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .whitespace_nowrap()
+                    .text_color(colour)
+                    .child(item.command.title.clone()),
+            )
+            .children(keystroke.map(|k| div().text_xs().text_color(muted).child(k)))
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.selected = ix;
+                this.confirm(cx);
+            }))
+            .into_any_element()
     }
 }
 
@@ -287,9 +193,7 @@ impl Render for Palette {
             .border_color(theme.border)
             .shadow_lg()
             .text_sm()
-            .when(self.mode == PaletteMode::Palette, |el| {
-                el.child(div().px_1().child(Input::new(&self.input).small()))
-            })
+            .child(div().px_1().child(Input::new(&self.input).small()))
             .when(empty, |el| {
                 el.child(
                     div()

@@ -2,7 +2,7 @@
 //! `docs/studio-shell-spec.md` §6's command contract.
 //!
 //! **A command is a gpui action with a title.** Keybindings, the palette,
-//! the hamburger menu, rail buttons and status cells all dispatch the same
+//! the menu bar, rail buttons and status cells all dispatch the same
 //! action, so nothing binds a key to a function and the palette is complete
 //! by construction. There is no second registry: the action IS the command;
 //! this module only remembers what to call it and where it starts bound.
@@ -42,10 +42,10 @@ actions!(
     [
         /// Open or close the command palette.
         TogglePalette,
-        /// Open or close the hamburger menu.
-        ToggleMenu,
         /// Open the Settings window.
         OpenSettings,
+        /// Open the Settings window on its Keymap section.
+        OpenKeymap,
         /// What a default keystroke is rebound to when an override takes
         /// it away: swallowed by the workspace's global listener, so the
         /// keystroke does nothing rather than falling through to the
@@ -78,7 +78,8 @@ pub struct ToggleToolWindow {
 
 /// One registered command.
 pub struct Command {
-    /// Palette group and hamburger section: "View", "File", "Story".
+    /// Palette group, and what the menu bar places by (`crate::menus`):
+    /// "View", "File", "Play".
     pub group: SharedString,
     /// What the palette shows; the ruled vocabulary, so it is user-facing.
     pub title: SharedString,
@@ -239,7 +240,7 @@ pub fn keymap_bindings(
     out
 }
 
-/// The commands, in registration order — the order the palette and menu
+/// The commands, in registration order — the order the palette and menus
 /// list them in, and the order `Mod-1…9` are handed out in.
 #[derive(Default)]
 pub struct CommandRegistry {

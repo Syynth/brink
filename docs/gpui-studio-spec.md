@@ -265,10 +265,20 @@ order (studio §5.2), shown in its rail tooltip; the app registers its own
 (`File: Save`). Enablement is gpui's `Window::available_actions` — no
 `when` closures. The **palette** (`cmd-shift-p`) ranks the registry by the
 studio's quick-pick rule (title first, then the group-qualified title,
-tighter subsequence wins) and shows keystrokes; the **hamburger** at the
-top of the left rail opens the same overlay grouped, generated from the
-registry (studio §6). A chosen command runs only after the overlay has
-closed and focus is back where it was.
+tighter subsequence wins) and shows keystrokes. A chosen command runs only
+after the overlay has closed and focus is back where it was.
+
+The **menu bar** (#3624, ruled 2026-10-03; `shell/src/menus.rs`) is the
+grouped menu studio §6 asks for, generated from the same registry. The app
+names which registry *groups* go in which menu (`MenuSpec`), never which
+commands, and a group no spec names gets a menu of its own, so every
+registered command is reachable by construction. On macOS it is the native
+bar (`cx.set_menus`), with the App menu (About, Settings…, Services, Hide,
+Quit) and a Window menu around the app's menus. Elsewhere the kit's
+`AppMenuBar` draws the same menus in the title bar: the App menu's items
+move to the foot of File and to Help, so no menu is titled with the app's
+name. The `☰` that used to open the registry as a grouped overlay at the
+top of the left rail is gone on every platform.
 
 Two facts the build turned up. The workspace holds a fallback focus and
 every view hands the shell a focus handle: a key pressed while nothing is

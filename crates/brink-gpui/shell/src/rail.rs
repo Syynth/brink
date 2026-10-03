@@ -10,7 +10,7 @@
 //! the region model.
 
 use gpui::prelude::*;
-use gpui::{AnyElement, App, Hsla, Pixels, SharedString, Window, div, px};
+use gpui::{App, Hsla, Pixels, SharedString, Window, div, px};
 use gpui_component::{
     ActiveTheme,
     button::{Button, ButtonVariants as _},
@@ -40,13 +40,10 @@ pub struct RailButton {
     pub keystroke: Option<SharedString>,
 }
 
-/// Render one rail. `on_click` receives the id of the button pressed;
-/// `leading` sits above the upper group — the hamburger, on the left rail
-/// (studio §6: "a single icon at the top of the left strip").
+/// Render one rail. `on_click` receives the id of the button pressed.
 pub fn rail<F>(
     edge: RailEdge,
     buttons: &[RailButton],
-    leading: Option<AnyElement>,
     on_click: F,
     _window: &mut Window,
     cx: &mut App,
@@ -100,13 +97,7 @@ where
         // Upper group flows from the top; the lower group is pinned to the
         // bottom by `justify_between`, which is the whole visual point of
         // dropping the bottom rail.
-        .child(
-            v_flex()
-                .gap_1()
-                .items_center()
-                .children(leading)
-                .child(group(RailGroup::Upper)),
-        )
+        .child(group(RailGroup::Upper))
         .child(group(RailGroup::Lower))
 }
 

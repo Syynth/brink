@@ -7,6 +7,7 @@
 pub mod commands;
 pub mod editor_view;
 pub mod icons;
+pub mod menus;
 pub mod notify;
 pub mod palette;
 pub mod rail;
