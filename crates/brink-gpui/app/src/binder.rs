@@ -81,6 +81,16 @@ fn convert_symbol(symbol: &brink_gpui_model::query::Symbol) -> SymbolNode {
 const ROW_HEIGHT: f32 = 26.0;
 const INDENT: f32 = 18.0;
 const PAD_X: f32 = 12.0;
+/// A row's icon, square. Its centre is where a child's guide line falls.
+const ICON: f32 = 13.0;
+
+/// Where the guide line under the ancestor at `depth` falls, from the row's
+/// left edge: centred under that ancestor's icon. A row at `depth` starts
+/// its icon at `PAD_X + depth × INDENT` — strictly, the web studio's
+/// "depth is pad + n × indent" (`binder.css`, maintainer 2026-08-23).
+fn guide_x(depth: usize) -> f32 {
+    (PAD_X + depth as f32 * INDENT + ICON / 2.).floor()
+}
 
 // ── Model ────────────────────────────────────────────────────────────
 
@@ -1149,13 +1159,21 @@ impl Binder {
         let kind_for_move = row.kind;
         let structural = row.structural();
 
-        // Indent guides: one hairline under each ancestor's icon column.
-        let guides = (0..row.depth).map(|_| {
+        // Indent guides, Zed's placement (the web studio's `binder.css`,
+        // maintainer 2026-08-23): one hairline per ancestor, centred under
+        // that ancestor's icon. An overlay rather than spacer boxes in the
+        // row: as flex children they picked up the row's gap after each
+        // one, so a level was 26px instead of 18, and each line sat at its
+        // box's left edge — under the edge of the parent's icon, not its
+        // middle.
+        let guides = (0..row.depth).map(|ancestor| {
             div()
-                .w(px(INDENT))
-                .h_full()
-                .border_l_1()
-                .border_color(theme.border.opacity(0.5))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .left(px(guide_x(ancestor)))
+                .w(px(1.))
+                .bg(theme.border.opacity(0.5))
         });
 
         let marks = (!row.marks.is_empty()).then(|| {
@@ -1197,8 +1215,9 @@ impl Binder {
             .h(px(ROW_HEIGHT))
             .child(
                 h_flex()
+                    .relative()
                     .size_full()
-                    .pl(px(PAD_X))
+                    .pl(px(PAD_X + row.depth as f32 * INDENT))
                     .pr_2()
                     .items_center()
                     .gap_2()
@@ -1208,7 +1227,7 @@ impl Binder {
                         el.hover(|s| s.bg(theme.muted.opacity(0.5)))
                     })
                     .children(guides)
-                    .child(icons::icon(Self::icon_for(&row), px(13.), icon_color))
+                    .child(icons::icon(Self::icon_for(&row), px(ICON), icon_color))
                     .child(
                         div()
                             .flex_1()
@@ -1812,6 +1831,59 @@ impl gpui_component::dock::Panel for Binder {
     /// other.
     fn inner_padding(&self, _cx: &App) -> bool {
         false
+    }
+}
+
+/// The picture: nested folders in the Binder, for checking the guides by
+/// eye. Written beside the test output.
+#[cfg(test)]
+mod driven {
+    use crate::harness::{Harness, scratch_dir};
+
+    #[test]
+    fn nested_folders_render_with_their_guides() {
+        let dir = scratch_dir("binder");
+        let files = [
+            (
+                "main.ink",
+                "INCLUDE clues/clue_case_file.ink\nINCLUDE lib/functions.ink\n-> END\n",
+            ),
+            ("clues/clue_case_file.ink", "A case file.\n"),
+            ("clues/clue_parents_letter.ink", "A letter.\n"),
+            ("lib/functions.ink", "=== function f ===\n~ return 1\n"),
+            ("lib/lists.ink", "LIST colours = red, blue\n"),
+            ("lib/deep/more.ink", "More.\n"),
+        ];
+        for (path, text) in files {
+            let path = dir.join(path);
+            std::fs::create_dir_all(path.parent().expect("has a folder")).expect("folders");
+            std::fs::write(path, text).expect("writing");
+        }
+        let mut h = Harness::new();
+        let window = h.open(&dir.join("main.ink"));
+        let shot = scratch_dir("shot").join("binder.png");
+        h.screenshot(window, &shot);
+        eprintln!("binder screenshot: {}", shot.display());
+    }
+}
+
+#[cfg(test)]
+mod guide_tests {
+    use super::{ICON, INDENT, PAD_X, guide_x};
+
+    #[test]
+    fn a_guide_falls_under_the_middle_of_its_ancestors_icon() {
+        for depth in 0..4 {
+            let icon_left = PAD_X + depth as f32 * INDENT;
+            let x = guide_x(depth);
+            assert!(
+                x >= icon_left + ICON / 2. - 1. && x <= icon_left + ICON / 2.,
+                "depth {depth}: line at {x}, icon {icon_left}..{}",
+                icon_left + ICON
+            );
+        }
+        // Levels are exactly one indent apart: no gap rides along.
+        assert_eq!(guide_x(1) - guide_x(0), INDENT);
     }
 }
 
