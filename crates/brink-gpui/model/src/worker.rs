@@ -56,7 +56,16 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub enum Request {
     /// Discard any current project and load the one rooted at `root`.
-    Open { root: PathBuf },
+    ///
+    /// `entry` is a human's explicit choice of entry (root-relative): the
+    /// story-file door of the 2026-08-23 ruling, "A project is anchored on
+    /// a FILE". It beats the `brink.toml`'s `[project] entry`, on open and
+    /// on every later edit to the config. `None` is the config's door: the
+    /// config names the entry, or nothing does.
+    Open {
+        root: PathBuf,
+        entry: Option<String>,
+    },
     /// Ask a question of the current analysis. Answered **after** every
     /// edit queued ahead of it, so it never sees stale text.
     Query {
@@ -231,7 +240,12 @@ pub struct ConfigState {
     /// session never sees them as documents; the config's reader serves
     /// them from here (an unsaved edit wins) and then from the disk.
     artifacts: BTreeMap<String, String>,
+    /// The entry in force: [`Self::explicit_entry`] when there is one,
+    /// otherwise the config's `[project] entry`.
     entry: Option<String>,
+    /// The entry a human opened the project by (the story-file door).
+    /// Survives every re-application of the config.
+    explicit_entry: Option<String>,
     /// The applied config's warnings, unprefixed.
     warnings: Vec<String>,
     /// The current text's parse error, if it has one: its byte span in
@@ -412,12 +426,12 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
             match request {
                 Request::Query { kind, reply } => queries.push((kind, reply)),
                 Request::Play { command, reply } => plays.push((command, reply)),
-                Request::Open { root } => {
+                Request::Open { root, entry } => {
                     session = session_with_stdlib();
                     config = ConfigState::default();
                     play = PlaySlot::default();
                     files.clear();
-                    let opened = match open(&mut session, root) {
+                    let opened = match open(&mut session, root, entry) {
                         Ok((opened, state)) => {
                             config = state;
                             Ok(opened)
@@ -571,7 +585,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 }
 
 /// Load every source file under `root`, then apply its `brink.toml`.
-fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState), String> {
+fn open(
+    session: &mut IdeSession,
+    root: PathBuf,
+    explicit_entry: Option<String>,
+) -> Result<(Opened, ConfigState), String> {
     let started = Instant::now();
 
     let mut files = Vec::new();
@@ -589,7 +607,15 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
         sources.push(text);
     }
 
-    let (config, state) = load_config(session, &root, &files);
+    if let Some(entry) = &explicit_entry
+        && !files.contains(entry)
+    {
+        return Err(format!(
+            "{entry} is not a story file under {}",
+            root.display()
+        ));
+    }
+    let (config, state) = load_config(session, &root, &files, explicit_entry);
     session.refresh_analysis();
 
     // What the config pointed at, so the mirror can hold it and the
@@ -664,13 +690,21 @@ fn load_config(
     session: &mut IdeSession,
     root: &Path,
     files: &[String],
+    explicit_entry: Option<String>,
 ) -> (Option<ConfigFile>, ConfigState) {
     let mut state = ConfigState {
         root: root.to_path_buf(),
+        entry: explicit_entry.clone(),
+        explicit_entry,
         ..ConfigState::default()
     };
     let tree = brink_driver::RealFs::new(root);
-    let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, &files[0]) else {
+    let from = state.explicit_entry.as_deref().unwrap_or(&files[0]);
+    let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, from) else {
+        // No config: an explicit entry is still an entry. Without this a
+        // project opened by its story file would have no compile closure —
+        // the configless state #3010 diagnosed.
+        set_compile_entry(session, state.entry.as_deref());
         return (None, state);
     };
     let Ok(text) = std::fs::read_to_string(root.join(&key)) else {
@@ -720,7 +754,10 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 Some(&config_dir),
                 &read_file,
             ));
-            state.entry.clone_from(&config.entry);
+            state.entry = state
+                .explicit_entry
+                .clone()
+                .or_else(|| config.entry.clone());
             state.prose = Some(ProseState {
                 // Unset means on: a project that has said nothing about
                 // prose still wants its prose checked.
@@ -946,7 +983,7 @@ mod tests {
     fn open_tree_with_config(tree: &Tree) -> (IdeSession, Opened, ConfigState) {
         let mut session = session_with_stdlib();
         let (opened, state) =
-            open(&mut session, tree.0.clone()).expect("the fixture project must load");
+            open(&mut session, tree.0.clone(), None).expect("the fixture project must load");
         (session, opened, state)
     }
 
@@ -1119,11 +1156,63 @@ mod tests {
 
     /// Drive the real worker thread, blocking on its channels.
     fn drive(tree: &Tree) -> Worker {
+        drive_with_entry(tree, None)
+    }
+
+    /// [`drive`], opened through the story-file door with `entry`.
+    fn drive_with_entry(tree: &Tree, entry: Option<&str>) -> Worker {
         let worker = Worker::spawn();
         worker.send(Request::Open {
             root: tree.0.clone(),
+            entry: entry.map(ToOwned::to_owned),
         });
         worker
+    }
+
+    /// The analysis that follows an open.
+    fn analyzed_after_open(worker: &Worker) -> Analyzed {
+        let opened = next(worker);
+        assert!(
+            matches!(&opened, Response::Opened(o) if o.is_ok()),
+            "the open must succeed: {opened:?}"
+        );
+        match next(worker) {
+            Response::Analyzed(analyzed) => *analyzed,
+            other => panic!("expected Analyzed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_entry_beats_the_configs() {
+        // The 2026-08-23 ruling: a human's explicit open is not a default.
+        let tree = Tree::new(
+            "explicit-beats-config",
+            &[
+                ("brink.toml", "[project]\nentry = \"main.ink\"\n"),
+                ("main.ink", "Main.\n-> DONE\n"),
+                ("side.ink", "Side.\n-> DONE\n"),
+            ],
+        );
+        let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("side.ink")));
+        assert_eq!(analyzed.entry.as_deref(), Some("side.ink"));
+        assert_eq!(analyzed.closure, ["side.ink"]);
+    }
+
+    #[test]
+    fn an_explicit_entry_with_no_config_still_compiles() {
+        // Without it the configless project has no closure at all — the
+        // silent state #3010 diagnosed.
+        let tree = Tree::new("explicit-no-config", &[("story.ink", "Hi.\n-> DONE\n")]);
+        let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("story.ink")));
+        assert_eq!(analyzed.entry.as_deref(), Some("story.ink"));
+        assert_eq!(analyzed.closure, ["story.ink"]);
+    }
+
+    #[test]
+    fn an_explicit_entry_that_is_not_a_story_file_refuses_the_open() {
+        let tree = Tree::new("explicit-missing", &[("story.ink", "Hi.\n-> DONE\n")]);
+        let worker = drive_with_entry(&tree, Some("nope.ink"));
+        assert!(matches!(next(&worker), Response::Opened(o) if o.is_err()));
     }
 
     fn next(worker: &Worker) -> Response {
@@ -1990,7 +2079,8 @@ mod tests {
     fn opening_a_tree_with_no_sources_is_an_error_not_a_panic() {
         let tree = Tree::new("empty", &[("README.md", "nothing here\n")]);
         let mut session = session_with_stdlib();
-        let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
+        let err =
+            open(&mut session, tree.0.clone(), None).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
     }
 

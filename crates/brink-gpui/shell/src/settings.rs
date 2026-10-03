@@ -94,7 +94,15 @@ pub struct AppSettings {
     /// Projects opened before, most recent first — the roots the File
     /// menu offers to reopen. Absolute paths, since a recent is only
     /// meaningful as a place on this machine.
+    ///
+    /// Each is the ANCHOR it was opened by (decision log 2026-08-23, "A
+    /// project is anchored on a FILE"): a `.ink` or a `brink.toml`. A bare
+    /// folder is a legacy entry from before the landing window.
     pub recents: Vec<String>,
+    /// "Reopen last project on launch" — the landing window's checkbox.
+    /// Honoured only after a clean exit (see `exit_was_clean`), so a
+    /// project that crashed the app cannot crash it again on every launch.
+    pub reopen_last: bool,
 }
 
 /// How many recent projects are remembered. A recents list is a
@@ -262,6 +270,7 @@ impl Default for AppSettings {
             follow_in_editor: true,
             player_font_size: 0.,
             recents: Vec::new(),
+            reopen_last: false,
         }
     }
 }
@@ -319,6 +328,7 @@ impl AppSettings {
             "follow_in_editor": self.follow_in_editor,
             "player_font_size": self.player_font_size,
             "recents": self.recents.clone(),
+            "reopen_last": self.reopen_last,
         })
     }
 
@@ -418,6 +428,10 @@ impl AppSettings {
                         .collect()
                 })
                 .unwrap_or_default(),
+            reopen_last: value
+                .get("reopen_last")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.reopen_last),
         }
     }
 }
@@ -494,6 +508,40 @@ pub fn init_at(dir: Option<PathBuf>, cx: &mut App) {
     cx.set_global(settings);
 }
 
+/// The file that says whether the last session ended cleanly: `running`
+/// while one is up, `clean` once it quits. A crash never writes `clean`.
+const EXIT_STATE_FILE: &str = "exit-state";
+
+/// Mark this session as running, answering whether the PREVIOUS one ended
+/// cleanly. No file at all is a first launch, which counts as clean.
+///
+/// Gates "Reopen last project on launch" (the Tauri app's #3016 crash
+/// guard): reopening must not walk the author straight back into whatever
+/// killed the last session.
+pub fn begin_session(cx: &App) -> bool {
+    let Some(dir) = cx
+        .try_global::<SettingsLocation>()
+        .and_then(|location| location.0.clone())
+    else {
+        return true;
+    };
+    let path = dir.join(EXIT_STATE_FILE);
+    let clean = std::fs::read_to_string(&path).map_or(true, |s| s.trim() != "running");
+    let _ = std::fs::create_dir_all(&dir);
+    let _ = std::fs::write(&path, "running");
+    clean
+}
+
+/// Mark this session as ended cleanly. From the quit hook.
+pub fn end_session(cx: &App) {
+    if let Some(dir) = cx
+        .try_global::<SettingsLocation>()
+        .and_then(|location| location.0.clone())
+    {
+        let _ = std::fs::write(dir.join(EXIT_STATE_FILE), "clean");
+    }
+}
+
 /// Note a project as opened: it goes to the front of the recents, at most
 /// once, and the list is capped. Moving an already-listed project to the
 /// front is a real change and is written — "most recent first" is the
@@ -563,7 +611,8 @@ mod tests {
             default_view: Some("continuous".to_owned()),
             follow_in_editor: false,
             player_font_size: 20.,
-            recents: vec!["/home/me/harbour".to_owned()],
+            recents: vec!["/home/me/harbour/story.ink".to_owned()],
+            reopen_last: true,
         };
         s.keymap
             .insert("File: Save".to_owned(), Some("cmd-shift-s".to_owned()));

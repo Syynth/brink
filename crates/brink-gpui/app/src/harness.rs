@@ -36,7 +36,7 @@ use gpui::{
     PromptResponse, Render, RenderablePromptHandle, Styled as _, Window, div, px, rgb,
 };
 
-use crate::{OpenStudios, Studio, open_project_window};
+use crate::{OpenStudios, Studio, landing};
 
 /// A studio under test. Windows are opened on it with [`Harness::open`].
 pub struct Harness {
@@ -65,6 +65,9 @@ impl Harness {
             brink_gpui_shell::theme::init(cx);
             cx.set_global(Prompts::default());
             cx.set_prompt_builder(record_prompt);
+            // The app's window lifecycle (last project closed → landing).
+            // Not `main`'s `on_reopen`: the test platform cannot take one.
+            landing::install(cx);
         });
         Self {
             cx: Some(cx),
@@ -89,19 +92,25 @@ impl Harness {
             .expect("the app lives until the harness drops")
     }
 
-    /// Open `root` the way the app does, and answer its window.
-    pub fn open(&mut self, root: &Path) -> AnyWindowHandle {
-        let opened = self
-            .app()
-            .update(|cx| open_project_window(root.to_owned(), cx));
-        assert!(opened, "the studio could not open {}", root.display());
+    /// Open `path` by its door, the way the app does (a `.ink`, a
+    /// `brink.toml`, or a folder), and answer its window.
+    pub fn open(&mut self, path: &Path) -> AnyWindowHandle {
+        let opened = self.app().update(|cx| landing::open_anchor(path, cx));
+        let window = opened.unwrap_or_else(|error| {
+            unreachable!("the studio could not open {}: {error}", path.display())
+        });
         self.settle();
+        window
+    }
+
+    /// The landing window, while one is open.
+    pub fn landing(&mut self) -> Option<AnyWindowHandle> {
         self.app().update(|cx| {
-            cx.global::<OpenStudios>()
-                .0
-                .last()
-                .map(|(window, _)| *window)
-                .expect("a window that just opened is registered")
+            let studios: Vec<AnyWindowHandle> = cx
+                .try_global::<OpenStudios>()
+                .map(|open| open.0.iter().map(|(w, _)| *w).collect())
+                .unwrap_or_default();
+            cx.windows().into_iter().find(|w| !studios.contains(w))
         })
     }
 
@@ -258,6 +267,9 @@ impl Drop for Harness {
     /// really left behind — not everything a still-open one holds. Without
     /// [`Harness::check_leaks`] the app is then forgotten, not dropped.
     fn drop(&mut self) {
+        // Closing everything here is the app quitting, so the lifecycle
+        // must not answer the last close with a landing window.
+        self.app().update(landing::begin_shutdown);
         let windows = self.app().update(|cx| cx.windows());
         for window in windows {
             let _ = self

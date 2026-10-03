@@ -18,6 +18,7 @@ mod graph_layout;
 mod harness;
 mod inkt_highlight;
 mod knots;
+mod landing;
 mod navigation;
 mod output_log;
 mod player;
@@ -134,8 +135,11 @@ actions!(
         OpenStoryGraph,
         /// Go to a file, knot or stitch by name.
         QuickOpenGoTo,
-        /// Choose a project folder and open it in a new window.
+        /// Choose a story file or a `brink.toml` and open its project in a
+        /// new window (the two doors: `landing::anchor_for`).
         OpenProject,
+        /// Choose a folder, scaffold `main.ink` + `brink.toml`, open it.
+        NewProject,
         /// Give the editor the whole window, and give it back.
         MaximizeEditor,
         /// Take back the last file operation — a create, a rename, a
@@ -197,7 +201,14 @@ struct Studio {
 }
 
 impl Studio {
-    fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `entry` is an explicit entry from the story-file door; `None` lets
+    /// the project's config name it.
+    fn new(
+        root: PathBuf,
+        entry: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let project = cx.new(Project::new);
         let workspace = cx.new(|cx| Workspace::new(window, cx));
 
@@ -525,6 +536,7 @@ impl Studio {
                 Some("cmd-shift-e"),
                 cx,
             );
+            workspace.register_command("File", "New Project\u{2026}", NewProject, None, cx);
             workspace.register_command(
                 "File",
                 "Open Project\u{2026}",
@@ -551,7 +563,7 @@ impl Studio {
             workspace.register_command("File", "Undo File Operation", UndoFileOp, None, cx);
             workspace.register_command(
                 "File",
-                "Close Window",
+                "Close Project",
                 CloseWindow,
                 Some("cmd-shift-w"),
                 cx,
@@ -894,7 +906,7 @@ impl Studio {
         // studio between opening a file and saving it was invisible, and
         // the next save simply overwrote it.
         let watching = watch::start(project.clone(), root.clone(), cx);
-        project.update(cx, |project, _| project.open(root));
+        project.update(cx, |project, _| project.open(root, entry));
 
         // Keys have somewhere to land from the first frame.
         let workspace_focus = workspace.read(cx).focus_handle(cx);
@@ -1549,45 +1561,19 @@ impl Studio {
         self.open(path, None, window, cx);
     }
 
-    /// Ask the platform for a folder, then open it in a new window.
+    /// Ask for a story file or a config, then open its project in a new
+    /// window.
     ///
     /// A new window rather than this one: every panel here is built around
     /// one root — the documents, the Binder's tree, the worker's session —
     /// so swapping the root under them would mean tearing all of it down
     /// and building it again, which is what opening a window does anyway.
-    fn open_project(&mut self, _: &OpenProject, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
-        cx.spawn_in(window, async move |_, cx| {
-            let chosen = paths.await;
-            cx.update(|window, cx| match chosen {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(root) = paths.into_iter().next() {
-                        open_project_window(root, cx);
-                    }
-                }
-                // Cancelled: the person said no, which is not news.
-                Ok(Ok(None)) => {}
-                // On Linux the picker is the desktop portal, which is not
-                // always there (a bare X session, a container). Saying so
-                // beats a menu entry that silently does nothing.
-                Ok(Err(err)) => {
-                    notify(
-                        Severity::Error,
-                        "studio",
-                        format!("Could not open the folder picker: {err}"),
-                        window,
-                        cx,
-                    );
-                }
-                Err(_) => {}
-            })
-        })
-        .detach();
+    fn open_project(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
+        landing::choose_and_open(cx);
+    }
+
+    fn new_project(&mut self, _: &NewProject, _: &mut Window, cx: &mut Context<Self>) {
+        landing::new_project(cx);
     }
 
     fn open_recent(
@@ -1596,24 +1582,11 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let root = PathBuf::from(&action.path);
-        if !root.is_dir() {
-            // A recent outlives the folder it names. Say so and drop it,
-            // rather than opening a window onto nothing.
-            notify(
-                Severity::Error,
-                "studio",
-                format!("{} is no longer there.", action.path),
-                window,
-                cx,
-            );
-            let gone = action.path.clone();
-            brink_gpui_shell::settings::update(cx, |settings| {
-                settings.recents.retain(|p| p != &gone);
-            });
-            return;
+        // A recent outlives the file it names: `open_recent` drops it from
+        // the list, and the reason is said here rather than nowhere.
+        if let Err(error) = landing::open_recent(&action.path, cx) {
+            notify(Severity::Error, "studio", error, window, cx);
         }
-        open_project_window(root, cx);
     }
 
     fn maximize_editor(&mut self, _: &MaximizeEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -2049,6 +2022,7 @@ fn quit_asking(cx: &mut App) {
                 for (_, studio) in &studios {
                     let _ = studio.update(cx, |studio, _| studio.close.confirmed = true);
                 }
+                landing::begin_shutdown(cx);
                 cx.quit();
             }
         });
@@ -2095,6 +2069,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_story_graph))
             .on_action(cx.listener(Self::quick_open))
             .on_action(cx.listener(Self::open_project))
+            .on_action(cx.listener(Self::new_project))
             .on_action(cx.listener(Self::maximize_editor))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::undo_file_op))
@@ -2124,64 +2099,82 @@ fn recent_label(path: &str) -> String {
     }
 }
 
-/// Open a studio window on `root`, and remember it as a recent.
+/// Open a studio window on `root`, answering its handle.
 ///
-/// The one place a window is made: `main` and Open Project both come
-/// through here, so the rem size, the title bar options and the recents
+/// The one place a project window is made: `landing::open_anchor` is the
+/// one caller, so the rem size, the title bar options and the recents
 /// bookkeeping cannot drift apart between the first window and the rest.
-fn open_project_window(root: PathBuf, cx: &mut App) -> bool {
+/// The recent is remembered there, after this, because `Studio::new`
+/// registers one command per recent and a window must not offer to reopen
+/// itself.
+fn open_project_window(
+    root: PathBuf,
+    entry: Option<String>,
+    cx: &mut App,
+) -> Option<AnyWindowHandle> {
     let root = root.canonicalize().unwrap_or(root);
     let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         ..TitleBar::window_options()
     };
-    let opening = root.clone();
     let opened = cx.open_window(options, move |window, cx| {
         // The app font size scales the window's rem.
         let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
         window.set_rem_size(px(rem));
-        let view = cx.new(|cx| Studio::new(opening, window, cx));
+        let view = cx.new(|cx| Studio::new(root, entry, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });
     match opened {
-        Ok(_) => {
-            // After the window: `Studio::new` registers one command per
-            // recent, and a window must not offer to reopen itself.
-            brink_gpui_shell::settings::remember_project(&root, cx);
-            true
-        }
+        Ok(window) => Some(window.into()),
         Err(err) => {
             eprintln!("failed to open window: {err:#}");
-            false
+            None
         }
     }
 }
 
 fn main() {
-    let root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../../tests/tier1-native/conventions-cross-file"));
-    let root = root.canonicalize().unwrap_or(root);
+    // A path on the command line is opened by its door (`landing::anchor_for`):
+    // a `.ink`, a `brink.toml`, or a folder.
+    let arg = std::env::args().nth(1).map(PathBuf::from);
 
     // gpui-pre publishes the core without a platform backend; the macOS/
     // Windows/Linux implementations live in `gpui-pre-platform`.
     // The kit's icons (`IconName`) are assets the application has to
     // register; a `Button::icon(IconName::ChevronDown)` with no asset
     // source silently draws nothing.
-    Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(brink_gpui_shell::icons::Assets)
-        .run(move |cx| {
-            gpui_component::init(cx);
-            // The persisted settings and their theme, before the first paint.
-            brink_gpui_shell::settings::init(cx);
-            brink_gpui_shell::theme::init(cx);
-            if !open_project_window(root.clone(), cx) {
-                std::process::exit(1);
+    let app = Application::with_platform(gpui_platform::current_platform(false))
+        .with_assets(brink_gpui_shell::icons::Assets);
+    // The Dock icon with nothing open brings the landing back.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            landing::open_landing_window(None, cx);
+        }
+    });
+    app.run(move |cx| {
+        gpui_component::init(cx);
+        // The persisted settings and their theme, before the first paint.
+        brink_gpui_shell::settings::init(cx);
+        brink_gpui_shell::theme::init(cx);
+        landing::install(cx);
+        let previous_was_clean = brink_gpui_shell::settings::begin_session(cx);
+        let settings = brink_gpui_shell::settings::AppSettings::get(cx);
+        match landing::launch(
+            arg,
+            settings.reopen_last,
+            previous_was_clean,
+            &settings.recents,
+        ) {
+            landing::Launch::Open(path) => {
+                if let Err(error) = landing::open_anchor(&path, cx) {
+                    landing::open_landing_window(Some(error), cx);
+                }
             }
-            cx.activate(true);
-        });
+            landing::Launch::Landing => landing::open_landing_window(None, cx),
+        }
+        cx.activate(true);
+    });
 }
 
 #[cfg(test)]

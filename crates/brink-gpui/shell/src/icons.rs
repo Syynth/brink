@@ -83,9 +83,14 @@ pub fn icon(name: BrinkIcon, size: Pixels, color: Hsla) -> Svg {
 /// icons have to keep resolving — every `IconName` in every kit widget goes
 /// through it, and registering nothing is what once made all of them draw an
 /// empty box. So this serves our directory and delegates everything else.
+///
+/// `brand/` holds the app's own mark, which is an IMAGE (`img`), not an
+/// icon: icons render as one-colour masks, and the mark is two colours. It
+/// is kept out of `icons/` so `icon_named!` never makes a variant of it.
 #[derive(rust_embed::RustEmbed)]
 #[folder = "assets"]
 #[include = "icons/**/*.svg"]
+#[include = "brand/*.svg"]
 pub struct Assets;
 
 impl AssetSource for Assets {
@@ -162,10 +167,16 @@ mod tests {
     /// build error. This is what notices.
     #[test]
     fn every_icon_file_became_a_variant() {
-        let files = Assets::iter().count();
+        let files = Assets::iter().filter(|p| p.starts_with("icons/")).count();
         assert_eq!(
             files, 24,
             "expected the ported set plus `infinity`; found {files}"
+        );
+        assert!(
+            Assets
+                .load("brand/brink-mark.svg")
+                .is_ok_and(|f| f.is_some()),
+            "the landing's mark is served, outside the icon set"
         );
         assert_eq!(BrinkIcon::Knot.path(), "icons/knot.svg");
         assert_eq!(BrinkIcon::Drop.path(), "icons/drop.svg");
