@@ -584,15 +584,16 @@ impl Studio {
         // there. Toggling a tool window or switching view writes too (see
         // `save_layout` in the handlers), so a crash loses at most an
         // unfinished drag.
-        cx.on_app_quit({
-            let workspace = workspace.clone();
-            let code = code.clone();
-            let project = project.clone();
-            move |_: &mut Studio, cx: &mut Context<Studio>| {
-                let documents = document_state(&project, &code, cx);
-                Workspace::save_layout(&workspace, Some(documents), cx);
-                async move {}
-            }
+        //
+        // The hook reads the studio it is handed rather than capturing its
+        // parts: a detached quit hook lives as long as the app, so a captured
+        // `Entity` would keep a closed window's project, editors and worker
+        // thread alive until quit (found by the headless harness's leak
+        // check).
+        cx.on_app_quit(|this: &mut Studio, cx: &mut Context<Studio>| {
+            let documents = document_state(&this.project, &this.code, cx);
+            Workspace::save_layout(&this.workspace, Some(documents), cx);
+            async move {}
         })
         .detach();
 
