@@ -64,8 +64,8 @@ The three tiers of spec §2 all exist. 23 tests, all green.
 | crate | what it holds |
 |---|---|
 | `model/` | `worker.rs` (the `IdeSession` on its own thread), `tokens.rs` (per-segment paint cache), `query.rs` (hover/completions/symbols/inlays) |
-| `shell/` | `region.rs` (the ruled rail→dock mapping), `rail.rs`, `workspace.rs`, `tool_window.rs`, `editor_view.rs` (the three views' root), `skin.rs` |
-| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `code_view.rs` (documents, tabs, the active file), `single_view.rs`, `continuous.rs`, `binder.rs`, `problems.rs` (the studio's Problems view, ported — see its module doc for what is and is not), `main.rs` |
+| `shell/` | `region.rs` (the ruled rail→dock mapping), `rail.rs`, `workspace.rs`, `tool_window.rs`, `editor_view.rs` (the two modes' root), `skin.rs` |
+| `app/` | `project.rs` (the mirror entity), `document.rs` (editor + highlighter + providers), `code_view.rs` (documents, tabs, the active file), `continuous.rs`, `binder.rs`, `problems.rs` (the studio's Problems view, ported — see its module doc for what is and is not), `main.rs` |
 
 **Verified running** (screenshots taken against the real app, on macOS,
 before the views landed): rails with both groups, the Binder, syntax
@@ -75,6 +75,8 @@ three views and the switcher were verified running headless on Linux**
 (2026-09-05, screenshots on PR #3568): two tabs after a Binder click,
 Single File showing the active document with no strip, Continuous showing
 both files with headings, and Code view's tabs intact on the way back.
+(2026-10-03: the three views became two modes, Write and Script, and
+Single File was removed — `docs/gpui-writing-scripting-modes.md`.)
 
 ## Running it headless (a cloud session CAN see the app)
 
@@ -306,6 +308,8 @@ unverified by hand.
    views (spec §4.4) then landed on top: the centre holds one `EditorRoot`
    panel that renders Code (an inner `DockArea` of documents, with tabs),
    Single File, or Continuous; switcher in the title bar, `cmd-alt-1/2/3`.
+   (2026-10-03: now two modes, Script and Write, with an icon-only switch;
+   Single File is removed.)
 2. **No CI lane.** Nothing runs this workspace's tests or fmt. Adding one
    means a macOS runner (or solving the Linux question above) — worth a
    ruling on whether the GUI tier is gated at all, or only `model` + `shell`.
@@ -400,7 +404,11 @@ rendered, silently.
 
 ## Open, parked by the maintainer (2026-09-05)
 
-- **Where the Player sits in each view.** Today it is three different
+- **Where the Player sits in each view.** *Ruled 2026-10-03*
+  (`docs/gpui-writing-scripting-modes.md` W7/S3): Script mode keeps the
+  centre tab; Write mode slides it in beside the manuscript, superseding
+  the swap-in direction below; Single File view is removed. Kept for
+  history: today it is three different
   answers: a session *document* in a Code-view split (ruled 2026-06-10), a
   companion split *native to* Single File view, and absent from Continuous.
   The maintainer's direction, noted for later rather than ruled: **Code** —

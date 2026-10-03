@@ -8,10 +8,10 @@
 //! is also what keeps the nesting reversible: this pane tree could be the
 //! centre itself and nothing here would change.
 //!
-//! **This view owns the open documents.** The "active document" — the one
-//! Single File view shows — is the document most recently opened here or
-//! made the displayed tab of its group. That is the one fact the views
-//! share (ruled 2026-08-26); nothing else crosses between them.
+//! **This view owns the open documents.** The "active document" is the
+//! document most recently opened here or made the displayed tab of its
+//! group — what navigation, `cmd-w` and the status bar act on in Script
+//! mode.
 
 use std::ops::Range;
 use std::rc::Rc;
@@ -278,7 +278,7 @@ impl CodeView {
     /// Put Compiled Output in the centre dock (once) and select its tab.
     /// Same shape as [`Self::show_player`]: a singleton panel that is not
     /// a file, so it never joins `documents` and never becomes the active
-    /// document Single File view would show.
+    /// document.
     pub fn show_compiled(
         &mut self,
         compiled: &Entity<CompiledOutputView>,
@@ -368,7 +368,7 @@ impl CodeView {
         Some(self.active.as_ref()?.read(cx).path().to_string())
     }
 
-    /// The document Single File view shows.
+    /// The document most recently opened or shown in this view.
     #[must_use]
     pub fn active_document(&self) -> Option<&Entity<Document>> {
         self.active.as_ref()

@@ -215,14 +215,17 @@ flag — and providers are constructed against their document. This replaces
 the spike's `ActiveKey` (`Rc<RefCell<String>>`) indirection, after which
 tabs work by construction rather than by coordination.
 
-### 4.4 The editor root and its three views
+### 4.4 The editor root and its two modes
 
-**Built 2026-09-05.** The centre has one occupant (ruled 2026-08-26), and
-the three views — **Code** (tabs, groups, splits), **Single File** (one
-file, no tab strip), **Continuous** (the manuscript) — are what it can hold.
-The shell owns the choice (`EditorView`), the switcher in the title bar,
-the actions (`ViewCode`/`ViewSingle`/`ViewContinuous`, default
-`cmd-alt-1/2/3` — not the shifted digits, which Linux delivers as symbols)
+**Built 2026-09-05; cut to two modes 2026-10-03**
+(`docs/gpui-writing-scripting-modes.md`, which amends this section). The
+centre has one occupant (ruled 2026-08-26), and the two modes —
+**Script** (the tabbed editor: tabs, groups, splits) and **Write** (the
+manuscript) — are what it can hold. The Single File view that once sat
+between them is removed. The shell owns the choice (`EditorView`), the
+icon-only Write/Script switch in the title bar, the bindable actions
+(`ModeScript`/`ModeWrite`; today's chords `cmd-alt-1`/`cmd-alt-3` are kept
+from the three-view days, and the defaults are a later ruling)
 and the panel that hosts them (`EditorRoot`); the
 feature crate hands over each view as an `AnyView` and the shell never
 learns what it is.
@@ -231,24 +234,24 @@ The centre panel hosts the views rather than the centre layout being
 replaced per view, because `DockArea` folds the centre and the docks into
 one tree: `set_center` on every switch would tear the centre down
 (`on_removed` on every panel) and need Code view's splits and tab order
-dumped and restored around every glance at the manuscript. So Code view is
+dumped and restored around every glance at the manuscript. So Script mode is
 an **inner, centre-only `DockArea`** of `Document` panels — Zed's
 terminal-panel shape (a pane tree inside a panel), at the centre. While
 another view is showing it is simply not rendered; nothing in it moves.
 
-**The views share one fact**: the active document. Code view owns the open
-documents and reports the one most recently opened or made the displayed
-tab of its group; Single File view renders that same `Document` entity
-directly. The manuscript revises what §4.3 said of it: it is no longer "a
-centre panel like any document" but the Continuous view's occupant.
+**The modes share one fact**: the active document. Script mode owns the
+open documents and reports the one most recently opened or made the
+displayed tab of its group. The manuscript revises what §4.3 said of it: it
+is no longer "a centre panel like any document" but Write mode's occupant.
 
 **Reversible.** Nothing in `app/` depends on the nesting. Adopting Zed's
 own arrangement later — the shell owning the centre directly, docks
 rendered beside it — changes `shell/src/workspace.rs`,
 `shell/src/editor_view.rs` and the layout persistence, and no view.
 
-**The Player's place in each view is open** (§6); the Single File view's
-companion split is deliberately absent until it is ruled.
+**The Player's place in each mode is ruled** (2026-10-03): a centre tab in
+Script mode, as built; in Write mode it slides in beside the manuscript
+(`docs/gpui-writing-scripting-modes.md` W7) — not built yet.
 
 ### 4.5 Commands
 
@@ -458,11 +461,10 @@ Two defects carried from the spike are fixed here, not later:
   the shared buffer as of 2026-09-05 — `app/src/search.rs`, module doc:
   windows edit-mapped through every change, `edited` badges, lazy
   per-card `EditorState`s.) **Where the Player
-  sits in each view is an open ruling** (parked 2026-09-05, see
-  `crates/brink-gpui/HANDOFF.md`): today it is a document in a Code-view
-  split, a native companion in Single File view, and absent from
-  Continuous. The direction noted (not ruled): Code keeps the tab,
-  Continuous swaps the Player in and out rather than splitting the
-  scroller, Single File may take a side-by-side split.
+  sits in each mode is ruled** (2026-10-03,
+  `docs/gpui-writing-scripting-modes.md` W7/S3): Script keeps the
+  centre tab; Write slides the Player in beside the manuscript, superseding
+  the 2026-09-05 "swap, not split" direction. The Single File view is
+  removed.
 - The `#3064` per-segment token path on the db road is the worker's
   business; the main thread uses `segment_file` directly and needs no db.

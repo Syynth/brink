@@ -22,7 +22,7 @@ use crate::commands::{
     CloseWindow, CommandRegistry, OpenKeymap, OpenSettings, TogglePalette, ToggleToolWindow,
     Unbound, bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
 };
-use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
+use crate::editor_view::{EditorRoot, EditorView, ModeScript, ModeWrite};
 use crate::menus::{
     APP_GROUP, APP_NAME, About, HELP_GROUP, MenuPlatform, MenuSpec, Minimize, Zoom,
 };
@@ -150,7 +150,7 @@ impl Tier {
 /// The studio window.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
-    /// The centre's one panel, holding the three views
+    /// The centre's one panel, holding the two modes
     /// (`crate::editor_view`).
     editor_root: Entity<EditorRoot>,
     tools: Vec<Registered>,
@@ -185,13 +185,13 @@ pub struct Workspace {
     /// un-maximizing puts back what was there and not a guess at it.
     /// `None` when not maximized.
     unmaximized: Option<Vec<(&'static str, bool)>>,
-    /// The view the AUTHOR chose, which is not always the one on screen.
+    /// The mode the AUTHOR chose, which is not always the one on screen.
     ///
-    /// The Player, the Story Graph and Compiled Output are Code-view tabs,
+    /// The Player, the Story Graph and Compiled Output are Script-mode tabs,
     /// so asking for any of them takes the manuscript's place. That switch
     /// is the studio's doing, not a preference, and persisting it meant
-    /// pressing `cmd-r` once in Continuous and being in Code the next
-    /// morning. What is remembered is this; what is drawn is the root's.
+    /// pressing `cmd-r` once in Write and being in Script the next morning.
+    /// What is remembered is this; what is drawn is the root's.
     chosen_view: EditorView,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
@@ -252,7 +252,7 @@ impl Workspace {
             pre_narrow: None,
             notices_open: false,
             unmaximized: None,
-            chosen_view: EditorView::Code,
+            chosen_view: EditorView::Script,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -261,21 +261,19 @@ impl Workspace {
         App::on_action(cx, |_: &Unbound, _| {});
         // The shell's own commands. Features add theirs through
         // `register_command`; tool windows get a toggle each on registration.
-        let (code, single, continuous) =
-            (EditorView::Code, EditorView::Single, EditorView::Continuous);
-        this.register_command("View", code.title(), ViewCode, Some(code.keystroke()), cx);
+        let (write, script) = (EditorView::Write, EditorView::Script);
         this.register_command(
             "View",
-            single.title(),
-            ViewSingle,
-            Some(single.keystroke()),
+            write.title(),
+            ModeWrite,
+            Some(write.keystroke()),
             cx,
         );
         this.register_command(
             "View",
-            continuous.title(),
-            ViewContinuous,
-            Some(continuous.keystroke()),
+            script.title(),
+            ModeScript,
+            Some(script.keystroke()),
             cx,
         );
         this.register_command(
@@ -701,18 +699,19 @@ impl Workspace {
                     .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
             }
         }
-        // A chosen default view wins over the remembered one: "always
-        // open in Continuous" is a preference about every launch, and the
-        // last view used is only the memory it replaces.
+        // A chosen default mode wins over the remembered one: "always
+        // open in Write" is a preference about every launch, and the last
+        // mode used is only the memory it replaces. Keys saved before the
+        // two modes still resolve (`EditorView::from_persistence_key`).
         let settings = AppSettings::get(cx);
         let key = settings
             .default_view
             .as_ref()
             .or(layout.editor_view.as_ref());
         if let Some(key) = key
-            && let Some(view) = EditorView::ALL.iter().find(|v| v.persistence_key() == key)
+            && let Some(view) = EditorView::from_persistence_key(key)
         {
-            self.set_editor_view(*view, window, cx);
+            self.set_editor_view(view, window, cx);
         }
         cx.notify();
     }
@@ -1200,16 +1199,17 @@ impl Workspace {
         )
     }
 
-    /// The view switcher: three toggles, in the title bar. The studio has no
-    /// dedicated widget for this (its views are palette commands); the native
-    /// app gives them a permanent home, since which view you are in changes
-    /// what the whole centre means.
+    /// The mode switcher: Write and Script, icon-only (decision log
+    /// 2026-10-03), in the title bar. The studio has no dedicated widget for
+    /// this (its views are palette commands); the native app gives the modes
+    /// a permanent home, since which one you are in changes what the whole
+    /// window is for.
     fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.editor_view(cx);
         // Hand-built rather than `ButtonGroup`, for two reasons found on
         // screen. Its `outline` variant paints every segment in the accent
         // foreground and puts `selected` in the BORDER, so with icons and
-        // no labels all three read as active — the switcher had no visible
+        // no labels every segment read as active — the switcher had no visible
         // state at all. And at the kit's own button metrics the control
         // stood half again as tall as the 30px chrome it sits in.
         //
@@ -1247,7 +1247,7 @@ impl Workspace {
                     .justify_center()
                     .size(px(SWITCHER_CELL))
                     // Hairlines BETWEEN the segments, not around each: one
-                    // control with three cells, rather than three buttons
+                    // control with two cells, rather than two buttons
                     // that happen to touch.
                     .when(ix > 0, |el| el.border_l_1().border_color(border))
                     .when(on, |el| el.bg(accent))
@@ -1323,14 +1323,11 @@ impl Render for Workspace {
             // The shell's actions dispatch from wherever focus is; this is
             // an ancestor of everything in the window, so it hears them all.
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ViewCode, window, cx| {
-                this.set_editor_view(EditorView::Code, window, cx);
+            .on_action(cx.listener(|this, _: &ModeWrite, window, cx| {
+                this.set_editor_view(EditorView::Write, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ViewSingle, window, cx| {
-                this.set_editor_view(EditorView::Single, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ViewContinuous, window, cx| {
-                this.set_editor_view(EditorView::Continuous, window, cx);
+            .on_action(cx.listener(|this, _: &ModeScript, window, cx| {
+                this.set_editor_view(EditorView::Script, window, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
                 this.toggle_palette(window, cx);

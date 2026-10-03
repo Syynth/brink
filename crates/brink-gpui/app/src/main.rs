@@ -1,9 +1,9 @@
 //! The GPUI-native brink studio — `docs/gpui-studio-spec.md`.
 //!
 //! Tier 3: the features, and the wiring. This file is the one place that
-//! knows a Binder is a thing that goes in the left rail and that the three
-//! editor views are Code, Single File and the manuscript — the shell does
-//! not, and must not.
+//! knows a Binder is a thing that goes in the left rail and that the two
+//! modes are the manuscript (Write) and the tabbed editor (Script) — the
+//! shell does not, and must not.
 
 mod binder;
 mod closing;
@@ -34,7 +34,6 @@ mod settings_diagnostics;
 mod settings_formatting;
 mod settings_general;
 mod settings_prose;
-mod single_view;
 mod state_view;
 mod story_graph;
 mod structural;
@@ -81,7 +80,6 @@ use crate::settings_diagnostics::DiagnosticsSection;
 use crate::settings_formatting::FormattingSection;
 use crate::settings_general::{GeneralSection, OpenConfig};
 use crate::settings_prose::ProseSection;
-use crate::single_view::SingleFileView;
 use crate::state_view::StateView;
 use crate::todos::{OpenTodo, Todos};
 use brink_gpui_shell::commands::CloseWindow;
@@ -173,11 +171,11 @@ struct OpenRecentProject {
 struct Studio {
     project: Entity<Project>,
     workspace: Entity<Workspace>,
-    /// Code view — and with it the open documents. Opening a file always
-    /// lands here, whichever view is showing: Single File shows this view's
-    /// active document, and the manuscript reveals the file in place.
+    /// Script mode's tabbed editor — and with it the open documents.
+    /// Opening a file always lands here, whichever mode is showing: in
+    /// Write mode the manuscript reveals the file in place.
     code: Entity<CodeView>,
-    /// Continuous view — the whole project as one scroller.
+    /// Write mode's manuscript — the whole project as one scroller.
     manuscript: Entity<ContinuousView>,
     search: Entity<SearchView>,
     /// The Player, a centre tab in Code view. Made once; docked on the
@@ -232,7 +230,6 @@ impl Studio {
         // And the Program Explorer says when the running story is on an
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
-        let single = cx.new(|cx| SingleFileView::new(code.clone(), cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
         let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
@@ -394,16 +391,14 @@ impl Studio {
                 window,
                 cx,
             );
-            // The three views (decision log 2026-08-26). Registered before
+            // The two modes (decision log 2026-10-03). Registered before
             // the project opens so the manuscript is subscribed when the
             // files land.
             let code_focus = code.read(cx).focus_handle(cx);
-            let single_focus = single.read(cx).focus_handle(cx);
             let manuscript_focus = manuscript.read(cx).focus_handle(cx);
-            workspace.set_view_occupant(EditorView::Code, code.clone().into(), code_focus, cx);
-            workspace.set_view_occupant(EditorView::Single, single.into(), single_focus, cx);
+            workspace.set_view_occupant(EditorView::Script, code.clone().into(), code_focus, cx);
             workspace.set_view_occupant(
-                EditorView::Continuous,
+                EditorView::Write,
                 manuscript.clone().into(),
                 manuscript_focus,
                 cx,
@@ -1087,11 +1082,10 @@ impl Studio {
     }
 
     /// The editor a navigation command acts on: the manuscript's focused
-    /// section in Continuous view, else Code view's active document (which
-    /// is also what Single File shows).
+    /// section in Write mode, else Script mode's active document.
     fn focused_site(&self, window: &Window, cx: &gpui::App) -> Option<navigation::EditorSite> {
         let view = self.workspace.read(cx).editor_root().read(cx).view();
-        if view == EditorView::Continuous {
+        if view == EditorView::Write {
             return self.manuscript.read(cx).focused_section(window, cx);
         }
         self.code
@@ -1100,8 +1094,8 @@ impl Studio {
             .map(|doc| doc.read(cx).site())
     }
 
-    /// Show `span` of `path` the way the current view shows things: a tab
-    /// in Code/Single File, a scroll in the manuscript.
+    /// Show `span` of `path` the way the current mode shows things: a tab
+    /// in Script, a scroll in the manuscript.
     fn show(
         &mut self,
         path: &str,
@@ -1110,7 +1104,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         let view = self.workspace.read(cx).editor_root().read(cx).view();
-        if view == EditorView::Continuous {
+        if view == EditorView::Write {
             self.manuscript
                 .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
         } else {
@@ -1128,7 +1122,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         let view = self.workspace.read(cx).editor_root().read(cx).view();
-        if view == EditorView::Continuous {
+        if view == EditorView::Write {
             self.manuscript
                 .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
         } else {
@@ -1504,7 +1498,7 @@ impl Studio {
     /// (`HANDOFF.md`, "Open, parked").
     fn play_at(&mut self, at: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.require_editor_view(EditorView::Code, cx);
+            workspace.require_editor_view(EditorView::Script, cx);
         });
         let player = self.player.clone();
         self.code
@@ -1528,7 +1522,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.require_editor_view(EditorView::Code, cx);
+            workspace.require_editor_view(EditorView::Script, cx);
         });
         let compiled = self.compiled.clone();
         self.code
@@ -1654,7 +1648,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.require_editor_view(EditorView::Code, cx);
+            workspace.require_editor_view(EditorView::Script, cx);
         });
         let graph = self.graph.clone();
         self.code
@@ -1711,12 +1705,12 @@ impl Studio {
     }
 
     /// `cmd-w`. The tab holding the keyboard first — the Player, Compiled
-    /// Output and the Story Graph are tabs too — then the active document,
-    /// which is the tab Single File view shows. The manuscript has no tabs,
+    /// Output and the Story Graph are tabs too — then the active document.
+    /// The manuscript has no tabs,
     /// and closing a file it cannot show would be closing something out of
     /// sight, so there it does nothing.
     fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
-        if self.workspace.read(cx).editor_view(cx) == EditorView::Continuous {
+        if self.workspace.read(cx).editor_view(cx) == EditorView::Write {
             return;
         }
         let singletons = [
@@ -2394,5 +2388,59 @@ mod tests {
             "/",
             "no name and no parent: say the path"
         );
+    }
+}
+
+/// The two modes, driven on the real `Studio` (see `crate::harness`).
+#[cfg(test)]
+mod modes_driven {
+    use brink_gpui_shell::editor_view::{EditorView, ModeScript, ModeWrite};
+    use brink_gpui_shell::settings;
+    use gpui::AnyWindowHandle;
+
+    use crate::harness::{Harness, scratch_dir, scratch_project};
+
+    const FIXTURE: &str = "tests/tier1-native/conventions-cross-file";
+
+    fn mode(h: &mut Harness, window: AnyWindowHandle) -> EditorView {
+        let studio = h.studio(window).expect("open");
+        h.read(|cx| studio.read(cx).workspace.read(cx).editor_view(cx))
+    }
+
+    #[test]
+    fn the_mode_actions_switch_between_write_and_script() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        assert_eq!(mode(&mut h, window), EditorView::Write);
+        h.dispatch(window, ModeScript);
+        assert_eq!(mode(&mut h, window), EditorView::Script);
+    }
+
+    #[test]
+    fn a_layout_saved_in_a_removed_or_renamed_view_reopens_in_its_mode() {
+        for (saved, expected) in [
+            ("single", EditorView::Script),
+            ("code", EditorView::Script),
+            ("continuous", EditorView::Write),
+        ] {
+            let mut h = Harness::new();
+            h.update(|cx| {
+                settings::update(cx, |s| s.layout.editor_view = Some(saved.to_owned()));
+            });
+            let window = h.open(&scratch_project(FIXTURE));
+            assert_eq!(mode(&mut h, window), expected, "saved as {saved:?}");
+        }
+    }
+
+    /// The picture: the title bar's two-mode switch, for checking by eye.
+    #[test]
+    fn the_title_bar_shows_the_two_mode_switch() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        let shot = scratch_dir("shot").join("modes.png");
+        h.screenshot(window, &shot);
+        eprintln!("modes screenshot: {}", shot.display());
     }
 }

@@ -351,10 +351,20 @@ fn is_standard(action: &dyn gpui::Action) -> bool {
 mod tests {
     use super::*;
     use crate::commands::{CommandRegistry, OpenSettings, TogglePalette};
-    use crate::editor_view::{ViewCode, ViewContinuous, ViewSingle};
     use gpui::Action;
 
-    actions!(test, [Save, Play, Step, Stray]);
+    actions!(
+        test,
+        [
+            Save,
+            Play,
+            Step,
+            Stray,
+            ViewCode,
+            ViewSingle,
+            ViewContinuous
+        ]
+    );
 
     fn registry() -> CommandRegistry {
         let mut r = CommandRegistry::default();
