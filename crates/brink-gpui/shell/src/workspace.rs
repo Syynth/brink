@@ -193,6 +193,12 @@ pub struct Workspace {
     /// pressing `cmd-r` once in Write and being in Script the next morning.
     /// What is remembered is this; what is drawn is the root's.
     chosen_view: EditorView,
+    /// What Write mode's title bar calls the story — the app says, since
+    /// the shell knows no project.
+    story_title: SharedString,
+    /// The action Write mode's Play button dispatches. The app owns Play;
+    /// the shell only gives it a button. `None` draws no button.
+    play: Option<Box<dyn Action>>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -253,6 +259,8 @@ impl Workspace {
             notices_open: false,
             unmaximized: None,
             chosen_view: EditorView::Script,
+            story_title: SharedString::default(),
+            play: None,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -635,6 +643,18 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Name the story in Write mode's title bar.
+    pub fn set_story_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.story_title = title.into();
+        cx.notify();
+    }
+
+    /// Give Write mode's title bar a Play button that dispatches `action`.
+    pub fn set_play_action(&mut self, action: Box<dyn Action>, cx: &mut Context<Self>) {
+        self.play = Some(action);
+        cx.notify();
+    }
+
     #[must_use]
     pub fn editor_view(&self, cx: &App) -> EditorView {
         self.editor_root.read(cx).view()
@@ -746,7 +766,15 @@ impl Workspace {
     /// The rail-button gesture. Tab-level: a closed dock opens showing this
     /// window; an open dock showing another window switches to it; an open
     /// dock already showing it closes.
+    ///
+    /// Write mode draws no docks, so there the gesture can only mean "show
+    /// me": it opens the window in Script, as [`Workspace::open_tool_window`]
+    /// does, rather than closing a dock the author cannot see.
     pub fn toggle_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write {
+            self.open_tool_window(id, window, cx);
+            return;
+        }
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
@@ -770,7 +798,14 @@ impl Workspace {
     /// Show a tool window: open its dock if closed and select its tab. What
     /// a status cell or a command wants — never a toggle, since "show me
     /// the problems" must not close them.
+    ///
+    /// Tool windows live in Script mode's docks, so from Write this goes to
+    /// Script first — as the Player does, without changing the mode the
+    /// author chose (see `chosen_view`).
     pub fn open_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write && self.tools.iter().any(|t| t.spec.id == id) {
+            self.require_editor_view(EditorView::Script, cx);
+        }
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
@@ -844,7 +879,13 @@ impl Workspace {
     /// Restoring puts back exactly the docks that were open, rather than
     /// opening all three: a writer who works with the Binder closed does
     /// not want it back for having read one scene full-width.
+    ///
+    /// Write mode already has the whole window, so there it does nothing:
+    /// closing docks nobody can see would only lose Script's layout.
     pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write {
+            return;
+        }
         match self.unmaximized.take() {
             Some(before) => {
                 for (name, open) in before {
@@ -1199,6 +1240,63 @@ impl Workspace {
         )
     }
 
+    /// Write mode's title bar, left of the switch: the story's name, then
+    /// Play (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar
+    /// toggle, the caret's knot › stitch and Read arrive with their own
+    /// slices.
+    fn render_writing_title(&self, cx: &mut Context<Self>) -> AnyElement {
+        let theme = cx.theme();
+        let (muted, primary, on_primary) = (
+            theme.muted_foreground,
+            theme.primary,
+            theme.primary_foreground,
+        );
+        let play = self.play.as_ref().map(|action| {
+            let action = action.boxed_clone();
+            let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
+                Some(key) => format!("Play ({key})"),
+                None => "Play".to_owned(),
+            });
+            div()
+                .id("writing-play")
+                .flex()
+                .items_center()
+                .justify_center()
+                .size(px(SWITCHER_CELL))
+                .rounded_sm()
+                // Filled, where everything else in the bar is a glyph:
+                // Play is the one thing on this screen besides the text.
+                .bg(primary)
+                .hover(|s| s.bg(primary.opacity(0.85)))
+                .cursor_pointer()
+                .child(
+                    gpui_component::Icon::new(gpui_component::IconName::Play)
+                        .with_size(px(12.))
+                        .text_color(on_primary),
+                )
+                .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                .on_click(move |_: &ClickEvent, window, cx| {
+                    window.dispatch_action(action.boxed_clone(), cx);
+                })
+        });
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(self.story_title.clone()),
+            )
+            .children(play)
+            .into_any_element()
+    }
+
     /// The mode switcher: Write and Script, icon-only (decision log
     /// 2026-10-03), in the title bar. The studio has no dedicated widget for
     /// this (its views are palette commands); the native app gives the modes
@@ -1304,8 +1402,14 @@ impl Render for Workspace {
                 });
             }
         };
+        // Write mode has no chrome (decision log 2026-10-03, W1): no rails,
+        // no docks, no status bar. The docks are not CLOSED for it, only
+        // not drawn, so Script comes back exactly as it was left and the
+        // persisted layout never learns Write was there.
+        let writing = self.editor_view(cx) == EditorView::Write;
         let switcher = self.view_switcher(cx);
-        let status = self.render_status(cx);
+        let writing_title = writing.then(|| self.render_writing_title(cx));
+        let status = (!writing).then(|| self.render_status(cx));
         let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window);
         let settings_window = self.render_settings(window, cx);
@@ -1362,6 +1466,7 @@ impl Render for Workspace {
                         h_flex()
                             .flex_1()
                             .items_center()
+                            .gap_2()
                             // No app name (#3626): the window and the Dock
                             // already say which app this is. `justify_end`
                             // keeps the switcher at the right edge — with
@@ -1383,6 +1488,10 @@ impl Render for Workspace {
                             // to respect — aligning to its buttons' right edge
                             // instead put the switcher over the rail rather than
                             // beside it.
+                            //
+                            // Kept in Write mode too, where there is no rail:
+                            // the switch must not move under the pointer
+                            // that just clicked it.
                             .pr(RAIL_WIDTH + px((f32::from(TITLE_BAR_HEIGHT) - SWITCHER_CELL) / 2.))
                             // Off the Mac, the menus live here (`crate::menus`).
                             .children(
@@ -1390,10 +1499,19 @@ impl Render for Workspace {
                                     .clone()
                                     .map(|bar| div().flex_1().min_w_0().h_full().child(bar)),
                             )
+                            .children(writing_title)
                             .child(switcher),
                     ),
             )
-            .child(
+            .child(if writing {
+                // The centre's one panel, drawn bare: no dock area, so no
+                // tab strip over the manuscript either.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.editor_root.clone())
+                    .into_any_element()
+            } else {
                 h_flex()
                     .flex_1()
                     .min_h_0()
@@ -1405,9 +1523,10 @@ impl Render for Workspace {
                             .h_full()
                             .child(self.dock_area.clone()),
                     )
-                    .child(rail(RailEdge::Right, &buttons, click, window, cx)),
-            )
-            .child(status)
+                    .child(rail(RailEdge::Right, &buttons, click, window, cx))
+                    .into_any_element()
+            })
+            .children(status)
             // Above the status bar, as §7.5 places it, and after the docks
             // so it paints over them.
             .children(notices)

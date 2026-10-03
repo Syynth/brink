@@ -148,6 +148,13 @@ Each slice is one PR, verified headlessly (§4.2).
    - The title bar gains the Writing layout (§3.1). `TitleBar` reserves
      80px for the traffic lights, so the toggle sits just after that inset.
    - The manuscript goes left-aligned and full-width (`app/src/continuous.rs`).
+   - *Built:* Write mode draws the editor root bare (no dock area, rails or
+     status bar). The docks are hidden, not closed, so Script and the saved
+     layout are untouched. The title bar shows the story's name and Play. The
+     manuscript was already left-aligned and full-width. A tool window
+     asked for from Write (a shortcut, Search) opens in Script, the way the
+     Player already does. The sidebar toggle, the knot › stitch crumb and
+     Read come with slices 5 and 3.
 3. **Read view** (W8).
    - Font: the kit's `Editor` is `Styled`, and its own test shows a
      per-editor `.text_size()` override resizes the rows, so the Read font

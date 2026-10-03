@@ -494,6 +494,10 @@ impl Studio {
             );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
+            // Write mode's title bar: the story by its folder's name, and
+            // a Play button for the same action `cmd-r` runs.
+            // (The title is set once the project has opened and has a root.)
+            workspace.set_play_action(Box::new(Play), cx);
             workspace.register_command(
                 "Debug",
                 "Toggle Breakpoint",
@@ -646,6 +650,9 @@ impl Studio {
                 ProjectEvent::Opened { .. } => {
                     this.open_initial(window, cx);
                     this.refresh_status(cx);
+                    let title = this.project_name(cx);
+                    this.workspace
+                        .update(cx, |workspace, cx| workspace.set_story_title(title, cx));
                 }
                 ProjectEvent::Analyzed => this.refresh_status(cx),
                 // The file set moving changes the status bar's file count.
@@ -1899,9 +1906,8 @@ impl Studio {
         false
     }
 
-    /// Put the unsaved-work prompt up if anything is dirty, answering the
-    /// button index; `None` when there is nothing to ask about.
-    /// What the unsaved-work prompts call this project: its folder's name.
+    /// What the unsaved-work prompts and Write mode's title bar call this
+    /// project: its folder's name.
     fn project_name(&self, cx: &App) -> String {
         self.project.read(cx).root().file_name().map_or_else(
             || "this project".to_owned(),
@@ -1909,6 +1915,8 @@ impl Studio {
         )
     }
 
+    /// Put the unsaved-work prompt up if anything is dirty, answering the
+    /// button index; `None` when there is nothing to ask about.
     fn ask_about_unsaved(
         &mut self,
         window: &mut Window,
@@ -2394,6 +2402,7 @@ mod tests {
 /// The two modes, driven on the real `Studio` (see `crate::harness`).
 #[cfg(test)]
 mod modes_driven {
+    use brink_gpui_shell::commands::ToggleToolWindow;
     use brink_gpui_shell::editor_view::{EditorView, ModeScript, ModeWrite};
     use brink_gpui_shell::settings;
     use gpui::AnyWindowHandle;
@@ -2431,6 +2440,65 @@ mod modes_driven {
             let window = h.open(&scratch_project(FIXTURE));
             assert_eq!(mode(&mut h, window), expected, "saved as {saved:?}");
         }
+    }
+
+    /// Write mode draws no docks, but must not CLOSE them: Script comes
+    /// back exactly as it was, and the saved layout never sees Write.
+    #[test]
+    fn write_mode_hides_the_docks_without_closing_them() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        let studio = h.studio(window).expect("open");
+        let docks = |h: &mut Harness| {
+            h.read(|cx| {
+                let workspace = studio.read(cx).workspace.read(cx);
+                workspace.layout(cx).docks
+            })
+        };
+        let before = docks(&mut h);
+        assert!(
+            before.values().any(|d| d.open),
+            "the fixture opens with a dock, or this proves nothing"
+        );
+        h.dispatch(window, ModeWrite);
+        assert_eq!(docks(&mut h), before, "entering Write closed a dock");
+        // Maximize is meaningless with no docks drawn; it must not
+        // quietly close Script's.
+        h.dispatch(window, super::MaximizeEditor);
+        assert_eq!(docks(&mut h), before, "maximize in Write closed a dock");
+        h.dispatch(window, ModeScript);
+        assert_eq!(docks(&mut h), before);
+    }
+
+    /// Tool windows live in Script's docks, so asking for one from Write
+    /// shows it there — without changing the mode the author chose.
+    #[test]
+    fn a_tool_window_asked_for_in_write_opens_in_script() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(
+            window,
+            ToggleToolWindow {
+                id: "search".into(),
+            },
+        );
+        assert_eq!(mode(&mut h, window), EditorView::Script);
+        let (search_open, chosen) = h.read(|cx| {
+            let workspace = studio.read(cx).workspace.read(cx);
+            let layout = workspace.layout(cx);
+            (layout.docks["left"].open, layout.editor_view)
+        });
+        assert!(
+            search_open,
+            "the toggle closed the dock instead of showing it"
+        );
+        assert_eq!(
+            chosen.as_deref(),
+            Some("write"),
+            "the studio's switch is not the author's choice"
+        );
     }
 
     /// The picture: the title bar's two-mode switch, for checking by eye.
