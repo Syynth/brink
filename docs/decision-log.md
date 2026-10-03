@@ -5702,3 +5702,19 @@
 - **SCOPE:** minor/local
 - **WHAT:** Scripting mode keeps today's Code view, both rails included. The status bar drops the absolute project path and the analysis timings; the timings go to the Output log.
 - **WHY:** Scripting is where the full tool set belongs, so its chrome stays. The path and timings were diagnostics, not things an author reads while working.
+
+## Read view keeps character cue names bright
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** In Writing mode's Read view, a convention-claimed cue line (`VENDOR` under a `cue` handler) stays at full strength with the prose, rather than fading with the markup. The prose checker still skips those lines.
+- **WHY:** A character's name is part of what the reader reads, not machinery. Spell-checking it is a different question, because invented names are not words.
+
+## Per-editor presentation goes into the gpui-kit fork, not around it
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** When the kit's editor cannot express a ruled presentation for one editor (here: Read view's faint line numbers and no current-line band, which the kit applies theme-wide), add a per-editor option to the gpui-kit fork and bump brink to it. Do not hide the feature or work around the kit.
+- **WHY:** The design was ruled to match what the real editor can draw. When the editor can't draw it yet, the fix belongs in the editor, where every later surface gets it too, and not in a brink-side substitute that departs from the design.

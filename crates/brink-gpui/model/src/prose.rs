@@ -58,6 +58,30 @@ pub fn prose_ranges(spans: &[brink_ir::hir::projection::ProjectedSpan]) -> Vec<(
     subtract(&content, &holes)
 }
 
+/// The prose as Writing mode's Read view reads it (decision log
+/// 2026-10-03): [`prose_ranges`], except that a convention-claimed line
+/// stays whole.
+///
+/// A claimed line (`VENDOR` under a `cue` handler) projects as a content
+/// span with a call span over exactly the same bytes — the line IS the
+/// call's argument — so the checker's cut removes it entirely. That is
+/// right for spelling, where a character's name is not a word to check,
+/// and wrong for reading, where the name is what the reader reads.
+#[must_use]
+pub fn read_ranges(spans: &[brink_ir::hir::projection::ProjectedSpan]) -> Vec<(u32, u32)> {
+    let kept: Vec<brink_ir::hir::projection::ProjectedSpan> = spans
+        .iter()
+        .filter(|s| {
+            !(s.kind == SpanKind::Call
+                && spans
+                    .iter()
+                    .any(|c| c.kind == SpanKind::Content && c.range == s.range))
+        })
+        .copied()
+        .collect();
+    prose_ranges(&kept)
+}
+
 /// `content` minus `holes` — the gaps left over, in order. One interval
 /// walk; the second one written independently is the one that gets the
 /// boundary conditions wrong.
