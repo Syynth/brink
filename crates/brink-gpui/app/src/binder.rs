@@ -168,6 +168,7 @@ struct DraggedRow {
     kind: RowKind,
 }
 
+#[derive(Debug, Clone)]
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
     Open {

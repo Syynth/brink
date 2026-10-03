@@ -196,9 +196,17 @@ pub struct Workspace {
     /// What Write mode's title bar calls the story — the app says, since
     /// the shell knows no project.
     story_title: SharedString,
-    /// Write mode's title-bar buttons, left of the switch, in order. The
-    /// app owns what they do; the shell only draws them.
+    /// Write mode's title-bar buttons, in order: `leading` ones just right
+    /// of the traffic lights, the rest left of the switch. The app owns
+    /// what they do; the shell only draws them.
     writing_buttons: Vec<WritingButton>,
+    /// The open Writing sidebar's width, or `None` while it is closed. The
+    /// title bar paints that much of its left end as the sidebar, so the
+    /// sidebar reads as running to the top of the window with the traffic
+    /// lights and its toggle in its own header row (W4).
+    writing_sidebar: Option<gpui::Pixels>,
+    /// Where the caret is, after the story's name: `knot › stitch`.
+    writing_crumb: Option<SharedString>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -261,6 +269,8 @@ impl Workspace {
             chosen_view: EditorView::Script,
             story_title: SharedString::default(),
             writing_buttons: Vec::new(),
+            writing_sidebar: None,
+            writing_crumb: None,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -647,6 +657,22 @@ impl Workspace {
     pub fn set_story_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.story_title = title.into();
         cx.notify();
+    }
+
+    /// Say how wide the Writing sidebar is while open (`None`: closed).
+    pub fn set_writing_sidebar(&mut self, width: Option<gpui::Pixels>, cx: &mut Context<Self>) {
+        if self.writing_sidebar != width {
+            self.writing_sidebar = width;
+            cx.notify();
+        }
+    }
+
+    /// Say where the caret is, for the title bar: `knot › stitch`.
+    pub fn set_writing_crumb(&mut self, crumb: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.writing_crumb != crumb {
+            self.writing_crumb = crumb;
+            cx.notify();
+        }
     }
 
     /// Give Write mode's title bar its buttons, left to right.
@@ -1245,6 +1271,70 @@ impl Workspace {
     /// (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar toggle and
     /// the caret's knot › stitch arrive with their own slice.
     fn render_writing_title(&self, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let buttons: Vec<AnyElement> = self
+            .writing_buttons
+            .iter()
+            .filter(|b| !b.leading)
+            .map(|b| self.render_writing_button(b, cx))
+            .collect();
+        let title = match &self.writing_crumb {
+            Some(crumb) => SharedString::from(format!("{} \u{b7} {crumb}", self.story_title)),
+            None => self.story_title.clone(),
+        };
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    // Off the sidebar's edge, or the toggle's, by a step.
+                    .pl_2()
+                    .truncate()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(title),
+            )
+            .children(buttons)
+            .into_any_element()
+    }
+
+    /// Write mode's left end of the title bar: the leading buttons (the
+    /// sidebar toggle) just right of the traffic lights. While the sidebar
+    /// is open this strip is exactly its width and wears its colour, so
+    /// the sidebar's header row is the title bar's own left end and the
+    /// toggle never moves under the pointer.
+    fn render_writing_leading(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (sidebar, border) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.sidebar_border)
+        };
+        let buttons: Vec<AnyElement> = self
+            .writing_buttons
+            .iter()
+            .filter(|b| b.leading)
+            .map(|b| self.render_writing_button(b, cx))
+            .collect();
+        h_flex()
+            .h_full()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .children(buttons)
+            .when_some(self.writing_sidebar, |el, width| {
+                el.w(width)
+                    .pl(px(TRAFFIC_LIGHTS))
+                    .bg(sidebar)
+                    .border_r_1()
+                    .border_color(border)
+            })
+            .into_any_element()
+    }
+
+    fn render_writing_button(&self, button: &WritingButton, cx: &mut Context<Self>) -> AnyElement {
         let (muted, primary, on_primary, accent, hover) = {
             let theme = cx.theme();
             (
@@ -1255,73 +1345,51 @@ impl Workspace {
                 theme.muted,
             )
         };
-        let buttons: Vec<AnyElement> = self
-            .writing_buttons
-            .iter()
-            .map(|button| {
-                let action = button.action.boxed_clone();
-                let lit = button.lit.as_ref().is_some_and(|lit| lit(cx));
-                let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
-                    Some(key) => format!("{} ({key})", button.label),
-                    None => button.label.to_string(),
-                });
-                let glyph = if button.filled {
-                    on_primary
-                } else if lit {
-                    primary
-                } else {
-                    muted
-                };
-                div()
-                    .id(button.id)
-                    .flex()
-                    .items_center()
-                    .justify_center()
-                    .size(px(SWITCHER_CELL))
-                    .rounded_sm()
-                    .cursor_pointer()
-                    // Play is filled: the one thing on this screen besides
-                    // the text. A toggle is lit the way the switch's cell
-                    // is, so "on" reads the same everywhere in the bar.
-                    .when(button.filled, |el| {
-                        el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
-                    })
-                    // A filled button that is on — Play while the Player is
-                    // out — wears a ring, since its fill is already taken.
-                    .when(button.filled && lit, |el| {
-                        el.border_2().border_color(on_primary.opacity(0.8))
-                    })
-                    .when(!button.filled && lit, |el| el.bg(accent))
-                    .when(!button.filled && !lit, |el| {
-                        el.hover(|s| s.bg(hover.opacity(0.6)))
-                    })
-                    .child(
-                        gpui_component::Icon::new(button.icon.clone())
-                            .with_size(px(if button.filled { 12. } else { 14. }))
-                            .text_color(glyph),
-                    )
-                    .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
-                    .on_click(move |_: &ClickEvent, window, cx| {
-                        window.dispatch_action(action.boxed_clone(), cx);
-                    })
-                    .into_any_element()
-            })
-            .collect();
-        h_flex()
-            .flex_1()
-            .min_w_0()
-            .gap_2()
+        let action = button.action.boxed_clone();
+        let lit = button.lit.as_ref().is_some_and(|lit| lit(cx));
+        let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
+            Some(key) => format!("{} ({key})", button.label),
+            None => button.label.to_string(),
+        });
+        let glyph = if button.filled {
+            on_primary
+        } else if lit {
+            primary
+        } else {
+            muted
+        };
+        div()
+            .id(button.id)
+            .flex()
             .items_center()
+            .justify_center()
+            .size(px(SWITCHER_CELL))
+            .rounded_sm()
+            .cursor_pointer()
+            // Play is filled: the one thing on this screen besides the
+            // text. A toggle is lit the way the switch's cell is, so "on"
+            // reads the same everywhere in the bar.
+            .when(button.filled, |el| {
+                el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
+            })
+            // A filled button that is on — Play while the Player is out —
+            // wears a ring, since its fill is already taken.
+            .when(button.filled && lit, |el| {
+                el.border_2().border_color(on_primary.opacity(0.8))
+            })
+            .when(!button.filled && lit, |el| el.bg(accent))
+            .when(!button.filled && !lit, |el| {
+                el.hover(|s| s.bg(hover.opacity(0.6)))
+            })
             .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    .truncate()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(self.story_title.clone()),
+                gpui_component::Icon::new(button.icon.clone())
+                    .with_size(px(if button.filled { 12. } else { 14. }))
+                    .text_color(glyph),
             )
-            .children(buttons)
+            .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+            .on_click(move |_: &ClickEvent, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+            })
             .into_any_element()
     }
 
@@ -1404,7 +1472,17 @@ pub struct WritingButton {
     pub filled: bool,
     /// Whether a toggle is on, drawn lit. `None` for a button with no state.
     pub lit: Option<IsOn>,
+    /// Drawn just right of the traffic lights (the sidebar toggle) rather
+    /// than with the others, left of the switch.
+    pub leading: bool,
 }
+
+/// What the title bar leaves for the window controls at its left end:
+/// the kit's `TitleBar` padding, which it does not export.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS: f32 = 80.;
+#[cfg(not(target_os = "macos"))]
+const TRAFFIC_LIGHTS: f32 = 12.;
 
 /// Asked on every render of the title bar: is this toggle on?
 pub type IsOn = Rc<dyn Fn(&App) -> bool>;
@@ -1453,6 +1531,8 @@ impl Render for Workspace {
         let writing = self.editor_view(cx) == EditorView::Write;
         let switcher = self.view_switcher(cx);
         let writing_title = writing.then(|| self.render_writing_title(cx));
+        let writing_leading = writing.then(|| self.render_writing_leading(cx));
+        let sidebar_open = writing && self.writing_sidebar.is_some();
         let status = (!writing).then(|| self.render_status(cx));
         let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window);
@@ -1506,6 +1586,11 @@ impl Render for Workspace {
                     .on_close_window(|_, window, cx| {
                         window.dispatch_action(Box::new(CloseWindow), cx);
                     })
+                    // The open sidebar's strip starts at the window's left
+                    // edge, under the traffic lights, and carries their
+                    // inset itself.
+                    .when(sidebar_open, |bar| bar.pl_0())
+                    .children(writing_leading)
                     .child(
                         h_flex()
                             .flex_1()

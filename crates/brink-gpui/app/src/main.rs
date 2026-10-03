@@ -108,6 +108,11 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// Writing mode's sidebar: the files, and the current file's
+        /// structure. From Script, go to Write with it open.
+        ToggleWritingSidebar,
+        /// The sidebar's second column, the current file's structure.
+        ToggleStructureColumn,
         /// Show or hide the Player. In Write mode it slides in beside the
         /// manuscript and out again; in Script it is a tab, so this shows it.
         TogglePlayer,
@@ -241,8 +246,14 @@ impl Studio {
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
-        let write =
-            cx.new(|_| crate::write_view::WriteView::new(manuscript.clone(), player.clone()));
+        let write = cx.new(|cx| {
+            crate::write_view::WriteView::new(
+                project.clone(),
+                manuscript.clone(),
+                player.clone(),
+                cx,
+            )
+        });
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
         let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
@@ -510,19 +521,43 @@ impl Studio {
             workspace.register_command("Play", "Show/Hide Player", TogglePlayer, None, cx);
             // Bindable, with no default key yet (R4).
             workspace.register_command("View", "Read View", ToggleReadView, None, cx);
+            workspace.register_command("View", "Writing Sidebar", ToggleWritingSidebar, None, cx);
+            workspace.register_command(
+                "View",
+                "Writing Sidebar: Structure Column",
+                ToggleStructureColumn,
+                None,
+                cx,
+            );
             // Write mode's title bar: Read, then Play — the same actions
             // the palette and the keys run. (The story's name is set once
             // the project has opened and has a root.)
             let reading = manuscript.downgrade();
             let playing = write.downgrade();
+            let sidebar = write.downgrade();
             workspace.set_writing_buttons(
                 vec![
+                    // W4: right of the traffic lights, on the bare page too.
+                    WritingButton {
+                        id: "writing-sidebar",
+                        label: "Sidebar".into(),
+                        icon: gpui_component::IconName::PanelLeft,
+                        action: Box::new(ToggleWritingSidebar),
+                        filled: false,
+                        leading: true,
+                        lit: Some(std::rc::Rc::new(move |cx: &App| {
+                            sidebar
+                                .upgrade()
+                                .is_some_and(|w| w.read(cx).is_sidebar_open())
+                        })),
+                    },
                     WritingButton {
                         id: "writing-read",
                         label: "Read View".into(),
                         icon: gpui_component::IconName::BookOpen,
                         action: Box::new(ToggleReadView),
                         filled: false,
+                        leading: false,
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             reading.upgrade().is_some_and(|m| m.read(cx).is_read())
                         })),
@@ -533,6 +568,7 @@ impl Studio {
                         icon: gpui_component::IconName::Play,
                         action: Box::new(Play),
                         filled: true,
+                        leading: false,
                         // Ringed while the Player is out beside the text.
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             playing
@@ -754,65 +790,7 @@ impl Studio {
             window,
             |this, binder, event: &BinderEvent, window, cx| {
                 let BinderEvent::Open { path, offset } = event else {
-                    match event {
-                        BinderEvent::Play { path } => {
-                            this.play_at(Some(path.clone()), window, cx);
-                        }
-                        // The file operations live in the studio, not the
-                        // panel: they open dialogs and they change the
-                        // project, and the Binder's business is the rows.
-                        BinderEvent::NewFile { folder } => {
-                            files::new_file(this.project.clone(), folder.clone(), window, cx);
-                        }
-                        BinderEvent::RenameFile { path } => {
-                            files::rename_file(this.project.clone(), path.clone(), window, cx);
-                        }
-                        BinderEvent::DeleteFile { paths } => {
-                            // Before the dialog: their editors would write
-                            // the files straight back on the next `cmd-s`.
-                            this.code.update(cx, |code, cx| {
-                                for path in paths {
-                                    code.close_document(path, window, cx);
-                                }
-                            });
-                            files::delete_files(this.project.clone(), paths.clone(), window, cx);
-                        }
-                        BinderEvent::NewKnot { path } => {
-                            let reveal = this.reveal_fn(cx);
-                            knots::new_knot(this.project.clone(), path.clone(), reveal, window, cx);
-                        }
-                        BinderEvent::NewStitch { path, full_end } => {
-                            let reveal = this.reveal_fn(cx);
-                            knots::new_stitch(
-                                this.project.clone(),
-                                path.clone(),
-                                *full_end,
-                                reveal,
-                                window,
-                                cx,
-                            );
-                        }
-                        BinderEvent::Promote { path, knot, stitch } => {
-                            structural::promote(
-                                this.project.clone(),
-                                path.clone(),
-                                knot.clone(),
-                                stitch.clone(),
-                                window,
-                                cx,
-                            );
-                        }
-                        BinderEvent::Demote { path, knot } => {
-                            structural::demote(
-                                this.project.clone(),
-                                path.clone(),
-                                knot.clone(),
-                                window,
-                                cx,
-                            );
-                        }
-                        BinderEvent::Open { .. } => {}
-                    }
+                    this.on_outline(event, window, cx);
                     return;
                 };
                 this.open(path, offset.map(|o| o..o), window, cx);
@@ -1003,9 +981,36 @@ impl Studio {
         cx.default_global::<OpenStudios>().0.push(me);
         // The title bar's Play is ringed while the Player is out; the
         // panel's own close button changes that, so the bar is redrawn.
-        let on_write = cx.observe(&write, |this, _, cx| {
-            this.workspace.update(cx, |_, cx| cx.notify());
+        // The title bar draws three things off Write mode's state: the ring
+        // on Play, the sidebar's strip under the traffic lights, and the
+        // caret's knot › stitch. All three move without a title-bar event
+        // of their own, so the bar is told whenever the view changes.
+        let on_write = cx.observe(&write, |this, write, cx| {
+            let (width, crumb) = {
+                let write = write.read(cx);
+                (write.sidebar_width(), write.crumb(cx))
+            };
+            this.workspace.update(cx, |workspace, cx| {
+                workspace.set_writing_sidebar(width, cx);
+                workspace.set_writing_crumb(crumb, cx);
+                cx.notify();
+            });
         });
+        let on_write_event = cx.subscribe_in(
+            &write,
+            window,
+            |this, _, event: &crate::write_view::WriteEvent, window, cx| match event {
+                crate::write_view::WriteEvent::Outline(event) => {
+                    this.on_outline(event, window, cx);
+                }
+                crate::write_view::WriteEvent::OpenInScript { path } => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.require_editor_view(EditorView::Script, cx);
+                    });
+                    this.open(path, None, window, cx);
+                }
+            },
+        );
 
         Self {
             project,
@@ -1023,6 +1028,7 @@ impl Studio {
             close: CloseState::default(),
             _subscriptions: vec![
                 on_write,
+                on_write_event,
                 on_project,
                 on_binder,
                 on_player,
@@ -1551,6 +1557,64 @@ impl Studio {
         })
     }
 
+    /// What the Binder and Write mode's sidebar ask of the studio, other
+    /// than opening a file: each surface opens files its own way.
+    fn on_outline(&mut self, event: &BinderEvent, window: &mut Window, cx: &mut Context<Self>) {
+        match event {
+            BinderEvent::Play { path } => {
+                self.play_at(Some(path.clone()), window, cx);
+            }
+            // The file operations live in the studio, not the
+            // panel: they open dialogs and they change the
+            // project, and the Binder's business is the rows.
+            BinderEvent::NewFile { folder } => {
+                files::new_file(self.project.clone(), folder.clone(), window, cx);
+            }
+            BinderEvent::RenameFile { path } => {
+                files::rename_file(self.project.clone(), path.clone(), window, cx);
+            }
+            BinderEvent::DeleteFile { paths } => {
+                // Before the dialog: their editors would write
+                // the files straight back on the next `cmd-s`.
+                self.code.update(cx, |code, cx| {
+                    for path in paths {
+                        code.close_document(path, window, cx);
+                    }
+                });
+                files::delete_files(self.project.clone(), paths.clone(), window, cx);
+            }
+            BinderEvent::NewKnot { path } => {
+                let reveal = self.reveal_fn(cx);
+                knots::new_knot(self.project.clone(), path.clone(), reveal, window, cx);
+            }
+            BinderEvent::NewStitch { path, full_end } => {
+                let reveal = self.reveal_fn(cx);
+                knots::new_stitch(
+                    self.project.clone(),
+                    path.clone(),
+                    *full_end,
+                    reveal,
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::Promote { path, knot, stitch } => {
+                structural::promote(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    stitch.clone(),
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::Demote { path, knot } => {
+                structural::demote(self.project.clone(), path.clone(), knot.clone(), window, cx);
+            }
+            BinderEvent::Open { .. } => {}
+        }
+    }
+
     /// Put the Player on screen where the current mode keeps it: beside
     /// the manuscript in Write (W7), a centre tab in Script.
     fn show_player(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -2037,6 +2101,35 @@ impl Studio {
         self.play_at(None, window, cx);
     }
 
+    /// The sidebar is Write mode's (W4); from Script the gesture can only
+    /// mean "show me it".
+    fn toggle_writing_sidebar(
+        &mut self,
+        _: &ToggleWritingSidebar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.workspace.read(cx).editor_view(cx) == EditorView::Write {
+            self.write.update(cx, |write, cx| write.toggle_sidebar(cx));
+            return;
+        }
+        if !self.write.read(cx).is_sidebar_open() {
+            self.write.update(cx, |write, cx| write.toggle_sidebar(cx));
+        }
+        self.workspace
+            .update(cx, |w, cx| w.set_editor_view(EditorView::Write, window, cx));
+    }
+
+    fn toggle_structure_column(
+        &mut self,
+        _: &ToggleStructureColumn,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.write
+            .update(cx, |write, cx| write.toggle_structure(cx));
+    }
+
     /// In Write, slide the Player out or back in without touching the
     /// session; in Script it is a tab, so show it.
     fn toggle_player(&mut self, _: &TogglePlayer, window: &mut Window, cx: &mut Context<Self>) {
@@ -2343,6 +2436,8 @@ impl Render for Studio {
             .on_action(cx.listener(Self::make_choice_body))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_player))
+            .on_action(cx.listener(Self::toggle_writing_sidebar))
+            .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
@@ -2702,6 +2797,91 @@ mod modes_driven {
         let shot = scratch_dir("shot").join("player.png");
         h.screenshot(window, &shot);
         eprintln!("player screenshot: {}", shot.display());
+    }
+
+    /// A small ink story with every row kind the sidebar draws.
+    const OUTLINE_STORY: &str = "VAR gold = 5\nCONST NAME = \"Ada\"\n\n-> start\n\n=== start ===\nThe lamp gutters.\n* [Run] -> start.second\n\n= second\nYou run.\n-> DONE\n\n=== market ===\nStalls everywhere.\n-> DONE\n\n=== function twice(x) ===\n~ return x * 2\n";
+
+    fn outline_project() -> std::path::PathBuf {
+        let dir = scratch_dir("outline");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(dir.join("story.ink"), OUTLINE_STORY).expect("writing the story");
+        dir
+    }
+
+    /// W4–W6: the sidebar opens from its toggle, and the caret's place —
+    /// here, put there by a sidebar click — is the title bar's crumb.
+    #[test]
+    fn the_writing_sidebar_follows_the_caret_into_its_stitch() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let open = h.read(|cx| studio.read(cx).write.read(cx).is_sidebar_open());
+        assert!(open);
+
+        let second = OUTLINE_STORY.find("= second").expect("the stitch") + 2;
+        h.update(|cx| {
+            let write = studio.read(cx).write.clone();
+            write.update(cx, |w, cx| w.reveal_at("story.ink", second, cx));
+        });
+        let crumb = |h: &mut Harness| {
+            h.read(|cx| {
+                let s = studio.read(cx);
+                s.write.read(cx).crumb(cx)
+            })
+        };
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| crumb(h).is_some());
+        assert!(found, "the outline never arrived");
+        assert_eq!(crumb(&mut h).as_deref(), Some("start \u{203a} second"));
+
+        // The structure column's toggle and the sidebar's own.
+        h.dispatch(window, super::ToggleStructureColumn);
+        let narrow = h.read(|cx| studio.read(cx).write.read(cx).sidebar_width());
+        assert_eq!(
+            narrow,
+            Some(gpui::px(200.)),
+            "only the Files column is left"
+        );
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let closed = h.read(|cx| studio.read(cx).write.read(cx).sidebar_width());
+        assert_eq!(closed, None);
+    }
+
+    /// From Script, the sidebar's gesture goes to Write with it open.
+    #[test]
+    fn the_sidebar_toggle_from_script_goes_to_write_with_it_open() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        assert_eq!(mode(&mut h, window), EditorView::Write);
+        assert!(h.read(|cx| studio.read(cx).write.read(cx).is_sidebar_open()));
+    }
+
+    /// The picture: the sidebar open, the caret in a stitch.
+    #[test]
+    fn the_writing_sidebar_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let second = OUTLINE_STORY.find("= second").expect("the stitch") + 2;
+        h.update(|cx| {
+            let write = studio.read(cx).write.clone();
+            write.update(cx, |w, cx| w.reveal_at("story.ink", second, cx));
+        });
+        h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).write.read(cx).crumb(cx))
+                .is_some()
+        });
+        let shot = scratch_dir("shot").join("sidebar.png");
+        h.screenshot(window, &shot);
+        eprintln!("sidebar screenshot: {}", shot.display());
     }
 
     /// The picture: Write mode with Read on, for checking by eye.

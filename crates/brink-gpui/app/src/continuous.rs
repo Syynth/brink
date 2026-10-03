@@ -149,8 +149,24 @@ pub struct ContinuousView {
     /// runs from a bare `&mut App`.
     me: WeakEntity<Self>,
     focus: gpui::FocusHandle,
+    /// Where the caret is: the section that last had focus, and the byte
+    /// offset in it. What Writing mode's sidebar calls the current file,
+    /// and what the title bar's knot › stitch is read from.
+    caret: Option<(String, usize)>,
+    /// The focused section's editor, observed for caret moves. Replaced
+    /// whenever another section takes focus.
+    caret_watch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// What the manuscript tells its host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManuscriptEvent {
+    /// The caret moved to `offset` in `path` — or into another file.
+    Caret { path: String, offset: usize },
+}
+
+impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
 
 impl ContinuousView {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -185,6 +201,8 @@ impl ContinuousView {
             read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
             focus: cx.focus_handle(),
+            caret: None,
+            caret_watch: None,
             _subscriptions: vec![watch],
         }
     }
@@ -314,7 +332,57 @@ impl ContinuousView {
             state.set_selected_range(span, cx);
             cx.notify();
         });
+        // The caret is where the reveal put it, focused or not: the sidebar
+        // and the title bar's knot › stitch follow from here.
+        self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// The file the author is in: where the caret is, or — before any
+    /// section has had focus — the file at the top of the scroller.
+    #[must_use]
+    pub fn current_file(&self) -> Option<&str> {
+        self.caret
+            .as_ref()
+            .map(|(path, _)| path.as_str())
+            .or_else(|| {
+                self.files
+                    .get(self.list.logical_scroll_top().item_ix)
+                    .map(String::as_str)
+            })
+    }
+
+    /// Where the caret is, if a section has had focus.
+    #[must_use]
+    pub fn caret(&self) -> Option<(&str, usize)> {
+        self.caret.as_ref().map(|(path, at)| (path.as_str(), *at))
+    }
+
+    /// A section took focus: follow its caret from now on. Its editor is
+    /// observed rather than polled, and the event goes out only when the
+    /// caret actually moved — the editor also notifies to blink.
+    fn follow_caret(&mut self, path: String, editor: Entity<EditorState>, cx: &mut Context<Self>) {
+        let offset = editor.read(cx).cursor();
+        self.set_caret(&path, offset, cx);
+        self.caret_watch = Some(cx.observe(&editor, move |this, editor, cx| {
+            let offset = editor.read(cx).cursor();
+            this.set_caret(&path, offset, cx);
+        }));
+    }
+
+    fn set_caret(&mut self, path: &str, offset: usize, cx: &mut Context<Self>) {
+        if self
+            .caret
+            .as_ref()
+            .is_some_and(|(p, o)| p == path && *o == offset)
+        {
+            return;
+        }
+        self.caret = Some((path.to_owned(), offset));
+        cx.emit(ManuscriptEvent::Caret {
+            path: path.to_owned(),
+            offset,
+        });
     }
 
     /// Whether the Read view is on.
@@ -452,9 +520,16 @@ impl ContinuousView {
         // edit is pushed explicitly instead.
         let edited_project = project.clone();
         let edited_path = path.to_owned();
+        let following = me.clone();
+        let focused_path = path.to_owned();
         section_subs.borrow_mut().push(cx.subscribe(
             &state,
             move |state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Focus) {
+                    let _ = following.update(cx, |this, cx| {
+                        this.follow_caret(focused_path.clone(), state.clone(), cx);
+                    });
+                }
                 if matches!(event, InputEvent::Change) {
                     let text = state.read(cx).value().to_string();
                     let origin = state.entity_id();

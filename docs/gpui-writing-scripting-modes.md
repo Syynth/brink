@@ -202,6 +202,25 @@ Each slice is one PR, verified headlessly (§4.2).
      those declarations appear to render as knot rows).
    - New knot, new stitch and the `⋯` menu reuse the Binder's existing
      events (new knot/stitch, promote/demote, Play from here).
+   - *Built:* `Symbol` carries `kind` and a global's value as written, and
+     the Binder now shows knots, functions and stitches only. Sidebar
+     columns (`app/src/write_view.rs`):
+     - **Files (200px):** the entry first and bold, with problem counts;
+       a collapsible `std` folder whose files open in Script, since the
+       manuscript doesn't hold them; `N problems` at the foot.
+     - **Structure (240px):** Knots with a `+`, Functions, Globals with
+       their values faint. Hover shows `+` (new stitch) on knots and `⋯`
+       on every row (Go to, Play from here, New Stitch, Promote/Demote).
+     The current file is the caret's, or the file at the top of the
+     scroller. The manuscript follows the caret through its sections' focus
+     and through reveals. The title bar paints its left end as the sidebar
+     while open, with the toggle (`ToggleWritingSidebar`) right of the
+     traffic lights, and shows `story · knot › stitch`.
+     `ToggleStructureColumn` is the second column's toggle, mirrored by a
+     button in the Files header. **Not yet:** a `+` for Functions and
+     Globals (no creation flow exists to reuse), back/forward and search in
+     the bar, a slide animation for the sidebar, and remembering it open
+     across launches.
 6. **The bare-page chip** (W9): word count and problem count, bottom-right;
    clicking opens the sidebar on the problems.
 7. **Scripting's lean status bar** (S1): drop the absolute path and the
