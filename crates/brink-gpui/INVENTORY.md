@@ -155,7 +155,7 @@ headings, editable, on the shared buffer.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Player beside the manuscript | ruled, not built | 2026-10-03 (`docs/gpui-writing-scripting-modes.md` W7) — slides in from the right; supersedes "swap, not split". |
+| ~~Player beside the manuscript~~ | built 2026-10-03 | `app/src/write_view.rs` (W7) — slides in from the right and pushes the text; supersedes "swap, not split". |
 | ~~First section shows a partial row above the next heading~~ | not reproducible 2026-09-07 | driven on the rig with a two-file project: the boundary is clean at rest and after scrolling — `a.ink`'s trailing empty row is drawn whole before `b.ink`'s heading. The row predates the `wrap_row_count` re-measure that runs every frame (`remeasure_sections`), which is what a partial row was a symptom of. |
 
 ### The editor itself (`app/src/document.rs`, `model/src/tokens.rs`, `model/src/query.rs`)
@@ -201,7 +201,7 @@ on knots and stitches.
 
 | Left out | Kind | Note |
 |---|---|---|
-| Placement in Write mode | ruled, not built | beside the manuscript (`docs/gpui-writing-scripting-modes.md` W7); Script mode keeps the built centre tab. |
+| ~~Placement in Write mode~~ | built 2026-10-03 | beside the manuscript (`app/src/write_view.rs`, W7); Script mode keeps the centre tab. |
 | Hot-swapping a running story after an edit | deliberate | the module doc says why: the story keeps running on what it compiled from, the status says so, a restart picks the edit up. |
 | Waking an `await` park | **engine gap, not buildable yet** | checked 2026-09-07: `Step::Suspended` is UNREACHABLE in today's runtime — the E052 lowering fence keeps `await` from producing bytecode — and `Story::wake_check` is a documented stub returning an empty list until FS-3r. A wake button here would be a control for a state no story can reach. The Player already shows the park as a turn boundary, which is the whole of what can be true today. |
 | ~~Number keys for choices~~ | built 2026-09-06 | `1`-`9`, with Play/Restart focusing the panel so they work without a click. |
@@ -401,7 +401,7 @@ Against studio-shell-spec §4's inventory:
 
 | Surface | Blocked on |
 |---|---|
-| **Player** | ~~not started~~ **built** — see §1. Write mode's beside-the-manuscript placement is ruled, not built. |
+| **Player** | ~~not started~~ **built** — see §1. Write mode's beside-the-manuscript placement is built (`app/src/write_view.rs`). |
 | **Program Explorer** | ~~not started~~ **built** — see §1. |
 | **State View** (debugger) | ~~blocked on engine work~~ **built 2026-09-07** — `app/src/state_view.rs`. That blocker was stale: `Story::debug_snapshot` already assembles status, location, turn, globals, call stack, visit counts, pending choices and the RNG. What was missing was a way to ASK, which is one command on the play session (`PlayCommand::Snapshot`). It reads and does not step — setting a variable, `stepi` and breakpoints each change a running story and are worth their own slice. Refreshed by observing the Player, never polled: a story waiting for a choice is not changing. One nuance it reports faithfully: the runtime's own `visit_counts` comes back empty for this corpus, so the panel says "nothing visited yet" rather than inventing a number. |
 | **Output / compile log** | ~~unblocked~~ **built 2026-09-06** — see §1. |

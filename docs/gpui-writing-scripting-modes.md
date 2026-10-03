@@ -185,6 +185,14 @@ Each slice is one PR, verified headlessly (§4.2).
      keeps today's tab.
    - The title bar's Play button and the existing `Play`/`PlayRestart`
      actions both open it.
+   - *Built:* `app/src/write_view.rs` is Write mode's occupant, holding the
+     manuscript and, when out, a 400px Player panel that slides in (a
+     160ms width animation) with a "Player" header and a close button.
+     `play_at`, Restart and the debug verbs show the Player where the
+     current mode keeps it. `TogglePlayer` ("Show/Hide Player", bindable,
+     no default key) slides it away and back without touching the
+     session. Title-bar Play is ringed while the Player is out. Closing
+     has no slide-out yet.
 5. **The Writing sidebar** (W4–W6, W11) — a new component, not the Binder.
    - The structure column uses the per-file `DocumentSymbols` query. Its IDE
      source (`brink_ide::document::document_symbols`) already returns

@@ -1286,6 +1286,11 @@ impl Workspace {
                     .when(button.filled, |el| {
                         el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
                     })
+                    // A filled button that is on — Play while the Player is
+                    // out — wears a ring, since its fill is already taken.
+                    .when(button.filled && lit, |el| {
+                        el.border_2().border_color(on_primary.opacity(0.8))
+                    })
                     .when(!button.filled && lit, |el| el.bg(accent))
                     .when(!button.filled && !lit, |el| {
                         el.hover(|s| s.bg(hover.opacity(0.6)))

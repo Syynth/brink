@@ -41,6 +41,7 @@ mod tab_title;
 mod todos;
 mod treemap;
 mod watch;
+mod write_view;
 
 use std::ops::Range;
 use std::path::PathBuf;
@@ -107,6 +108,9 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// Show or hide the Player. In Write mode it slides in beside the
+        /// manuscript and out again; in Script it is a tab, so this shows it.
+        TogglePlayer,
         /// Writing mode's Read view: prose in a proportional face at full
         /// strength, the markup faded. From Script, go to Write with it on.
         ToggleReadView,
@@ -180,9 +184,12 @@ struct Studio {
     code: Entity<CodeView>,
     /// Write mode's manuscript — the whole project as one scroller.
     manuscript: Entity<ContinuousView>,
+    /// Write mode's occupant: the manuscript, and the Player beside it.
+    write: Entity<crate::write_view::WriteView>,
     search: Entity<SearchView>,
-    /// The Player, a centre tab in Code view. Made once; docked on the
-    /// first Play, re-docked if its tab was closed.
+    /// The Player: a centre tab in Script mode (made once; docked on the
+    /// first Play, re-docked if its tab was closed), and a panel beside
+    /// the manuscript in Write mode (`write`).
     player: Entity<Player>,
     /// The Story Graph — a centre tab on the Player's terms, made once.
     graph: Entity<crate::story_graph::StoryGraphView>,
@@ -234,6 +241,8 @@ impl Studio {
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
+        let write =
+            cx.new(|_| crate::write_view::WriteView::new(manuscript.clone(), player.clone()));
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
         let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
@@ -402,7 +411,7 @@ impl Studio {
             workspace.set_view_occupant(EditorView::Script, code.clone().into(), code_focus, cx);
             workspace.set_view_occupant(
                 EditorView::Write,
-                manuscript.clone().into(),
+                write.clone().into(),
                 manuscript_focus,
                 cx,
             );
@@ -498,11 +507,14 @@ impl Studio {
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
             // Bindable, with no default key yet (R4).
+            workspace.register_command("Play", "Show/Hide Player", TogglePlayer, None, cx);
+            // Bindable, with no default key yet (R4).
             workspace.register_command("View", "Read View", ToggleReadView, None, cx);
             // Write mode's title bar: Read, then Play — the same actions
             // the palette and the keys run. (The story's name is set once
             // the project has opened and has a root.)
             let reading = manuscript.downgrade();
+            let playing = write.downgrade();
             workspace.set_writing_buttons(
                 vec![
                     WritingButton {
@@ -521,7 +533,12 @@ impl Studio {
                         icon: gpui_component::IconName::Play,
                         action: Box::new(Play),
                         filled: true,
-                        lit: None,
+                        // Ringed while the Player is out beside the text.
+                        lit: Some(std::rc::Rc::new(move |cx: &App| {
+                            playing
+                                .upgrade()
+                                .is_some_and(|w| w.read(cx).is_player_open())
+                        })),
                     },
                 ],
                 cx,
@@ -984,12 +1001,18 @@ impl Studio {
         // Quit asks every project window, so it needs to find them all.
         let me = (window.window_handle(), cx.weak_entity());
         cx.default_global::<OpenStudios>().0.push(me);
+        // The title bar's Play is ringed while the Player is out; the
+        // panel's own close button changes that, so the bar is redrawn.
+        let on_write = cx.observe(&write, |this, _, cx| {
+            this.workspace.update(cx, |_, cx| cx.notify());
+        });
 
         Self {
             project,
             workspace,
             code,
             manuscript,
+            write,
             search,
             player,
             compiled,
@@ -999,6 +1022,7 @@ impl Studio {
             _watching: watching,
             close: CloseState::default(),
             _subscriptions: vec![
+                on_write,
                 on_project,
                 on_binder,
                 on_player,
@@ -1527,17 +1551,23 @@ impl Studio {
         })
     }
 
-    /// Run the story in the Player — from the entry, or from `at`. The
-    /// Player is a Code-view tab, so the manuscript gives way to Code; how
-    /// the manuscript itself should host a session is parked
-    /// (`HANDOFF.md`, "Open, parked").
+    /// Put the Player on screen where the current mode keeps it: beside
+    /// the manuscript in Write (W7), a centre tab in Script.
+    fn show_player(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.read(cx).editor_view(cx) == EditorView::Write {
+            self.write.update(cx, |write, cx| write.open_player(cx));
+        } else {
+            let player = self.player.clone();
+            self.code
+                .update(cx, |code, cx| code.show_player(&player, window, cx));
+        }
+    }
+
+    /// Run the story in the Player — from the entry, or from `at` — shown
+    /// where the current mode keeps it.
     fn play_at(&mut self, at: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        self.workspace.update(cx, |workspace, cx| {
-            workspace.require_editor_view(EditorView::Script, cx);
-        });
+        self.show_player(window, cx);
         let player = self.player.clone();
-        self.code
-            .update(cx, |code, cx| code.show_player(&player, window, cx));
         player.update(cx, |player, cx| player.start(at, cx));
         // Play is an explicit "run it now", and the choices are numbered so
         // they can be picked by key — which needs the Player to have focus.
@@ -2007,6 +2037,23 @@ impl Studio {
         self.play_at(None, window, cx);
     }
 
+    /// In Write, slide the Player out or back in without touching the
+    /// session; in Script it is a tab, so show it.
+    fn toggle_player(&mut self, _: &TogglePlayer, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.read(cx).editor_view(cx) == EditorView::Write
+            && self.write.read(cx).is_player_open()
+        {
+            self.write.update(cx, |write, cx| write.close_player(cx));
+            // Back to the text: the Player had the keys.
+            let handle = self.manuscript.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+            return;
+        }
+        self.show_player(window, cx);
+        let handle = self.player.read(cx).focus_handle(cx);
+        window.focus(&handle, cx);
+    }
+
     /// Mark the caret's line, or unmark it. The line is the EDITOR's,
     /// because a breakpoint is set where you are looking; with no
     /// document open there is no line to mark and the command says so
@@ -2070,20 +2117,14 @@ impl Studio {
     /// Send a debug verb to the running session, showing the Player first
     /// — the transcript is where its output lands.
     fn debug(&mut self, command: PlayCommand, window: &mut Window, cx: &mut Context<Self>) {
-        let player = self.player.clone();
-        if !player.read(cx).is_docked() {
-            self.code
-                .update(cx, |code, cx| code.show_player(&player, window, cx));
-        }
-        player.update(cx, |player, cx| player.debug(command, cx));
+        self.show_player(window, cx);
+        self.player
+            .update(cx, |player, cx| player.debug(command, cx));
     }
 
     fn play_restart(&mut self, _: &PlayRestart, window: &mut Window, cx: &mut Context<Self>) {
+        self.show_player(window, cx);
         let player = self.player.clone();
-        if !player.read(cx).is_docked() {
-            self.code
-                .update(cx, |code, cx| code.show_player(&player, window, cx));
-        }
         player.update(cx, |player, cx| player.restart(cx));
         let handle = player.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
@@ -2301,6 +2342,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::make_gather))
             .on_action(cx.listener(Self::make_choice_body))
             .on_action(cx.listener(Self::play))
+            .on_action(cx.listener(Self::toggle_player))
             .on_action(cx.listener(Self::toggle_breakpoint))
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
@@ -2578,6 +2620,88 @@ mod modes_driven {
             reading(&mut h, window),
             "Read survives a trip through Script"
         );
+    }
+
+    fn player_open(h: &mut Harness, window: AnyWindowHandle) -> bool {
+        let studio = h.studio(window).expect("open");
+        h.read(|cx| studio.read(cx).write.read(cx).is_player_open())
+    }
+
+    /// W7: in Write, Play slides the Player in beside the manuscript and
+    /// stays in Write — it used to switch to Script and dock a tab.
+    #[test]
+    fn play_in_write_opens_the_player_beside_the_text_and_stays() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert_eq!(mode(&mut h, window), EditorView::Write);
+        assert!(player_open(&mut h, window));
+        let studio = h.studio(window).expect("open");
+        let docked = h.read(|cx| studio.read(cx).player.read(cx).is_docked());
+        assert!(!docked, "Write's Player is not also a Script tab");
+    }
+
+    /// Script keeps the Player as a centre tab (S3).
+    #[test]
+    fn play_in_script_docks_the_player_tab() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeScript);
+        h.dispatch(window, super::Play);
+        assert_eq!(mode(&mut h, window), EditorView::Script);
+        let studio = h.studio(window).expect("open");
+        let docked = h.read(|cx| studio.read(cx).player.read(cx).is_docked());
+        assert!(docked);
+        assert!(!player_open(&mut h, window));
+    }
+
+    /// The toggle hides and shows the panel without touching the session.
+    #[test]
+    fn the_player_toggle_slides_it_away_and_back_keeping_the_session() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        let studio = h.studio(window).expect("open");
+        let started = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).player.read(cx).state())
+                != crate::player::SessionState::Idle
+        });
+        assert!(started, "the story never started");
+        let state = |h: &mut Harness| h.read(|cx| studio.read(cx).player.read(cx).state());
+        let running = state(&mut h);
+        assert_ne!(
+            running,
+            crate::player::SessionState::Idle,
+            "the story started"
+        );
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(!player_open(&mut h, window));
+        assert_eq!(state(&mut h), running, "hiding the panel ends nothing");
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(player_open(&mut h, window));
+        assert_eq!(state(&mut h), running);
+    }
+
+    /// The picture: Write with the Player out, for checking by eye.
+    #[test]
+    fn the_player_beside_the_text_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        let studio = h.studio(window).expect("open");
+        let started = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).player.read(cx).state())
+                != crate::player::SessionState::Idle
+        });
+        assert!(started, "the story never started");
+        let shot = scratch_dir("shot").join("player.png");
+        h.screenshot(window, &shot);
+        eprintln!("player screenshot: {}", shot.display());
     }
 
     /// The picture: Write mode with Read on, for checking by eye.
