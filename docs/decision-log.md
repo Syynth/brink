@@ -5670,3 +5670,35 @@
 - **SCOPE:** moderate
 - **WHAT:** The GPUI studio registers a menu bar generated from the command registry (#3624). The app names which registry groups go in which top-level menu, and a group left unplaced gets a menu of its own. On macOS it is the native bar (`cx.set_menus`), with the standard App menu (About, Settings…, Services, Hide / Hide Others / Show All, Quit) and a Window menu. On Linux and Windows the kit's in-window `AppMenuBar` draws the same menus in the title bar: the App menu's items move to the foot of File and to Help, so no menu reads "brink". The `☰` button, `ToggleMenu` and the palette's grouped Menu mode are deleted on every platform. The app keeps Quit (it asks about unsaved work first) and the bar places it by platform.
 - **WHY:** The maintainer asked for the native macOS bar and for the `☰` to go. Off the Mac, the choice was between keeping the `☰` there, drawing an in-window bar, or the palette alone. The in-window bar won because it keeps ONE menu structure across platforms, where a gated `☰` would show registry groups on Linux and File/Edit/View on the Mac. This revises the 2026-06-10 "No menu bar" call for the native shell only. That call was made for the web studio, where an in-page bar costs vertical space and is wrong in embeds; here the bar sits in the title bar the window already has, and the same entry anticipated a native bar fed from the registry. The web studio's hamburger is unaffected.
+
+## The native studio has two modes, Writing and Scripting; Single File is removed
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** architectural (the studio's top-level shape)
+- **WHAT:** The gpui studio becomes one app with two modes: **Writing** (today's Continuous view, with most chrome removed) and **Scripting** (today's tabbed Code view). A two-way, **icon-only** Write / Script switch (pen; `</>`) replaces the three-way view switcher. The **Single File view is removed**. Mode, view and panel toggles are **bindable actions**; default keybindings are deferred. Spec: `docs/gpui-writing-scripting-modes.md`.
+- **WHY:** The studio serves two kinds of work, drafting prose and building structure, and each wants a different screen. Neither persona needs Single File: Writing reads the whole story at once, and Scripting already shows one file per tab. Keys are deferred because the right chords depend on the final set of actions, and an unbound action costs nothing to bind later.
+
+## Writing mode: no chrome, a two-column sidebar, Play beside the manuscript, a Read view
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Writing mode shows no rails, docks, status bar or tab strip. The manuscript is left-aligned and full-width, and shows only what GPUI's editor can draw (gutter, soft wrap, current-line band, indent guides, syntax colours, squiggles, file headers). A macOS-style sidebar, toggled right of the traffic lights, slides out with two Inky-style columns: Files, then the current file's knots/stitches, functions and globals, with hover actions. A prominent Play button slides the Player in from the right, beside the manuscript. A Read toggle switches to a proportional font with ink markup faded and prose (including choice text) prominent. With the sidebar closed, a bottom-right chip shows word and problem counts. No focus dimming. For now the sidebar is its own component, separate from Scripting's Binder.
+- **WHY:** Writing is about the prose, so everything that is not prose either goes or is one click away. Mockups had to stay within what the real editor draws, or the design would promise effects the toolkit cannot deliver. The sidebar placement copies a pattern authors already know (Claude Desktop, Inky). Keeping the sidebar separate at first lets Writing mode ship without reworking the Binder; it moves into Scripting afterwards.
+
+## Supersedes, for Writing mode: "both rails are always drawn" and the Player's "swap, not split"
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The ruling that both rails are always drawn now holds for Scripting only; Writing mode draws none. The parked direction that the Player swaps with the Continuous view rather than splitting is replaced: in Writing mode the Player slides in beside the manuscript. This closes INVENTORY's open ruling "Player placement in Continuous and Single File". Scripting keeps the Player as a centre tab.
+- **WHY:** Both earlier calls were made for a studio with three views and constant chrome. With a distraction-free Writing mode, rails have no place there, and playing beside the text lets the author read a passage and fix it in the same glance, which a swap would prevent.
+
+## Scripting mode keeps both rails and gets a lean status bar
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Scripting mode keeps today's Code view, both rails included. The status bar drops the absolute project path and the analysis timings; the timings go to the Output log.
+- **WHY:** Scripting is where the full tool set belongs, so its chrome stays. The path and timings were diagnostics, not things an author reads while working.
