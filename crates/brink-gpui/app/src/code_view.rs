@@ -18,10 +18,13 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    App, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement, Render, SharedString,
-    Subscription, Window, div,
+    App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
+    SharedString, Subscription, Window, div, px,
 };
-use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelStyle, panel_handle};
+use gpui_component::WindowExt as _;
+use gpui_component::button::{Button, ButtonVariants as _};
+use gpui_component::dock::{DockArea, DockPlacement, DockSkin, Panel, PanelStyle, panel_handle};
+use gpui_component::h_flex;
 
 use crate::compiled_output::CompiledOutputView;
 use crate::document::{Document, DocumentEvent};
@@ -115,7 +118,7 @@ impl CodeView {
                     document.update(cx, |doc, cx| doc.set_scroll_top(top, cx));
                 }
                 Document::activate(&document, window, cx);
-                let subscription = cx.subscribe(&document, Self::on_document_event);
+                let subscription = cx.subscribe_in(&document, window, Self::on_document_event);
                 self.subscriptions.push((document.clone(), subscription));
                 self.documents.push(document.clone());
                 document
@@ -146,13 +149,90 @@ impl CodeView {
         else {
             return;
         };
+        let held = document.focus_handle(cx).contains_focused(window, cx);
         self.dock_area.update(cx, |area, cx| {
             area.remove_panel(document.clone(), window, cx);
         });
-        self.documents.retain(|d| *d != document);
-        self.subscriptions.retain(|(d, _)| *d != document);
-        if self.active.as_ref() == Some(&document) {
-            let next = self.documents.first().cloned();
+        self.forget(&document, cx);
+        self.keep_focus(held, window, cx);
+    }
+
+    /// A tab that held the keyboard has gone, and the dock moves nobody's
+    /// focus when it removes a panel: left alone, focus would sit on an
+    /// editor that is no longer drawn and every shortcut would go dead
+    /// until the next click. The dock area is always drawn, so it takes
+    /// focus now; the neighbour the dock then displays claims it from
+    /// there (`DocumentEvent::Activated`).
+    fn keep_focus(&self, held: bool, window: &mut Window, cx: &mut Context<Self>) {
+        if held {
+            window.focus(&self.dock_area.focus_handle(cx), cx);
+        }
+    }
+
+    /// The author asked to close the document that is entity `id` — its
+    /// tab's ✕, a middle click, `cmd-w`. Unsaved edits are asked about
+    /// first (save / don't save / cancel); everything else closes through
+    /// [`Self::close_document`], the same door a deleted file's tab goes
+    /// out by.
+    ///
+    /// The edits would survive a silent close — the buffer is the
+    /// project's, not the tab's — but they would be unsaved edits in a
+    /// file with no tab, which the author has no reason to go looking for.
+    pub fn request_close(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(document) = self.documents.iter().find(|d| d.entity_id() == id).cloned() else {
+            return;
+        };
+        let path = document.read(cx).path().to_string();
+        if !self.project.read(cx).is_dirty(&path) {
+            self.close_document(&path, window, cx);
+            return;
+        }
+        confirm_close(cx.entity(), self.project.clone(), path, window, cx);
+    }
+
+    /// Take a centre tab that is not a document out of the dock — the
+    /// Player, Compiled Output, the Story Graph. Each notices its own
+    /// removal (`on_removed`) and is re-docked by its `show_*` next time.
+    pub fn close_panel<P: Panel>(
+        &mut self,
+        panel: Entity<P>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let held = panel.read(cx).focus_handle(cx).contains_focused(window, cx);
+        self.dock_area.update(cx, |area, cx| {
+            area.remove_panel(panel, window, cx);
+        });
+        self.keep_focus(held, window, cx);
+    }
+
+    /// The document whose editor holds the keyboard, if any — what
+    /// `cmd-w` closes before it falls back to the active one.
+    #[must_use]
+    pub fn focused_document(&self, window: &Window, cx: &App) -> Option<&Entity<Document>> {
+        self.documents.iter().find(|d| {
+            d.read(cx)
+                .editor()
+                .read(cx)
+                .focus_handle(cx)
+                .contains_focused(window, cx)
+        })
+    }
+
+    /// Forget a document that has left the dock, however it left — closed
+    /// here, or removed by the dock itself (`DocumentEvent::Closed`). Safe
+    /// to run twice: the second time finds nothing to drop.
+    fn forget(&mut self, document: &Entity<Document>, cx: &mut Context<Self>) {
+        let path = document.read(cx).path().to_string();
+        let top = document.read(cx).scroll_top(cx);
+        self.remember_scroll(path, top);
+        self.documents.retain(|d| d != document);
+        self.subscriptions.retain(|(d, _)| d != document);
+        if self.active.as_ref() == Some(document) {
+            // The dock will activate whichever tab takes the closed one's
+            // place; until it says so, fall back to the most recently
+            // opened.
+            let next = self.documents.last().cloned();
             self.set_active(next, cx);
         }
     }
@@ -328,33 +408,97 @@ impl CodeView {
 
     fn on_document_event(
         &mut self,
-        document: Entity<Document>,
+        document: &Entity<Document>,
         event: &DocumentEvent,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let document = document.clone();
         match event {
-            DocumentEvent::Activated => self.set_active(Some(document), cx),
+            DocumentEvent::Activated => {
+                // The tab displayed after a close takes the keyboard back
+                // from the dock area (`keep_focus`). Only from there: an
+                // activation while the author is typing elsewhere must not
+                // pull focus away.
+                if self.dock_area.focus_handle(cx).is_focused(window) {
+                    window.focus(&document.focus_handle(cx), cx);
+                }
+                self.set_active(Some(document), cx);
+            }
             DocumentEvent::Navigate { path, span } => cx.emit(CodeViewEvent::Navigate {
                 path: path.clone(),
                 span: span.clone(),
             }),
-            DocumentEvent::Closed => {
-                // Last chance to read it: the entity is about to go.
-                let path = document.read(cx).path().to_string();
-                let top = document.read(cx).scroll_top(cx);
-                self.remember_scroll(path, top);
-                self.documents.retain(|d| *d != document);
-                self.subscriptions.retain(|(d, _)| *d != document);
-                if self.active.as_ref() == Some(&document) {
-                    // The dock will activate whichever tab takes the closed
-                    // one's place; until it says so, fall back to the most
-                    // recently opened.
-                    let next = self.documents.last().cloned();
-                    self.set_active(next, cx);
-                }
-            }
+            // Last chance to read it: the entity is about to go.
+            DocumentEvent::Closed => self.forget(&document, cx),
         }
     }
+}
+
+/// "Save changes to `name`?" — save, don't save, or cancel. Save closes
+/// only once the write has landed: a failed save keeps the tab, and the
+/// failure is reported where every save failure is (the Output log, via
+/// `ProjectEvent::SaveFailed`).
+fn confirm_close(
+    code: Entity<CodeView>,
+    project: Entity<Project>,
+    path: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
+    let path = Rc::new(path);
+    window.open_dialog(cx, move |dialog, _window, _cx| {
+        let save = {
+            let (code, project, path) = (code.clone(), project.clone(), path.clone());
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                window.close_dialog(cx);
+                let failed = project.update(cx, |project, cx| !project.save(&path, cx).is_empty());
+                if !failed {
+                    code.update(cx, |code, cx| code.close_document(&path, window, cx));
+                }
+            }
+        };
+        let discard = {
+            let (code, project, path) = (code.clone(), project.clone(), path.clone());
+            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
+                window.close_dialog(cx);
+                // Back to the disk's text first: the buffer is shared, and
+                // the manuscript would otherwise go on showing the edits
+                // that were just declined.
+                project.update(cx, |project, cx| project.revert(&path, cx));
+                code.update(cx, |code, cx| code.close_document(&path, window, cx));
+            }
+        };
+        dialog
+            .title(SharedString::from(format!("Save changes to {name}?")))
+            .w(px(420.))
+            .content(|content, _window, _cx| {
+                content.child("Your changes will be lost if you don't save them.")
+            })
+            .footer(
+                h_flex()
+                    .w_full()
+                    .gap_2()
+                    .justify_end()
+                    .child(
+                        Button::new("close-discard")
+                            .label("Don't Save")
+                            .on_click(discard),
+                    )
+                    .child(
+                        Button::new("close-cancel")
+                            .label("Cancel")
+                            .on_click(|_, window, cx| window.close_dialog(cx)),
+                    )
+                    .child(
+                        Button::new("close-save")
+                            .primary()
+                            .label("Save")
+                            .on_click(save),
+                    ),
+            )
+    });
 }
 
 impl EventEmitter<CodeViewEvent> for CodeView {}

@@ -406,6 +406,14 @@ impl BasePanel for CompiledOutputView {
         "CompiledOutput"
     }
 
+    /// Not the kit's to close: its `…` → Close would be a second way
+    /// out beside the tab's own ✕ (`crate::tab_title`), which goes through
+    /// the studio like every other close. Removal from the dock does not
+    /// ask this.
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn on_added_to(
         &mut self,
         group: WeakEntity<TabGroup>,
@@ -421,8 +429,8 @@ impl BasePanel for CompiledOutputView {
 }
 
 impl Panel for CompiledOutputView {
-    fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        SharedString::from("Compiled Output")
+    fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        crate::tab_title::tab_title(cx.entity_id(), "Compiled Output", false, cx)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

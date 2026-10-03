@@ -35,6 +35,7 @@ mod single_view;
 mod state_view;
 mod story_graph;
 mod structural;
+mod tab_title;
 mod todos;
 mod treemap;
 mod watch;
@@ -140,6 +141,9 @@ actions!(
         /// Bound to `escape` INSIDE a tool window only — every overlay
         /// means something by that key too, and each has its own context.
         FocusEditor,
+        /// Close the tab you are in: the focused centre tab, else the
+        /// active document. Asks first when the file has unsaved edits.
+        CloseTab,
         /// Close the studio, saving the window's shape on the way out.
         Quit,
     ]
@@ -389,6 +393,7 @@ impl Studio {
             // The app's own commands go through the same registry as the
             // shell's, so the palette and the menu list them.
             workspace.register_command("File", "Save", Save, Some("cmd-s"), cx);
+            workspace.register_command("File", "Close Tab", CloseTab, Some("cmd-w"), cx);
             // Studio: "Search: Find in Files", Mod-Shift-F (VS Code precedent).
             workspace.register_command(
                 "Search",
@@ -1650,6 +1655,74 @@ impl Studio {
         }
     }
 
+    /// `cmd-w`. The tab holding the keyboard first — the Player, Compiled
+    /// Output and the Story Graph are tabs too — then the active document,
+    /// which is the tab Single File view shows. The manuscript has no tabs,
+    /// and closing a file it cannot show would be closing something out of
+    /// sight, so there it does nothing.
+    fn close_tab(&mut self, _: &CloseTab, window: &mut Window, cx: &mut Context<Self>) {
+        if self.workspace.read(cx).editor_view(cx) == EditorView::Continuous {
+            return;
+        }
+        let singletons = [
+            (
+                self.player.entity_id(),
+                self.player.read(cx).is_docked(),
+                self.player.read(cx).focus_handle(cx),
+            ),
+            (
+                self.compiled.entity_id(),
+                self.compiled.read(cx).is_docked(),
+                self.compiled.read(cx).focus_handle(cx),
+            ),
+            (
+                self.graph.entity_id(),
+                self.graph.read(cx).is_docked(),
+                self.graph.read(cx).focus_handle(cx),
+            ),
+        ];
+        let code = self.code.read(cx);
+        let target = code
+            .focused_document(window, cx)
+            .map(gpui::Entity::entity_id)
+            .or_else(|| {
+                singletons
+                    .iter()
+                    .find(|(_, docked, focus)| *docked && focus.contains_focused(window, cx))
+                    .map(|(id, _, _)| *id)
+            })
+            .or_else(|| code.active_document().map(gpui::Entity::entity_id));
+        if let Some(id) = target {
+            self.close_tab_id(id, window, cx);
+        }
+    }
+
+    fn close_tab_by_id(
+        &mut self,
+        action: &tab_title::CloseTabById,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.close_tab_id(action.id, window, cx);
+    }
+
+    /// The one way a centre tab closes, whichever affordance asked.
+    fn close_tab_id(&mut self, id: gpui::EntityId, window: &mut Window, cx: &mut Context<Self>) {
+        let code = self.code.clone();
+        if id == self.player.entity_id() {
+            let player = self.player.clone();
+            code.update(cx, |code, cx| code.close_panel(player, window, cx));
+        } else if id == self.compiled.entity_id() {
+            let compiled = self.compiled.clone();
+            code.update(cx, |code, cx| code.close_panel(compiled, window, cx));
+        } else if id == self.graph.entity_id() {
+            let graph = self.graph.clone();
+            code.update(cx, |code, cx| code.close_panel(graph, window, cx));
+        } else {
+            code.update(cx, |code, cx| code.request_close(id, window, cx));
+        }
+    }
+
     fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
         // `on_app_quit` does the saving; this is the door to it.
         cx.quit();
@@ -1867,6 +1940,8 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::focus_editor))
+            .on_action(cx.listener(Self::close_tab))
+            .on_action(cx.listener(Self::close_tab_by_id))
             .on_action(cx.listener(Self::quit))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a

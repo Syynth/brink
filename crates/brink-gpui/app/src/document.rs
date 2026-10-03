@@ -1464,6 +1464,13 @@ impl gpui_component::dock::BasePanel for Document {
         "Document"
     }
 
+    /// Not the kit's to close: its `…` → Close would skip the
+    /// unsaved-edits prompt. The tab's own ✕ (`crate::tab_title`) closes it,
+    /// through the studio; removal from the dock does not ask this.
+    fn closable(&self, _cx: &App) -> bool {
+        false
+    }
+
     fn set_active(&mut self, active: bool, _window: &mut Window, cx: &mut Context<Self>) {
         if active {
             cx.emit(DocumentEvent::Activated);
@@ -1495,11 +1502,7 @@ impl gpui_component::dock::Panel for Document {
             .to_owned();
         // The unsaved marker is the tab's own affordance; a separate dot
         // elsewhere would be a second place to keep in step.
-        SharedString::from(if self.is_dirty(cx) {
-            format!("{name} •")
-        } else {
-            name
-        })
+        crate::tab_title::tab_title(cx.entity_id(), name, self.is_dirty(cx), cx)
     }
 
     /// The editor runs edge to edge under its tab, as an editor does.

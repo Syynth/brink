@@ -480,10 +480,53 @@ impl Project {
     /// Write every dirty file, relative to the root. Each failure is
     /// returned with its path; the others are still written.
     pub fn save_all(&mut self, cx: &mut Context<Self>) -> Vec<(String, std::io::Error)> {
+        let dirty = self.dirty_paths();
+        self.save_paths(&dirty, cx)
+    }
+
+    /// Write one file, if it is dirty — closing a tab with unsaved edits
+    /// saves that file and nothing else. Same reporting as
+    /// [`Self::save_all`].
+    pub fn save(&mut self, path: &str, cx: &mut Context<Self>) -> Vec<(String, std::io::Error)> {
+        let paths = if self.is_dirty(path) {
+            vec![path.to_owned()]
+        } else {
+            Vec::new()
+        };
+        self.save_paths(&paths, cx)
+    }
+
+    /// Throw away a file's unsaved edits: the buffer goes back to what is
+    /// on disk NOW, which is not always what was last saved — a file
+    /// changed on disk under a dirty buffer is held as a conflict, and
+    /// "don't save" means taking the disk's side of it. Through
+    /// [`Self::edit`], so every editor over the file follows; then level
+    /// with the disk, as an adopted reload is.
+    pub fn revert(&mut self, path: &str, cx: &mut Context<Self>) {
+        let Some(text) = std::fs::read_to_string(self.root.join(path))
+            .ok()
+            .or_else(|| self.saved.get(path).cloned())
+        else {
+            return;
+        };
+        self.conflicted.remove(path);
+        self.edit(path, text.clone(), None, cx);
+        self.saved.insert(path.to_owned(), text);
+        cx.notify();
+    }
+
+    fn save_paths(
+        &mut self,
+        paths: &[String],
+        cx: &mut Context<Self>,
+    ) -> Vec<(String, std::io::Error)> {
         let mut failures = Vec::new();
         let mut wrote = false;
         let mut written: Vec<String> = Vec::new();
-        for (path, text) in &self.sources {
+        for path in paths {
+            let Some(text) = self.sources.get(path) else {
+                continue;
+            };
             if self.saved.get(path) == Some(text) {
                 continue;
             }
