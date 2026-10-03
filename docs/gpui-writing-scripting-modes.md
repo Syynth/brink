@@ -166,6 +166,16 @@ Each slice is one PR, verified headlessly (§4.2).
      captured by `highlighter_factory`, maps markup roles to a faint colour.
      The theme's shared resolver cannot do it alone.
    - One bindable toggle action.
+   - *Built:* `ToggleReadView` (no default key) and an open-book button in
+     the Write title bar, lit while on. From Script it goes to Write with
+     Read on. "Prose" is positive, not "whatever has no token": the worker
+     ships each file's prose ranges with every analysis, cut the same way
+     the prose checker cuts them (content minus nested machinery). Untokened
+     punctuation like `{` would otherwise have stayed bright. The face is
+     the UI font at the editor's size, so rows keep their height and only
+     the wrapping moves. **Not yet:** faint line numbers and no current-line
+     band. Both are painted from the kit's theme-wide editor style, which an
+     editor cannot override today.
 4. **The Player beside the manuscript** (W7, S3).
    - Today `play_at` forces Code view (`require_editor_view`) and docks the
      Player as a centre tab (`CodeView::show_player`). In Writing mode it

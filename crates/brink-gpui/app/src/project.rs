@@ -146,6 +146,9 @@ pub struct Project {
     /// the highlighter paints a cue, a parenthetical and a dialogue run
     /// from. Empty for a project with no `[dialogue]` dialect.
     cues: BTreeMap<String, Vec<CueLine>>,
+    /// Each file's prose as byte ranges, from the last analysis — what
+    /// Writing mode's Read view keeps at full strength.
+    prose_spans: BTreeMap<String, Vec<(u32, u32)>>,
     /// Prose lints per OPEN file, reported by the document that computed
     /// them. Kept apart from `diagnostics`, which is the analysis's:
     /// merging them would double-mark the editor (which lays its own) and
@@ -292,6 +295,7 @@ impl Project {
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
             cues: BTreeMap::new(),
+            prose_spans: BTreeMap::new(),
             prose: BTreeMap::new(),
             conflicted: BTreeMap::new(),
             file_ops: Vec::new(),
@@ -334,6 +338,7 @@ impl Project {
                     self.diagnostics.clear();
                     self.kinds.clear();
                     self.cues.clear();
+                    self.prose_spans.clear();
                     self.prose.clear();
                     self.conflicted.clear();
                     self.drafts.clear();
@@ -351,6 +356,7 @@ impl Project {
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;
                 self.cues = analyzed.cues;
+                self.prose_spans = analyzed.prose;
                 self.drafts = analyzed.drafts.into_iter().collect();
                 self.draft_globs = analyzed.draft_globs;
                 self.drafts_known = analyzed.drafts_known;
@@ -1129,6 +1135,14 @@ impl Project {
     #[must_use]
     pub fn cues_for(&self, path: &str) -> &[CueLine] {
         self.cues.get(path).map_or(&[], Vec::as_slice)
+    }
+
+    /// Every file's prose, as byte ranges by path. One analysis stale at
+    /// most, like [`Project::cues_for`]: a line typed a keystroke ago reads
+    /// as markup until the next pass lands.
+    #[must_use]
+    pub fn prose_spans(&self) -> &BTreeMap<String, Vec<(u32, u32)>> {
+        &self.prose_spans
     }
 
     #[must_use]

@@ -686,7 +686,33 @@ pub struct BrinkHighlighter {
     /// to nothing.
     mark: (gpui::Hsla, gpui::Hsla),
     band: (gpui::Hsla, gpui::Hsla),
+    /// Writing mode's Read view, for a manuscript section; `None` for every
+    /// other host, which never reads.
+    read: Option<ReadCell>,
+    /// What everything but the prose recedes to while Read is on.
+    faint: gpui::Hsla,
 }
+
+/// Writing mode's Read view (`docs/gpui-writing-scripting-modes.md` W8),
+/// shared by the manuscript and every one of its section highlighters.
+///
+/// Read in `styles`, which the editor calls on every paint, so turning it
+/// on is a repaint — no highlighter is rebuilt. The prose is copied in by
+/// the manuscript as analyses land, rather than read off the project in
+/// `update`: `update` runs on an edit, and a section mounted before the
+/// first analysis would otherwise read as all markup until it was typed in.
+#[derive(Default)]
+pub(crate) struct ReadView {
+    pub on: std::cell::Cell<bool>,
+    /// Each file's prose, byte ranges, from the last analysis.
+    pub prose: std::cell::RefCell<std::collections::BTreeMap<String, Vec<Range<usize>>>>,
+}
+
+pub(crate) type ReadCell = Rc<ReadView>;
+
+/// How much of the muted colour the Read view's markup keeps: very faint
+/// (W8), but there when looked for — a divert still has to be findable.
+pub(crate) const READ_FADE: f32 = 0.45;
 
 /// What a dialect-classified line is painted with. Mirrors the studio's
 /// `editor.css` rules for `.brink-character` / `.brink-parenthetical` —
@@ -768,15 +794,72 @@ pub(crate) fn highlighter_factory_with_folds(
     path: SharedString,
     folds: Option<FoldCell>,
 ) -> InputHighlighterFactory {
+    factory(project, path, folds, None)
+}
+
+/// A manuscript section's highlighter: the same, and it follows `read`.
+pub(crate) fn manuscript_highlighter_factory(
+    project: WeakEntity<Project>,
+    path: SharedString,
+    read: ReadCell,
+) -> InputHighlighterFactory {
+    factory(project, path, None, Some(read))
+}
+
+fn factory(
+    project: WeakEntity<Project>,
+    path: SharedString,
+    folds: Option<FoldCell>,
+    read: Option<ReadCell>,
+) -> InputHighlighterFactory {
     Rc::new(move |language| {
         (language == "brink").then(|| {
-            Box::new(BrinkHighlighter::new(
-                project.clone(),
-                path.clone(),
-                folds.clone(),
-            )) as Box<dyn InputHighlighter>
+            let mut highlighter =
+                BrinkHighlighter::new(project.clone(), path.clone(), folds.clone());
+            highlighter.read.clone_from(&read);
+            Box::new(highlighter) as Box<dyn InputHighlighter>
         })
     })
+}
+
+/// The Read view over already-styled runs: outside `prose`, every run takes
+/// `faint`; inside, it keeps what it had. Runs are split at the prose
+/// edges, and `prose` is sorted and disjoint.
+///
+/// Positive about prose rather than negative about markup: punctuation
+/// in a code line (`{`, `(`) carries no token at all, so "fade the tokens"
+/// left every brace at full strength.
+pub(crate) fn overlay_read(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    prose: &[Range<usize>],
+    faint: gpui::Hsla,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    let mut out = Vec::with_capacity(runs.len());
+    for (range, style) in runs {
+        let mut at = range.start;
+        let first = prose.partition_point(|p| p.end <= range.start);
+        for span in &prose[first..] {
+            if span.start >= range.end {
+                break;
+            }
+            let (from, to) = (span.start.max(range.start), span.end.min(range.end));
+            if from > at {
+                out.push((at..from, faded(style, faint)));
+            }
+            out.push((from..to, style));
+            at = to;
+        }
+        if at < range.end {
+            out.push((at..range.end, faded(style, faint)));
+        }
+    }
+    out
+}
+
+fn faded(mut style: gpui::HighlightStyle, faint: gpui::Hsla) -> gpui::HighlightStyle {
+    style.color = Some(faint);
+    style.font_weight = None;
+    style
 }
 
 /// The lines holding `TODO:` notes, from the notes' byte ranges: each
@@ -1078,6 +1161,8 @@ impl BrinkHighlighter {
                 bg: gpui::Hsla::default(),
             },
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
+            read: None,
+            faint: gpui::Hsla::default(),
         }
     }
 }
@@ -1128,6 +1213,7 @@ impl InputHighlighter for BrinkHighlighter {
             brink_gpui_shell::theme::hsla(tokens.todo_band),
             brink_gpui_shell::theme::hsla(tokens.todo_ink),
         );
+        self.faint = fade(self.cue_style.muted, self.cue_style.bg, READ_FADE);
 
         let names = brink_ir::semantic_tokens::token_type_names();
         let index = LineIndex::new(&source);
@@ -1190,6 +1276,16 @@ impl InputHighlighter for BrinkHighlighter {
         // Muting first, the band second: a TODO line is never muted, and
         // the band must win on every word it covers.
         let out = overlay_muted(out, &self.muted_lines, self.cue_style.bg, MUTED_FADE);
+        // Read before the dialect: a cue is how a line of prose is
+        // presented, and the band and the marks must still win.
+        let out = match self.read.as_ref().filter(|read| read.on.get()) {
+            Some(read) => {
+                let prose = read.prose.borrow();
+                let spans = prose.get(self.path.as_ref()).map_or(&[][..], Vec::as_slice);
+                overlay_read(out, spans, self.faint)
+            }
+            None => out,
+        };
         // The dialect before the band: a TODO note inside a dialogue run
         // is still a note, and the band must win on every word it covers.
         let out = overlay_cues(out, &self.cue_lines, self.cue_style);
@@ -1833,6 +1929,41 @@ mod tests {
             "and keeps its own colour: a comment stays comment-coloured"
         );
         assert_eq!(out[1].1.color.unwrap(), colour, "the prose is untouched");
+    }
+
+    #[test]
+    fn read_fades_everything_but_the_prose_and_splits_at_its_edges() {
+        // `* [Run] Away.` — the bullet and brackets are markup, `Run` and
+        // `Away.` are prose; the runs below do NOT line up with the prose,
+        // which is the point: an untokened gap holds both.
+        let colour = gpui::hsla(0.6, 0.5, 0.5, 1.0);
+        let faint = gpui::hsla(0.0, 0.0, 0.3, 1.0);
+        let styled = gpui::HighlightStyle {
+            color: Some(colour),
+            font_weight: Some(gpui::FontWeight::BOLD),
+            ..gpui::HighlightStyle::default()
+        };
+        let runs = vec![
+            (0..3, styled),                           // `* [`
+            (3..13, gpui::HighlightStyle::default()), // `Run] Away.`
+        ];
+        let prose = [3..6, 8..13];
+        let out = overlay_read(runs, &prose, faint);
+        let spans: Vec<(Range<usize>, Option<gpui::Hsla>)> =
+            out.iter().map(|(r, s)| (r.clone(), s.color)).collect();
+        assert_eq!(
+            spans,
+            vec![
+                (0..3, Some(faint)),
+                (3..6, None),
+                (6..8, Some(faint)),
+                (8..13, None),
+            ],
+            "markup faint, prose as it was, cut exactly at the prose edges"
+        );
+        assert_eq!(out[0].1.font_weight, None, "faded markup is not bold");
+        let covered: usize = out.iter().map(|(r, _)| r.len()).sum();
+        assert_eq!(covered, 13, "the runs still cover the asked range");
     }
 
     #[test]

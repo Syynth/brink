@@ -185,6 +185,12 @@ pub struct Analyzed {
     /// costs nothing: the classification only exists where a dialect
     /// registered one.
     pub cues: BTreeMap<String, Vec<CueLine>>,
+    /// Each file's PROSE, as byte ranges — content spans minus the
+    /// machinery nested in them (`crate::prose::prose_ranges`, the same cut
+    /// the prose checker makes). What Writing mode's Read view keeps at
+    /// full strength. Every file the author owns, std excluded; a file with
+    /// no prose is absent.
+    pub prose: BTreeMap<String, Vec<(u32, u32)>>,
     /// `[project] drafts` resolved against the compile closure.
     pub drafts: Vec<String>,
     /// The compile closure — the files the story actually reaches. A file
@@ -833,6 +839,25 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         }
     }
 
+    // Prose ranges. The projection is salsa-memoized per segment, so an
+    // unchanged file costs a lookup and an interval walk.
+    let mut prose: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+    for id in session.db().file_ids().collect::<Vec<_>>() {
+        if session.is_mounted_std(id) {
+            continue;
+        }
+        let (Some(path), Some(projection)) = (
+            session.db().file_path(id).map(str::to_owned),
+            session.projection(id),
+        ) else {
+            continue;
+        };
+        let ranges = crate::prose::prose_ranges(&projection.spans);
+        if !ranges.is_empty() {
+            prose.insert(path, ranges);
+        }
+    }
+
     let types = session.type_policy();
     let lints = session.lint_policy().clone();
     let mut diagnostics: BTreeMap<String, Vec<Diagnostic>> = BTreeMap::new();
@@ -894,6 +919,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         diagnostics,
         kinds,
         cues,
+        prose,
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
@@ -2158,6 +2184,42 @@ mod tests {
         assert!(
             !opened.files.iter().any(|f| f == "dialect.json"),
             "an artifact is not a source"
+        );
+    }
+
+    #[test]
+    fn analysis_ships_each_files_prose_and_not_its_machinery() {
+        // The Read view keeps exactly these at full strength, so the
+        // markup must fall OUTSIDE them: the knot header, the divert, the
+        // choice bullet and the interpolation inside a line of prose.
+        let source = "=== start ===\nYou have {gold} coins.\n* [Run] Away you go.\n-> DONE\n";
+        let tree = Tree::new(
+            "prose",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &state, 1);
+        let ranges = analyzed.prose.get("start.ink").expect("the file has prose");
+        let prose: Vec<&str> = ranges
+            .iter()
+            .map(|&(a, b)| &source[a as usize..b as usize])
+            .collect();
+        let joined = prose.concat();
+        for word in ["You have", "coins.", "Run", "Away you go."] {
+            assert!(joined.contains(word), "{word:?} is prose: {prose:?}");
+        }
+        for machinery in ["===", "{gold}", "gold", "->", "DONE", "*"] {
+            assert!(
+                !prose.iter().any(|p| p.contains(machinery)),
+                "{machinery:?} is not prose: {prose:?}"
+            );
+        }
+        assert!(
+            !analyzed.prose.contains_key("brink.toml"),
+            "the config has no prose"
         );
     }
 

@@ -43,7 +43,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::document::highlighter_factory;
+use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
 use brink_gpui_shell::icons;
 
@@ -142,6 +142,9 @@ pub struct ContinuousView {
     /// mounted yet; the list mounts it on the way there, and the next
     /// render applies the selection.
     pending_reveal: Option<(String, std::ops::Range<usize>)>,
+    /// The Read view (W8): whether it is on, and the prose it keeps — shared
+    /// with every section's highlighter.
+    read: ReadCell,
     /// A handle on this entity for the sections' navigation sink, which
     /// runs from a bare `&mut App`.
     me: WeakEntity<Self>,
@@ -157,6 +160,7 @@ impl ContinuousView {
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
                 ProjectEvent::Opened { .. } => this.reload(cx),
+                ProjectEvent::Analyzed if this.read.on.get() => this.sync_prose(cx),
                 ProjectEvent::SourceChanged {
                     path,
                     origin,
@@ -178,6 +182,7 @@ impl ContinuousView {
             mounted: Rc::new(RefCell::new((0, 0.0))),
             measured_line_height: None,
             pending_reveal: None,
+            read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
             focus: cx.focus_handle(),
             _subscriptions: vec![watch],
@@ -312,6 +317,42 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// Whether the Read view is on.
+    #[must_use]
+    pub fn is_read(&self) -> bool {
+        self.read.on.get()
+    }
+
+    /// Turn the Read view on or off. A repaint, not a rebuild: the
+    /// highlighters read the flag on every paint, and the font is set where
+    /// each section's editor is drawn.
+    pub fn set_read(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.read.on.replace(on) == on {
+            return;
+        }
+        if on {
+            self.sync_prose(cx);
+        }
+        cx.notify();
+    }
+
+    /// Copy the last analysis's prose into the shared Read state. Only
+    /// while Read is on: off, nothing reads it.
+    fn sync_prose(&mut self, cx: &mut Context<Self>) {
+        let prose = self
+            .project
+            .read(cx)
+            .prose_spans()
+            .iter()
+            .map(|(path, spans)| {
+                let spans = spans.iter().map(|&(a, b)| a as usize..b as usize).collect();
+                (path.clone(), spans)
+            })
+            .collect();
+        *self.read.prose.borrow_mut() = prose;
+        cx.notify();
+    }
+
     /// The section whose editor has focus, as a navigation site — what a
     /// keyboard command acts on in this view.
     #[must_use]
@@ -339,6 +380,7 @@ impl ContinuousView {
         project: &Entity<Project>,
         me: &WeakEntity<Self>,
         section_subs: &Rc<RefCell<Vec<Subscription>>>,
+        read: &ReadCell,
         path: &str,
         is_last: bool,
         line_height_override: Option<f32>,
@@ -378,7 +420,10 @@ impl ContinuousView {
                 .folding(false)
                 // See `TRAILING_ROWS`.
                 .scroll_beyond_last_line(Some(trailing));
-            state.set_highlighter_factory(highlighter_factory(weak.clone(), key.clone()), cx);
+            state.set_highlighter_factory(
+                manuscript_highlighter_factory(weak.clone(), key.clone(), read.clone()),
+                cx,
+            );
 
             // The same providers a tab's editor gets — navigation must not
             // depend on which view a file is read in. What differs is the
@@ -496,6 +541,11 @@ impl Render for ContinuousView {
         let editors = self.editors.clone();
         let section_subs = self.section_subs.clone();
         let mounted = self.mounted.clone();
+        let read = self.read.clone();
+        // The Read view's face: the UI's proportional font, at the editor's
+        // own size — so a row is the same height either way and only the
+        // wrapping moves, which `remeasure_sections` already follows.
+        let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
         let measured = self.measured_line_height;
 
         // The file the top of the scroller is currently inside — `list`
@@ -529,6 +579,7 @@ impl Render for ContinuousView {
                                 &project,
                                 &me,
                                 &section_subs,
+                                &read,
                                 &path,
                                 index + 1 == count,
                                 measured,
@@ -550,6 +601,9 @@ impl Render for ContinuousView {
                                 .bordered(false)
                                 .appearance(false)
                                 .with_size(SECTION_SIZE)
+                                .when_some(read_font.clone(), |editor, font| {
+                                    editor.font_family(font)
+                                })
                                 .h(px(height)),
                         )
                         .into_any_element()

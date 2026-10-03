@@ -54,7 +54,7 @@ use brink_gpui_shell::menus::Quit;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
-use brink_gpui_shell::workspace::{StatusCell, Workspace};
+use brink_gpui_shell::workspace::{StatusCell, Workspace, WritingButton};
 use gpui::{
     AnyWindowHandle, App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _,
     Global, IntoElement, PromptLevel, Render, Subscription, Task, WeakEntity, Window, WindowBounds,
@@ -107,6 +107,9 @@ actions!(
         Play,
         /// Run the story again from where the last Play began.
         PlayRestart,
+        /// Writing mode's Read view: prose in a proportional face at full
+        /// strength, the markup faded. From Script, go to Write with it on.
+        ToggleReadView,
         /// Mark or unmark the caret's line as a breakpoint.
         ToggleBreakpoint,
         /// Forget every breakpoint in the project.
@@ -494,10 +497,35 @@ impl Studio {
             );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
-            // Write mode's title bar: the story by its folder's name, and
-            // a Play button for the same action `cmd-r` runs.
-            // (The title is set once the project has opened and has a root.)
-            workspace.set_play_action(Box::new(Play), cx);
+            // Bindable, with no default key yet (R4).
+            workspace.register_command("View", "Read View", ToggleReadView, None, cx);
+            // Write mode's title bar: Read, then Play — the same actions
+            // the palette and the keys run. (The story's name is set once
+            // the project has opened and has a root.)
+            let reading = manuscript.downgrade();
+            workspace.set_writing_buttons(
+                vec![
+                    WritingButton {
+                        id: "writing-read",
+                        label: "Read View".into(),
+                        icon: gpui_component::IconName::BookOpen,
+                        action: Box::new(ToggleReadView),
+                        filled: false,
+                        lit: Some(std::rc::Rc::new(move |cx: &App| {
+                            reading.upgrade().is_some_and(|m| m.read(cx).is_read())
+                        })),
+                    },
+                    WritingButton {
+                        id: "writing-play",
+                        label: "Play".into(),
+                        icon: gpui_component::IconName::Play,
+                        action: Box::new(Play),
+                        filled: true,
+                        lit: None,
+                    },
+                ],
+                cx,
+            );
             workspace.register_command(
                 "Debug",
                 "Toggle Breakpoint",
@@ -1641,6 +1669,25 @@ impl Studio {
         }
     }
 
+    /// Read is a view of Write mode (W8), so from Script the gesture can
+    /// only mean "show me it": go to Write, with Read on.
+    fn toggle_read_view(
+        &mut self,
+        _: &ToggleReadView,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let writing = self.workspace.read(cx).editor_view(cx) == EditorView::Write;
+        let on = !writing || !self.manuscript.read(cx).is_read();
+        self.manuscript.update(cx, |m, cx| m.set_read(on, cx));
+        if !writing {
+            self.workspace
+                .update(cx, |w, cx| w.set_editor_view(EditorView::Write, window, cx));
+        }
+        // The title bar's Read button is lit from this.
+        self.workspace.update(cx, |_, cx| cx.notify());
+    }
+
     fn maximize_editor(&mut self, _: &MaximizeEditor, window: &mut Window, cx: &mut Context<Self>) {
         self.workspace
             .update(cx, |workspace, cx| workspace.toggle_maximize(window, cx));
@@ -2266,6 +2313,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_project))
             .on_action(cx.listener(Self::new_project))
             .on_action(cx.listener(Self::maximize_editor))
+            .on_action(cx.listener(Self::toggle_read_view))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::focus_editor))
@@ -2499,6 +2547,48 @@ mod modes_driven {
             Some("write"),
             "the studio's switch is not the author's choice"
         );
+    }
+
+    fn reading(h: &mut Harness, window: AnyWindowHandle) -> bool {
+        let studio = h.studio(window).expect("open");
+        h.read(|cx| studio.read(cx).manuscript.read(cx).is_read())
+    }
+
+    #[test]
+    fn read_toggles_inside_write_and_from_script_goes_to_write_reading() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleReadView);
+        assert!(reading(&mut h, window));
+        h.dispatch(window, super::ToggleReadView);
+        assert!(!reading(&mut h, window));
+
+        h.dispatch(window, ModeScript);
+        h.dispatch(window, super::ToggleReadView);
+        assert_eq!(mode(&mut h, window), EditorView::Write);
+        assert!(
+            reading(&mut h, window),
+            "from Script it shows Read, never hides it"
+        );
+        // And staying in Script never left Read on behind the author's back.
+        h.dispatch(window, ModeScript);
+        h.dispatch(window, ModeWrite);
+        assert!(
+            reading(&mut h, window),
+            "Read survives a trip through Script"
+        );
+    }
+
+    /// The picture: Write mode with Read on, for checking by eye.
+    #[test]
+    fn the_read_view_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, super::ToggleReadView);
+        let shot = scratch_dir("shot").join("read.png");
+        h.screenshot(window, &shot);
+        eprintln!("read screenshot: {}", shot.display());
     }
 
     /// The picture: the title bar's two-mode switch, for checking by eye.

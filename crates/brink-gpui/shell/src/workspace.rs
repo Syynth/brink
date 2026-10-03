@@ -196,9 +196,9 @@ pub struct Workspace {
     /// What Write mode's title bar calls the story — the app says, since
     /// the shell knows no project.
     story_title: SharedString,
-    /// The action Write mode's Play button dispatches. The app owns Play;
-    /// the shell only gives it a button. `None` draws no button.
-    play: Option<Box<dyn Action>>,
+    /// Write mode's title-bar buttons, left of the switch, in order. The
+    /// app owns what they do; the shell only draws them.
+    writing_buttons: Vec<WritingButton>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -260,7 +260,7 @@ impl Workspace {
             unmaximized: None,
             chosen_view: EditorView::Script,
             story_title: SharedString::default(),
-            play: None,
+            writing_buttons: Vec::new(),
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -649,9 +649,9 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Give Write mode's title bar a Play button that dispatches `action`.
-    pub fn set_play_action(&mut self, action: Box<dyn Action>, cx: &mut Context<Self>) {
-        self.play = Some(action);
+    /// Give Write mode's title bar its buttons, left to right.
+    pub fn set_writing_buttons(&mut self, buttons: Vec<WritingButton>, cx: &mut Context<Self>) {
+        self.writing_buttons = buttons;
         cx.notify();
     }
 
@@ -1241,44 +1241,67 @@ impl Workspace {
     }
 
     /// Write mode's title bar, left of the switch: the story's name, then
-    /// Play (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar
-    /// toggle, the caret's knot › stitch and Read arrive with their own
-    /// slices.
+    /// the app's buttons — Read and Play
+    /// (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar toggle and
+    /// the caret's knot › stitch arrive with their own slice.
     fn render_writing_title(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (muted, primary, on_primary) = (
-            theme.muted_foreground,
-            theme.primary,
-            theme.primary_foreground,
-        );
-        let play = self.play.as_ref().map(|action| {
-            let action = action.boxed_clone();
-            let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
-                Some(key) => format!("Play ({key})"),
-                None => "Play".to_owned(),
-            });
-            div()
-                .id("writing-play")
-                .flex()
-                .items_center()
-                .justify_center()
-                .size(px(SWITCHER_CELL))
-                .rounded_sm()
-                // Filled, where everything else in the bar is a glyph:
-                // Play is the one thing on this screen besides the text.
-                .bg(primary)
-                .hover(|s| s.bg(primary.opacity(0.85)))
-                .cursor_pointer()
-                .child(
-                    gpui_component::Icon::new(gpui_component::IconName::Play)
-                        .with_size(px(12.))
-                        .text_color(on_primary),
-                )
-                .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
-                .on_click(move |_: &ClickEvent, window, cx| {
-                    window.dispatch_action(action.boxed_clone(), cx);
-                })
-        });
+        let (muted, primary, on_primary, accent, hover) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.primary,
+                theme.primary_foreground,
+                theme.accent,
+                theme.muted,
+            )
+        };
+        let buttons: Vec<AnyElement> = self
+            .writing_buttons
+            .iter()
+            .map(|button| {
+                let action = button.action.boxed_clone();
+                let lit = button.lit.as_ref().is_some_and(|lit| lit(cx));
+                let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
+                    Some(key) => format!("{} ({key})", button.label),
+                    None => button.label.to_string(),
+                });
+                let glyph = if button.filled {
+                    on_primary
+                } else if lit {
+                    primary
+                } else {
+                    muted
+                };
+                div()
+                    .id(button.id)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .size(px(SWITCHER_CELL))
+                    .rounded_sm()
+                    .cursor_pointer()
+                    // Play is filled: the one thing on this screen besides
+                    // the text. A toggle is lit the way the switch's cell
+                    // is, so "on" reads the same everywhere in the bar.
+                    .when(button.filled, |el| {
+                        el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
+                    })
+                    .when(!button.filled && lit, |el| el.bg(accent))
+                    .when(!button.filled && !lit, |el| {
+                        el.hover(|s| s.bg(hover.opacity(0.6)))
+                    })
+                    .child(
+                        gpui_component::Icon::new(button.icon.clone())
+                            .with_size(px(if button.filled { 12. } else { 14. }))
+                            .text_color(glyph),
+                    )
+                    .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+                    .on_click(move |_: &ClickEvent, window, cx| {
+                        window.dispatch_action(action.boxed_clone(), cx);
+                    })
+                    .into_any_element()
+            })
+            .collect();
         h_flex()
             .flex_1()
             .min_w_0()
@@ -1293,7 +1316,7 @@ impl Workspace {
                     .text_color(muted)
                     .child(self.story_title.clone()),
             )
-            .children(play)
+            .children(buttons)
             .into_any_element()
     }
 
@@ -1364,6 +1387,22 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+/// A button in Write mode's title bar.
+pub struct WritingButton {
+    pub id: &'static str,
+    /// Its name, in the tooltip with the bound key.
+    pub label: SharedString,
+    pub icon: gpui_component::IconName,
+    pub action: Box<dyn Action>,
+    /// Filled with the accent colour — Play.
+    pub filled: bool,
+    /// Whether a toggle is on, drawn lit. `None` for a button with no state.
+    pub lit: Option<IsOn>,
+}
+
+/// Asked on every render of the title bar: is this toggle on?
+pub type IsOn = Rc<dyn Fn(&App) -> bool>;
 
 /// The three docks, by the name their shape is persisted under.
 const DOCKS: &[(&str, DockPlacement)] = &[
