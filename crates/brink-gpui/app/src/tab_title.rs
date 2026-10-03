@@ -13,7 +13,7 @@
 //! cannot be skipped by whichever way the author happened to use.
 
 use gpui::prelude::*;
-use gpui::{App, EntityId, IntoElement, MouseButton, SharedString, div, px};
+use gpui::{App, EntityId, Hsla, IntoElement, MouseButton, SharedString, div, px};
 use gpui_component::{ActiveTheme as _, h_flex};
 
 /// Close the centre tab whose panel is entity `id` — a document, or one of
@@ -27,6 +27,20 @@ pub struct CloseTabById {
 
 /// The `group` the ✕ reveals itself on: hovering the title, not the ✕.
 const GROUP: &str = "brink-tab-title";
+
+/// The space either side of the label, Zed's way: the SAME on both sides,
+/// so the label sits centred, and the ✕ lives inside the right-hand side —
+/// revealed on hover without the label or the tab's width moving.
+const SIDE: f32 = 22.;
+
+/// The ✕'s own square, centred in the right-hand [`SIDE`].
+const CLOSE: f32 = 16.;
+
+/// What the kit's `Tab` already pads its content with, either side
+/// (`TabVariant::inner_paddings`, default size). The title reaches back
+/// over it so that it owns the tab's whole width: the hover that reveals
+/// the ✕ must cover the ✕, or moving onto it would hide it.
+const KIT_TAB_PADDING: f32 = 12.;
 
 /// A document tab's label: its file name, marked `name •` while unsaved.
 /// The ✕ beside it stays a ✕, so what it does never depends on state.
@@ -50,8 +64,10 @@ pub fn closable_tab(id: EntityId, label: impl IntoElement, cx: &App) -> impl Int
     h_flex()
         .id(("tab-title", id))
         .group(GROUP)
-        .gap_1()
+        .relative()
         .items_center()
+        .mx(px(-KIT_TAB_PADDING))
+        .px(px(SIDE))
         // Middle-click closes, as in every tabbed editor. On release, so a
         // press that turns into something else closes nothing.
         .on_mouse_up(MouseButton::Middle, move |_, window, cx| {
@@ -60,29 +76,46 @@ pub fn closable_tab(id: EntityId, label: impl IntoElement, cx: &App) -> impl Int
         })
         .child(label)
         .child(
+            // The right-hand side's own column, full height, so the ✕ is
+            // centred in it both ways and sits out of the label's flow.
             div()
-                .id(("tab-close", id))
-                .size(px(16.))
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right_0()
+                .w(px(SIDE))
                 .flex()
                 .items_center()
                 .justify_center()
-                .rounded_sm()
-                .text_xs()
-                .text_color(muted)
-                // Hidden rather than absent: the tab keeps its width, so
-                // the strip does not shuffle under the pointer.
-                .invisible()
-                .group_hover(GROUP, |style| style.visible())
-                .hover(|style| style.bg(hover).text_color(fg))
-                .cursor_pointer()
-                .on_click(move |_, window, cx| {
-                    // Before the tab's own click, which would select the
-                    // tab first.
-                    cx.stop_propagation();
-                    window.dispatch_action(Box::new(CloseTabById { id }), cx);
-                })
-                .child("\u{2715}"),
+                .child(close_button(id, muted, fg, hover)),
         )
+}
+
+/// The ✕ itself: hidden until the title is hovered.
+fn close_button(id: EntityId, muted: Hsla, fg: Hsla, hover: Hsla) -> impl IntoElement {
+    div()
+        .id(("tab-close", id))
+        .size(px(CLOSE))
+        .flex()
+        .items_center()
+        .justify_center()
+        .rounded_sm()
+        .text_xs()
+        .text_color(muted)
+        // Hidden rather than absent, and outside the flow: the tab
+        // keeps its width, so the strip does not shuffle under the
+        // pointer.
+        .invisible()
+        .group_hover(GROUP, |style| style.visible())
+        .hover(|style| style.bg(hover).text_color(fg))
+        .cursor_pointer()
+        .on_click(move |_, window, cx| {
+            // Before the tab's own click, which would select the
+            // tab first.
+            cx.stop_propagation();
+            window.dispatch_action(Box::new(CloseTabById { id }), cx);
+        })
+        .child("\u{2715}")
 }
 
 /// Closing tabs end to end, on the real `Studio` (see `crate::harness`).
@@ -91,7 +124,7 @@ mod driven {
     use std::path::{Path, PathBuf};
     use std::time::Duration;
 
-    use gpui::{AnyWindowHandle, AppContext as _, Entity, Focusable as _};
+    use gpui::{AnyWindowHandle, Entity, Focusable as _};
 
     use super::CloseTabById;
     use crate::harness::{Harness, scratch_project};
@@ -130,6 +163,21 @@ mod driven {
 
     fn on_disk(root: &Path, path: &str) -> String {
         std::fs::read_to_string(root.join(path)).expect("the scratch file exists")
+    }
+
+    /// The picture: a tab at rest (label centred, no ✕) and hovered (the ✕
+    /// in the right-hand side, the label unmoved). Written beside the test
+    /// output for looking at.
+    #[test]
+    fn a_tab_at_rest_and_hovered() {
+        let mut h = Harness::new();
+        let (window, _, _, _) = with_a_tab(&mut h);
+        let dir = crate::harness::scratch_dir("tabs");
+        h.hover(window, 900., 600.);
+        h.screenshot(window, &dir.join("rest.png"));
+        h.hover(window, 360., 49.);
+        h.screenshot(window, &dir.join("hover.png"));
+        eprintln!("tab screenshots: {}", dir.display());
     }
 
     #[test]
