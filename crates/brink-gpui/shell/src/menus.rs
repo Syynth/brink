@@ -492,14 +492,13 @@ mod tests {
                 assert_eq!(n, 1, "{} on {platform:?}", command.full_title());
             }
             // Everything else is a standard item or the text block.
-            let registered =
-                |a: &Box<dyn Action>| r.commands().iter().any(|c| c.action.partial_eq(a.as_ref()));
+            let registered = |a: &dyn Action| r.commands().iter().any(|c| c.action.partial_eq(a));
             let text = text_editing_items();
             let mut text_actions = Vec::new();
             actions_of(&text, &mut text_actions);
             for action in &found {
                 assert!(
-                    registered(action)
+                    registered(action.as_ref())
                         || is_standard(action.as_ref())
                         || text_actions.iter().any(|t| t.partial_eq(action.as_ref())),
                     "{} came from nowhere",
