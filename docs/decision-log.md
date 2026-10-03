@@ -5455,3 +5455,19 @@
 - **WHY:** the previous arrangement was 23 inline SVG strings in the feature crate, and it failed three ways at once: the shell could not reach them, they rendered as a bare `Svg` rather than an `Icon` so no kit widget would accept one (which turned "put an icon on that tab" into "rewrite that widget"), and adding one meant editing Rust. Files plus `icon_named!` fix all three and make a new icon a file drop. The lucide half is about effort going where it is worth spending: hand-drawing a settings gear is work with no payoff, while the droplet and the knot carry meaning the studio invented and nothing off the shelf has.
 - **WHAT THIS DOES NOT REOPEN:** the domain icons were ported from `packages/studio-ui/src/icons.tsx` verbatim on purpose, so both studios read the same and the geometry stays comparable. Moving them into files changes their storage, not a single path — and re-drawing them by eye would throw that away.
 - **THE ONE HAZARD, GUARDED:** `icon_named!` hardcodes every path as `icons/<filename>` whatever directory it read, so our files and the kit's share one namespace and a shared name silently shadows theirs — including inside kit internals. Hence `drop.svg` not `file.svg`, `find.svg` not `search.svg`, and a test over the whole set rather than a note asking the next person to remember.
+
+## The native studio asks before unsaved work is lost: Save / Don't Save / Cancel
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Closing a project window, or quitting, while any file has unsaved edits shows a prompt naming the dirty files with three choices: **Save** (write them all, then close or quit, and stay open if any write fails), **Don't Save** (discard and close or quit), **Cancel** (do nothing). Quitting asks once per project window that has dirty files. This deliberately differs from the Tauri app, which saves silently on close and quit (#2444). The Tauri app should eventually follow this rule.
+- **WHY:** Two reasons. Discarding edits is a real need, and a silent save forces them onto disk with no way to say no. Asking is also what native macOS document apps do, and the gpui studio is meant to feel native. The failed-write case keeps the window open because "Save" that silently loses a file is the exact failure this rule exists to prevent.
+
+## Native studio project lifecycle: a landing window, Close Project, launch and Open
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** (1) **Close Project** closes that project's window (through the unsaved-work prompt above); when it was the last window, a **landing window** opens, so the app never sits with no windows. (2) **Launch with no argument** shows the landing window, unless "Reopen last project on launch" is ticked, in which case the last project opens; the test-fixture fallback is removed. (3) The landing window **matches the Tauri app's #3021 landing**: the lockup, **New Project…** (creates `main.ink` + `brink.toml` in a chosen folder), **Open…** (a folder, a `.ink` file that becomes the entry point, or a `brink.toml`), the recents list, and the reopen checkbox.
+- **WHY:** Each gpui window is built around one project root, so Close Project is closing a window rather than swapping its contents. Opening the landing window when the last one closes keeps the macOS convention of an app that stays alive while still giving the author a way back in. Matching the Tauri landing keeps the two studios' front door the same, so an author moving between them meets the same choices.

@@ -18,8 +18,8 @@ use gpui_component::tooltip::Tooltip;
 use gpui_component::{ActiveTheme, Sizable as _, TITLE_BAR_HEIGHT, TitleBar, h_flex, v_flex};
 
 use crate::commands::{
-    CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow, Unbound,
-    bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
+    CloseWindow, CommandRegistry, OpenSettings, ToggleMenu, TogglePalette, ToggleToolWindow,
+    Unbound, bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
 };
 use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
 use crate::palette::{PALETTE_WIDTH, Palette, PaletteEvent, PaletteItem, PaletteMode};
@@ -1332,30 +1332,38 @@ impl Render for Workspace {
                 this.open_settings(None, window, cx);
             }))
             .child(
-                TitleBar::new().child(
-                    h_flex()
-                        .flex_1()
-                        .items_center()
-                        .justify_between()
-                        // Clear the right rail's strip entirely
-                        // (`RAIL_WIDTH`), then stand off its left border by
-                        // the same gap the switcher already has above it.
-                        //
-                        // That gap is not a taste: the title bar centres a
-                        // `SWITCHER_CELL` in `TITLE_BAR_HEIGHT`, so half the
-                        // difference is what sits over the buttons, and
-                        // matching it here makes the switcher inset equally
-                        // from its container on both axes. Derived from both
-                        // constants, so it survives either being re-measured.
-                        //
-                        // The rail is a STRIP, so its left border is the line
-                        // to respect — aligning to its buttons' right edge
-                        // instead put the switcher over the rail rather than
-                        // beside it.
-                        .pr(RAIL_WIDTH + px((f32::from(TITLE_BAR_HEIGHT) - SWITCHER_CELL) / 2.))
-                        .child(gpui_component::label::Label::new("brink"))
-                        .child(switcher),
-                ),
+                // The toolkit's drawn close button (Linux; macOS and
+                // Windows use the platform's own, which reach the app's
+                // `on_window_should_close`) would otherwise call
+                // `remove_window` and skip the unsaved-work prompt.
+                TitleBar::new()
+                    .on_close_window(|_, window, cx| {
+                        window.dispatch_action(Box::new(CloseWindow), cx);
+                    })
+                    .child(
+                        h_flex()
+                            .flex_1()
+                            .items_center()
+                            .justify_between()
+                            // Clear the right rail's strip entirely
+                            // (`RAIL_WIDTH`), then stand off its left border by
+                            // the same gap the switcher already has above it.
+                            //
+                            // That gap is not a taste: the title bar centres a
+                            // `SWITCHER_CELL` in `TITLE_BAR_HEIGHT`, so half the
+                            // difference is what sits over the buttons, and
+                            // matching it here makes the switcher inset equally
+                            // from its container on both axes. Derived from both
+                            // constants, so it survives either being re-measured.
+                            //
+                            // The rail is a STRIP, so its left border is the line
+                            // to respect — aligning to its buttons' right edge
+                            // instead put the switcher over the rail rather than
+                            // beside it.
+                            .pr(RAIL_WIDTH + px((f32::from(TITLE_BAR_HEIGHT) - SWITCHER_CELL) / 2.))
+                            .child(gpui_component::label::Label::new("brink"))
+                            .child(switcher),
+                    ),
             )
             .child(
                 h_flex()
