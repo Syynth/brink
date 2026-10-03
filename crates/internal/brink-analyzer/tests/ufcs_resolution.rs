@@ -393,7 +393,11 @@ fn main() {
     );
 
     // The verdict table records nothing — a hard error is not a resolution.
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
 
     let diags = diagnostics(&hir, &manifest);
     let e140 = only(&diags, DiagnosticCode::E140);
@@ -574,7 +578,11 @@ fn main() {
 }
 ",
     );
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
     let diags = diagnostics(&hir, &manifest);
     let e141 = only(&diags, DiagnosticCode::E141);
     assert!(
@@ -616,7 +624,11 @@ fn main(guest) {
 }
 ",
     );
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
     let diags = diagnostics(&hir, &manifest);
     let e142 = only(&diags, DiagnosticCode::E142);
     assert!(
@@ -917,7 +929,11 @@ fn main() {
 }
 ",
     );
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
     let diags = diagnostics(&hir, &manifest);
     let e143 = only(&diags, DiagnosticCode::E143);
     assert!(
@@ -1001,7 +1017,11 @@ fn main() {
 }
 ",
     );
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
     let diags = diagnostics(&hir, &manifest);
     for code in [
         DiagnosticCode::E140,
@@ -1036,7 +1056,11 @@ fn main() {
 }
 ",
     );
-    assert!(verdicts(&hir, &manifest).is_empty());
+    assert!(
+        verdicts(&hir, &manifest).is_empty(),
+        "{:?}",
+        verdicts(&hir, &manifest)
+    );
 }
 
 /// Collects every multi-segment callee path an HIR file contains — the

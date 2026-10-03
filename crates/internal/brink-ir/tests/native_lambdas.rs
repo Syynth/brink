@@ -98,7 +98,7 @@ fn single_expression_body_lowers_to_a_lambda() {
 fn zero_arg_lambda_lowers_with_an_empty_param_row() {
     let (lambda, diags) = lower_lambda("|| 1");
     assert_eq!(codes(&diags), Vec::<&str>::new());
-    assert!(lambda.params.is_empty());
+    assert!(lambda.params.is_empty(), "{:?}", lambda.params);
     assert!(matches!(lambda.body, LambdaBody::Expr(_)));
 }
 

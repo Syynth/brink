@@ -6,13 +6,13 @@ use super::*;
 #[test]
 fn unclosed_flow_body_recovers() {
     let p = assert_lossless("flow greet() {\n  Hello\n");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
 fn stray_closing_brace_recovers() {
     let p = assert_lossless("}\n");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -211,7 +211,7 @@ fn error_recover_wraps_exactly_one_token() {
     // node, not swallow anything around it.
     let src = "}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     let root = p.syntax();
     let err_node = root
         .descendants()
@@ -295,7 +295,7 @@ fn unclosed_nested_braces_all_recover() {
     let src = "flow g() {\n  {if x {\n    {match y {\n      z => {\n";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -303,7 +303,7 @@ fn unclosed_paren_in_expression_recovers() {
     let src = "var x = (1 + 2\nvar y = 3\n";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     // Recovery must not swallow the next declaration.
     assert_eq!(count_node_kind(&p.syntax(), SyntaxKind::VAR_DECL), 2);
 }
@@ -313,7 +313,7 @@ fn unclosed_paren_in_call_args_recovers() {
     let src = "flow g() {\n  var x = foo(1, 2\n}\n";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -323,7 +323,7 @@ fn unclosed_annotation_bracket_and_paren_recover() {
     let src = "@[foo(bar, baz\nflow g() {\n}\n";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -331,7 +331,7 @@ fn unclosed_choice_text_bracket_recovers() {
     let src = "flow g() {\n  {?\n    * [unterminated bracket text\n  }\n}\n";
     let p = assert_lossless(src);
     assert_eq!(p.syntax().kind(), SyntaxKind::SOURCE_FILE);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── Recovery position: SOURCE_FILE root survives every truncation point ─

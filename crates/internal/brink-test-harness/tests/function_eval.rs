@@ -200,7 +200,11 @@ fn function_external_pauses_then_resumes() {
     assert!(matches!(outcome, FunctionEval::AwaitingExternal));
     assert!(flow.is_evaluating_function());
     assert_eq!(flow.pending_external_name(&program), Some("world_value"));
-    assert!(flow.pending_external_args().is_empty());
+    assert!(
+        flow.pending_external_args().is_empty(),
+        "{:?}",
+        flow.pending_external_args()
+    );
 
     // The engine resolves the external (simulating a world query → 41).
     flow.resolve_external(Value::Int(41));

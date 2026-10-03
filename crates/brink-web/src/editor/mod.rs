@@ -2190,7 +2190,11 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&json).unwrap();
         assert_eq!(v["ok"], false);
         assert!(v["error"].as_str().is_some());
-        assert!(v["moved_files"].as_array().unwrap().is_empty());
+        assert!(
+            v["moved_files"].as_array().unwrap().is_empty(),
+            "{:?}",
+            v["moved_files"].as_array().unwrap()
+        );
     }
 
     // ── Safe symbol rename (#305) ───────────────────────────────────
@@ -2205,7 +2209,11 @@ mod tests {
             serde_json::from_str(&s.rename_symbol("main.ink", "hello", "", "greeting")).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["safe"], true, "consistent rename is safe: {v}");
-        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            v["introduced_diagnostics"].as_array().unwrap().is_empty(),
+            "{:?}",
+            v["introduced_diagnostics"].as_array().unwrap()
+        );
         let new_source = v["new_source"].as_str().unwrap();
         assert!(new_source.contains("=== greeting ==="));
         assert!(
@@ -2331,7 +2339,11 @@ mod tests {
             serde_json::from_str(&s.delete_symbol("main.ink", "b", "")).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["safe"], true, "no references, so safe: {v}");
-        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            v["introduced_diagnostics"].as_array().unwrap().is_empty(),
+            "{:?}",
+            v["introduced_diagnostics"].as_array().unwrap()
+        );
     }
 
     #[test]
@@ -2440,7 +2452,11 @@ mod tests {
             serde_json::from_str(&s.reorder_knot("main.ink", "a", 1)).unwrap();
         assert_eq!(v["ok"], true);
         assert_eq!(v["safe"], true);
-        assert!(v["introduced_diagnostics"].as_array().unwrap().is_empty());
+        assert!(
+            v["introduced_diagnostics"].as_array().unwrap().is_empty(),
+            "{:?}",
+            v["introduced_diagnostics"].as_array().unwrap()
+        );
         // The unified result still round-trips through the StructuralResult JSON:
         // every field the studio reads is present.
         assert!(v.get("new_source").is_some());

@@ -74,7 +74,7 @@ fn body_only_edit_leaves_prelude_decls_pointer_identical() {
     // The compile itself still reflects the edit (sanity: the probe isn't
     // vacuously true because nothing recompiled at all).
     let after_bytes = inkb_bytes(&db);
-    assert!(!after_bytes.is_empty());
+    assert!(!after_bytes.is_empty(), "expected non-empty");
 }
 
 /// A real declaration-level edit (a new global) *does* re-execute the

@@ -1677,7 +1677,7 @@ mod tests {
         #[test]
         fn drafts_default_to_empty() {
             let (config, _) = parse_str("[project]\nentry = \"main.ink\"\n").expect("valid");
-            assert!(config.drafts.is_empty());
+            assert!(config.drafts.is_empty(), "{:?}", config.drafts);
         }
 
         #[test]
@@ -1711,7 +1711,7 @@ mod tests {
         let (config, warnings) = parse_str("").unwrap();
         assert_eq!(config, ProjectConfig::default());
         assert!(config.is_empty());
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1726,7 +1726,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.dialect, Some(Dialect::Brink));
         assert_eq!(config.types, Some(TypePolicy::Strict));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1741,7 +1741,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.dialect, Some(Dialect::StrictInk));
         assert_eq!(config.types, Some(TypePolicy::Gradual));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -1791,7 +1791,11 @@ mod tests {
     #[test]
     fn an_absent_prose_dictionary_is_empty_rather_than_an_error() {
         let (config, _) = parse_str("[prose]\ndialect = \"british\"\n").expect("valid");
-        assert!(config.prose_dictionary.is_empty());
+        assert!(
+            config.prose_dictionary.is_empty(),
+            "{:?}",
+            config.prose_dictionary
+        );
     }
 
     #[test]
@@ -1978,8 +1982,8 @@ mod tests {
     #[test]
     fn empty_unprune_dirs_is_not_a_warning_and_leaves_config_empty_by_itself() {
         let (config, warnings) = parse_str("[project]\nunprune-dirs = []\n").unwrap();
-        assert!(config.unprune_dirs.is_empty());
-        assert!(warnings.is_empty());
+        assert!(config.unprune_dirs.is_empty(), "{:?}", config.unprune_dirs);
+        assert!(warnings.is_empty(), "{warnings:?}");
         // An explicit empty array still counts as "set" for `is_empty()`'s
         // purposes only if non-empty — an empty list is indistinguishable
         // from unset here, matching `lints`' own empty-map convention.
@@ -2286,7 +2290,7 @@ mod tests {
         assert_eq!(config.lints.get("E063"), Some(&LintLevel::Deny));
         assert_eq!(config.lints.get("E014"), Some(&LintLevel::Allow));
         assert_eq!(config.lints.get("E022"), Some(&LintLevel::Warn));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     /// #1162: `[lints]` must be able to down-level a code to either advisory
@@ -2303,7 +2307,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.lints.get("E014"), Some(&LintLevel::Info));
         assert_eq!(config.lints.get("E022"), Some(&LintLevel::Hint));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -2373,7 +2377,7 @@ mod tests {
         assert_eq!(config.fix.get("E033"), Some(&FixPolicy::Auto));
         assert_eq!(config.fix.get("E014"), Some(&FixPolicy::Off));
         assert_eq!(config.fix.get("E022"), Some(&FixPolicy::Ask));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     #[test]
@@ -2407,7 +2411,7 @@ mod tests {
     fn unrecognized_fix_code_parses_fine_here() {
         let (config, warnings) = parse_str("[fix]\nE9999 = \"auto\"\n").unwrap();
         assert_eq!(config.fix.get("E9999"), Some(&FixPolicy::Auto));
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
     }
 
     // ── ProjectConfig::effective_fix_policy — ceiling truth table ────────
@@ -2479,7 +2483,7 @@ mod tests {
         let text = doc.to_toml_string();
 
         let (config, warnings) = parse_str(&text).expect("round-tripped text still parses");
-        assert!(warnings.is_empty());
+        assert!(warnings.is_empty(), "{warnings:?}");
         assert_eq!(config.fix.get("E033"), Some(&FixPolicy::Auto));
         assert_eq!(config.effective_fix_policy("E033", None), FixPolicy::Auto);
         // The write path is a targeted edit, not a whole-file rewrite.
@@ -3014,7 +3018,7 @@ mod tests {
         assert_eq!(loaded.path, root.join(CONFIG_FILE_NAME));
         assert_eq!(loaded.config.dialect, Some(Dialect::Brink));
         assert_eq!(loaded.config.types, Some(TypePolicy::Strict));
-        assert!(loaded.warnings.is_empty());
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
         assert!(discovery_warnings.is_empty(), "got: {discovery_warnings:?}");
 
         std::fs::remove_dir_all(&root).unwrap();
@@ -3074,7 +3078,7 @@ glued = false
         let d = config.dialogue.expect("declared");
         assert_eq!(d.file.as_deref(), Some("dialect.json"));
         assert_eq!(d.preset, None);
-        assert!(d.elements.is_empty());
+        assert!(d.elements.is_empty(), "{:?}", d.elements);
     }
 
     #[test]

@@ -85,7 +85,7 @@
 //
 // The logic is EXPORTED and the standalone run sits behind a main-guard,
 // matching `packages/brink-desktop/scripts/ensure-wasm.mjs` /
-// `ensure-cli-sidecar.mjs`'s "the `dev` preflight pair" shape
+// the `dev` preflight scripts' shape
 // (docs/desktop-shell-spec.md) — every input defaults to the real one, so
 // `scripts/check-wasm-pkg.test.mjs` drives the real decision without a
 // toolchain, and running `node scripts/check-wasm-pkg.mjs` standalone still

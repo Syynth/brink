@@ -62,5 +62,5 @@ fn all_public_story_has_no_private_defs() {
     let data = compile_with_options("story.ink", |_p| Ok(src.to_owned()), brink_options())
         .unwrap()
         .data;
-    assert!(data.private_defs.is_empty());
+    assert!(data.private_defs.is_empty(), "{:?}", data.private_defs);
 }

@@ -470,6 +470,209 @@ export async function saveBytesDialog(
   });
 }
 
+/** What the shell reports once the frontend confirms it booted. */
+export interface BundleLaunchInfo {
+  /** Active OTA bundle version; `null` means the embedded floor. */
+  version: string | null;
+  /** Set when the previous launch's bundle failed to boot and was removed. */
+  rolledBackFrom: string | null;
+}
+
+/**
+ * Confirm the frontend booted, and learn what this launch is running
+ * (`docs/desktop-ota-spec.md` Stage 2).
+ *
+ * ⚠ This call is the ONLY thing that distinguishes a working OTA bundle
+ * from one that wedges the webview: the shell stamps a sentinel before the
+ * window loads and this clears it. A sentinel that survives a launch is
+ * read as "that bundle did not boot", and the shell deletes it and reverts.
+ * So it must be called from a point that actually proves the shell is up,
+ * and it must not be made conditional on anything that can itself fail —
+ * a bug that skips it rolls back a perfectly good bundle on every launch.
+ */
+export async function bundleReady(): Promise<BundleLaunchInfo> {
+  return invoke<BundleLaunchInfo>("bundle_ready");
+}
+
+/** The outcome of an OTA web-bundle update attempt. */
+export type BundleUpdateOutcome =
+  | { kind: "upToDate" }
+  /** Installed; takes effect on the next launch. */
+  | { kind: "installed"; version: string }
+  /** Refused for a reason the author can act on — `minShellVersion` above all. */
+  | { kind: "refused"; reason: string }
+  /** Something went wrong. Distinct from `refused`: a refusal is the system working. */
+  | { kind: "failed"; reason: string };
+
+/**
+ * One misspelled span, as the OS spell checker reports it.
+ *
+ * ⚠ Offsets are **UTF-16 code units**, matching CodeMirror's own indexing
+ * and what `brink-prose` already returns — `NSString` is UTF-16, so the
+ * native API speaks them natively and nothing has to convert.
+ */
+export interface Misspelling {
+  start: number;
+  end: number;
+  /** The word as written, for an add-to-dictionary action. */
+  word: string;
+  /** Platform suggestions, best first. May be empty. */
+  suggestions: string[];
+}
+
+/**
+ * The result of an OS spellcheck.
+ *
+ * `unavailable` is an ANSWER, not an error: Linux and Windows have no native
+ * checker wired up, and the caller should fall back to Harper rather than
+ * report a failure. Throwing would read as something being broken.
+ */
+export type SpellcheckOutcome =
+  | { kind: "unavailable"; reason: string }
+  | { kind: "checked"; misspellings: Misspelling[] };
+
+/**
+ * Check text with the platform's own spell checker
+ * (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * Shaped to feed the editor's existing `ProseChecker` seam rather than a new
+ * one, so choosing between this and Harper is a frontend decision that ships
+ * over OTA. `dictionary` is the project's proper nouns; the shell filters
+ * them out case-insensitively, since an author who added a character's name
+ * means the name however it is capitalised.
+ */
+export async function spellcheckText(
+  text: string,
+  language: string | null,
+  dictionary: string[],
+): Promise<SpellcheckOutcome> {
+  return invoke<SpellcheckOutcome>("spellcheck_text", { text, language, dictionary });
+}
+
+/** Which stream of bundles this install follows. */
+export type UpdateChannel = "stable" | "beta";
+
+/**
+ * How this install takes updates (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * One discriminated union rather than an `autoUpdate` flag beside a channel:
+ * two fields could express "pinned *and* auto-updating", which must not
+ * exist. `pinned` stops the full-app updater too — that is what makes
+ * pinning safe, since nothing else protects an old pinned bundle from a
+ * newer shell that has dropped a command it calls.
+ */
+export type UpdatePolicy =
+  | { mode: "auto"; channel: UpdateChannel }
+  | { mode: "manual"; channel: UpdateChannel }
+  | { mode: "pinned"; version: string };
+
+/** What the bundle store holds, newest first. */
+export interface BundleInventory {
+  /** The active bundle; `null` means the copy built into the app. */
+  active: string | null;
+  /** Previously-active bundles still on disk, most recent first. */
+  history: string[];
+  /** This install's policy, so a picker needs no second round trip. */
+  policy: UpdatePolicy;
+}
+
+/** List the bundles on disk and the policy in force. */
+export async function bundleList(): Promise<BundleInventory> {
+  return invoke<BundleInventory>("bundle_list");
+}
+
+/** One row of the version picker, as the shell reports it. */
+export interface BundleOffer {
+  version: string;
+  channel: UpdateChannel;
+  minShellVersion: string;
+  /** Publication timestamp, for display only. */
+  pubDate: string | null;
+  /** Currently serving. At most one row carries this. */
+  active: boolean;
+  /** Already unpacked in the store. Switching to it still re-downloads. */
+  downloaded: boolean;
+  /**
+   * Why this install cannot run it, or `null` when it can.
+   *
+   * Computed by the shell from the same gate `bundle_update_apply` applies,
+   * so a row shown as selectable is one the shell will actually install —
+   * never recompute it here.
+   */
+  blocked: string | null;
+}
+
+/**
+ * Every published bundle, newest first. Fetches the index; downloads
+ * nothing.
+ *
+ * Throws on a fetch or parse failure, unlike the check/apply commands: this
+ * one is only ever called from a settings pane the author opened, so there
+ * is a place to show the error and nobody is interrupted by it.
+ */
+export async function bundleAvailable(): Promise<BundleOffer[]> {
+  return invoke<BundleOffer[]>("bundle_available");
+}
+
+/**
+ * Serve the store's current bundle pointer without restarting the process
+ * (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * **Reload the webview afterwards — that reload is what swaps the running
+ * code.** This call only moves what the asset protocol serves.
+ *
+ * Save first, exactly as before a full relaunch: a reload destroys the
+ * document and every worker with it, so in-memory editor state is lost the
+ * same way. It is cheaper than a restart, not free.
+ *
+ * ⚠ The shell stamps the rollback sentinel before returning, and only the
+ * reloaded page calling `bundleReady` clears it. So a reload that never
+ * completes is reverted on the next launch — which is the safety net, and
+ * also why the reload must actually follow this call rather than being
+ * deferred behind a prompt.
+ */
+export async function bundleActivate(): Promise<BundleLaunchInfo> {
+  return invoke<BundleLaunchInfo>("bundle_activate");
+}
+
+/** What a check found. An offer, not an outcome — nothing is downloaded yet. */
+export type BundleUpdateCheck =
+  | { kind: "upToDate" }
+  /** There is an update available; it has NOT been installed. */
+  | { kind: "available"; version: string }
+  | { kind: "refused"; reason: string }
+  | { kind: "failed"; reason: string };
+
+/**
+ * Check for an OTA web-bundle update (`docs/desktop-ota-spec.md` Stage 4).
+ *
+ * Downloads and installs nothing. Stage 2 shipped this as check-and-install
+ * in one call; Stage 4 split the consent step out so both update channels
+ * ask first, per the full-app channel's standing "nothing installs without
+ * consent" (2026-08-22).
+ */
+export async function bundleUpdateCheck(): Promise<BundleUpdateCheck> {
+  return invoke<BundleUpdateCheck>("bundle_update_check");
+}
+
+/**
+ * Install the available OTA web-bundle update, if there still is one.
+ *
+ * ⚠ Takes no arguments, and must not grow any. The shell re-fetches and
+ * re-judges the manifest itself rather than trusting a version, url, hash or
+ * signature from here — this code is an OTA'd bundle's own JS, which is
+ * precisely what an attacker who compromised the channel would control. The
+ * version `bundleUpdateCheck` returned is toast text, not an instruction.
+ *
+ * What is NOT split, and must never be: download, verify, unpack and promote
+ * stay inside this one call, because the ordering between them is a safety
+ * property (verify before extract; promote only a verified staging
+ * directory). Splitting *that* across IPC would put the ordering here.
+ */
+export async function bundleUpdateApply(): Promise<BundleUpdateOutcome> {
+  return invoke<BundleUpdateOutcome>("bundle_update_apply");
+}
+
 /**
  * Recent projects (#2394, `docs/desktop-shell-spec.md` D2): a persisted,
  * most-recent-first, capped, deduplicated-by-path list backed by
@@ -499,18 +702,57 @@ export async function pruneRecent(root: string): Promise<string[]> {
 /** User-facing app settings (`settings.json` in app-data, #3016). */
 export interface AppSettings {
   reopenLastProject: boolean;
+  /** How this install takes updates (`docs/desktop-ota-spec.md` Stage 4). */
+  updatePolicy: UpdatePolicy;
 }
 
-const DEFAULT_SETTINGS: AppSettings = { reopenLastProject: false };
+export const DEFAULT_UPDATE_POLICY: UpdatePolicy = { mode: "auto", channel: "stable" };
 
-/** Read settings; any failure (or a legacy/malformed payload) reads as
- *  defaults — a settings hiccup must never block startup. */
+const DEFAULT_SETTINGS: AppSettings = {
+  reopenLastProject: false,
+  updatePolicy: DEFAULT_UPDATE_POLICY,
+};
+
+/**
+ * Parse an update policy off the wire, defaulting anything unrecognised.
+ *
+ * Validated rather than cast, because this value decides whether the app
+ * updates at all: a malformed `pinned` with no version would otherwise
+ * freeze the install with no way for the author to see why.
+ */
+export function parseUpdatePolicy(raw: unknown): UpdatePolicy {
+  if (typeof raw !== "object" || raw === null) return DEFAULT_UPDATE_POLICY;
+  const value = raw as Record<string, unknown>;
+  const channel = value.channel === "beta" ? "beta" : "stable";
+  if (value.mode === "pinned") {
+    return typeof value.version === "string" && value.version !== ""
+      ? { mode: "pinned", version: value.version }
+      : DEFAULT_UPDATE_POLICY;
+  }
+  if (value.mode === "manual") return { mode: "manual", channel };
+  return { mode: "auto", channel };
+}
+
+/**
+ * Read settings; any failure (or a legacy/malformed payload) reads as
+ * defaults — a settings hiccup must never block startup.
+ *
+ * ⚠ Every field must be carried through, not just the one a caller happens
+ * to want. `writeAppSettings` sends back whatever this returned, and the
+ * Rust side fills an absent field from `#[serde(default)]` — so a field
+ * dropped HERE is a field silently RESET on the next write. That is how an
+ * author's update policy would quietly revert to Auto/Stable the first time
+ * they toggled "reopen last project".
+ */
 export async function readAppSettings(): Promise<AppSettings> {
   try {
     const raw = await invoke<unknown>("read_app_settings");
     if (typeof raw === "object" && raw !== null && !Array.isArray(raw)) {
-      const value = (raw as Record<string, unknown>).reopenLastProject;
-      return { reopenLastProject: value === true };
+      const value = raw as Record<string, unknown>;
+      return {
+        reopenLastProject: value.reopenLastProject === true,
+        updatePolicy: parseUpdatePolicy(value.updatePolicy),
+      };
     }
   } catch (e: unknown) {
     console.error("[brink-desktop] read_app_settings failed", e);

@@ -2850,7 +2850,7 @@ mod tests {
         // terminal.
         let parked = Step::Suspended;
         assert_eq!(parked.text(), "");
-        assert!(parked.tags().is_empty());
+        assert!(parked.tags().is_empty(), "{:?}", parked.tags());
         assert!(parked.is_terminal(), "a park is a turn boundary");
 
         // Drive a small story with a shared flow to a terminal; nothing the
@@ -3177,7 +3177,7 @@ mod tests {
         let (program, line_tables) = load_tags_in_choice_program();
         let mut story = Story::new(Arc::new(program), line_tables);
         let choices = step_until_choices(&mut story);
-        assert!(!choices.is_empty());
+        assert!(!choices.is_empty(), "expected non-empty");
         // The choice in tagsInChoice has tags "one" and "two"
         assert!(
             !choices[0].tags.is_empty(),

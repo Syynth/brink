@@ -154,7 +154,7 @@ EXTERNAL holds(item)
     fn no_doc_when_no_comments() {
         let (doc, issues) = doc_of("EXTERNAL plain(x)\n");
         assert!(doc.is_none());
-        assert!(issues.malformed.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
     }
 
     #[test]
@@ -229,8 +229,8 @@ EXTERNAL tint(c)
 ";
         let (doc, issues) = doc_of_kind(src, SyntaxKind::KNOT_DEF, DocPolicy::CALLABLE);
         let doc = doc.expect("doc present");
-        assert!(issues.malformed.is_empty());
-        assert!(issues.inapplicable.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
+        assert!(issues.inapplicable.is_empty(), "{:?}", issues.inapplicable);
         assert_eq!(doc.doc.as_deref(), Some("Damage roll for an attack."));
         assert_eq!(
             doc.params,
@@ -265,7 +265,7 @@ stall text
 ";
         let (doc, issues) = doc_of_kind(src, SyntaxKind::STITCH_DEF, DocPolicy::CALLABLE);
         let doc = doc.expect("doc present");
-        assert!(issues.malformed.is_empty());
+        assert!(issues.malformed.is_empty(), "{:?}", issues.malformed);
         assert_eq!(doc.doc.as_deref(), Some("The market square."));
     }
 

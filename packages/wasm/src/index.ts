@@ -16,6 +16,9 @@ import init, {
   program_inkt_of as wasmProgramInktOf,
   lines_table_of as wasmLinesTableOf,
   size_report_of as wasmSizeReportOf,
+  export_xliff as wasmExportXliff,
+  compile_locale as wasmCompileLocale,
+  regenerate_xliff as wasmRegenerateXliff,
   token_type_names,
   diagnostic_registry,
   token_modifier_names,
@@ -186,6 +189,75 @@ export function linesTableOf(storyBytes: Uint8Array): LinesTable {
 /** The `.inkb` size report, runner-free (#3339 Size view). */
 export function sizeReportOf(storyBytes: Uint8Array): SizeReport {
   return JSON.parse(wasmSizeReportOf(storyBytes)) as SizeReport;
+}
+
+// ── Localization (the XLIFF round trip) ─────────────────────────
+//
+// These three used to live only in the `brink-cli` binary, which the
+// desktop shell shipped as a Tauri sidecar purely so that it had somewhere
+// to run them. That put a second copy of the compiler core inside the
+// signed `.app`, coupled to the wasm by `.inkb`'s exact-match container
+// version — the coupling that made an over-the-air web-bundle update
+// unsafe. See `docs/desktop-ota-spec.md` Stage 1.
+//
+// The operations were already pure (bytes and strings in, bytes and
+// strings out), so the port carries no IO: the host reads and writes
+// through its own file APIs and passes the contents.
+
+/**
+ * An XLIFF 2.0 document for compiled `.inkb` bytes, as XML text — the file
+ * a translator is handed.
+ *
+ * `trgLang` is optional; omitted, the document carries source text only.
+ * The document records the artifact's source-identity checksum (the same
+ * value {@link programChecksum} formats) as provenance, naming exactly
+ * which compile the translator's file was cut from.
+ *
+ * Throws if `storyBytes` is not a readable `.inkb`.
+ */
+export function exportXliff(
+  storyBytes: Uint8Array,
+  srcLang: string,
+  trgLang?: string,
+): string {
+  return wasmExportXliff(storyBytes, srcLang, trgLang);
+}
+
+/**
+ * Compile a translated XLIFF document against its base `.inkb` into `.inkl`
+ * locale-overlay bytes for `locale`.
+ *
+ * ⚠ The overlay stamps a `base_checksum` taken from `baseBytes`, and the
+ * runtime refuses an overlay whose stamp does not match the program it is
+ * linked against — so ANY byte change to the base invalidates it. Compile
+ * the overlay against the exact artifact you will ship.
+ *
+ * Throws if the base is not a readable `.inkb`, or the document is not
+ * readable XLIFF.
+ */
+export function compileLocale(
+  baseBytes: Uint8Array,
+  xliffText: string,
+  locale: string,
+): Uint8Array {
+  return wasmCompileLocale(baseBytes, xliffText, locale);
+}
+
+/**
+ * Merge an existing XLIFF document forward onto a newer `.inkb`, returning
+ * the regenerated XML — the "the story changed, keep the translations that
+ * still apply" operation. Units whose source text still matches carry their
+ * targets and states over; everything else is re-emitted for review.
+ *
+ * Throws if the base is not a readable `.inkb`, or the document is not
+ * readable XLIFF.
+ */
+export function regenerateXliff(
+  baseBytes: Uint8Array,
+  existingXliff: string,
+  srcLang: string,
+): string {
+  return wasmRegenerateXliff(baseBytes, existingXliff, srcLang);
 }
 
 // ── Token legend (stateless) ────────────────────────────────────

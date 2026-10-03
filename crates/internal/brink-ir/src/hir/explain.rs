@@ -537,7 +537,7 @@ mod tests {
         let p = projection(&[decl("any_line", 10, "^.*$")]);
         let explanation = explain_match(&p, TextSize::from(0), "   \t  ");
         let attempted = explanation.into_attempted().expect("expected a miss");
-        assert!(attempted.is_empty());
+        assert!(attempted.is_empty(), "{attempted:?}");
     }
 
     /// An empty projection is a miss with nothing attempted — there is
@@ -547,7 +547,7 @@ mod tests {
         let p = projection(&[]);
         let explanation = explain_match(&p, TextSize::from(0), "anything at all");
         let attempted = explanation.into_attempted().expect("expected a miss");
-        assert!(attempted.is_empty());
+        assert!(attempted.is_empty(), "{attempted:?}");
     }
 
     /// A declined-entirely entry (a named group that never participated,

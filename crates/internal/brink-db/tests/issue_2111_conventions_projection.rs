@@ -52,7 +52,11 @@ fn unset_conventions_projects_to_empty() {
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
-    assert!(db.conventions_projection().entries.is_empty());
+    assert!(
+        db.conventions_projection().entries.is_empty(),
+        "{:?}",
+        db.conventions_projection().entries
+    );
 }
 
 #[test]
@@ -67,7 +71,11 @@ fn a_preset_name_pointer_projects_to_empty_for_now() {
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
-    assert!(db.conventions_projection().entries.is_empty());
+    assert!(
+        db.conventions_projection().entries.is_empty(),
+        "{:?}",
+        db.conventions_projection().entries
+    );
 }
 
 #[test]
@@ -78,7 +86,11 @@ fn an_unresolvable_conventions_pointer_projects_to_empty() {
         "conventions.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
-    assert!(db.conventions_projection().entries.is_empty());
+    assert!(
+        db.conventions_projection().entries.is_empty(),
+        "{:?}",
+        db.conventions_projection().entries
+    );
 }
 
 #[test]
@@ -528,7 +540,11 @@ fn a_claiming_handler_outside_the_configured_module_is_never_projected() {
         "scenes/heading.brink",
         format!("{CLAIMING_HANDLER}flow main() {{\n  INT. MARKET SQUARE\n}}\n"),
     );
-    assert!(db.conventions_projection().entries.is_empty());
+    assert!(
+        db.conventions_projection().entries.is_empty(),
+        "{:?}",
+        db.conventions_projection().entries
+    );
 }
 
 /// The invalidation contract (`docs/decision-log.md` 2026-08-01 "Match

@@ -18,7 +18,7 @@
  */
 
 import { createRoot } from "react-dom/client";
-import { Profiler, useEffect } from "react";
+import { Profiler, useEffect, useMemo } from "react";
 import { initWasm } from "@brink-lang/web";
 import type {
   CompileResult,
@@ -46,6 +46,7 @@ import {
   type FileConflict,
   type FileProvider,
   type HostPerfBundle,
+  type ProseChecker,
 } from "@brink-lang/editor";
 import {
   loadProblemsPrefs,
@@ -158,6 +159,7 @@ import {
   isConfigPath,
   registerStoryGraphCommand,
   type FixStoreState,
+  type SettingsSection,
   type StudioApi,
 } from "@brink/studio-ui";
 import { registerStoryCommands } from "./story-commands.js";
@@ -275,6 +277,36 @@ export interface MountStudioOptions {
    *  desktop app enumerates the machine's fonts; the web has none and
    *  gets the curated list. Family names, resolved on demand. */
   systemFonts?: () => Promise<readonly string[]>;
+  /**
+   * Wrap the studio's prose checker (#3209).
+   *
+   * A DECORATOR rather than a replacement: the function receives the
+   * built-in Harper-backed checker and returns the one to use, so a host
+   * adding a capability does not have to reimplement — or take ownership of
+   * the lifecycle of — the 6.5 MB wasm module behind it. The studio still
+   * creates and disposes its own.
+   *
+   * The desktop app uses it to serve spelling from the OS checker while
+   * Harper keeps everything else; see
+   * `packages/brink-desktop/src/desktop-prose-checker.ts`.
+   */
+  proseChecker?: (builtin: ProseChecker) => ProseChecker;
+  /**
+   * Host settings sections, appended to the built-in rail (#3174's registry,
+   * opened to embedders).
+   *
+   * The same reason `systemFonts` is a mount option: a host can own a
+   * preference the studio has no business knowing about. The desktop app's
+   * update channel and version history are real app-scope settings an author
+   * looks for in Settings — and they mean nothing in the browser, where
+   * there is no installer and no bundle store.
+   *
+   * Appended, never merged over: a host cannot remove or replace a built-in
+   * section, so a project's lint table and keymap stay reachable in every
+   * embedding. Ids must not collide with the built-ins — see
+   * `SETTINGS_SECTION_IDS` for the reserved set.
+   */
+  settingsSections?: SettingsSection[];
   /**
    * File-content egress (issue #154): called with batched change
    * notifications whenever project files change in the session — CM6 edits,
@@ -460,6 +492,7 @@ interface RootProps {
   notifications: NotificationCenter;
   keymapOverrides: KeymapOverridesService;
   api: StudioApi;
+  hostSettingsSections: SettingsSection[];
 }
 
 function Root({
@@ -475,7 +508,28 @@ function Root({
   notifications,
   keymapOverrides,
   api,
+  hostSettingsSections,
 }: RootProps) {
+  // Host sections are APPENDED, and a collision with a built-in id drops the
+  // host's rather than shadowing it: `SettingsModal` resolves a section by
+  // the first id match, so a duplicate would make the rail show two rows and
+  // one of them unreachable — a silent half-broken surface, where a dropped
+  // section plus a warning is a thing the host can find and fix.
+  const mergedSettingsSections = useMemo(() => {
+    const built = settingsSections("settings");
+    const taken = new Set(built.map((section) => section.id));
+    return [
+      ...built,
+      ...hostSettingsSections.filter((section) => {
+        if (!taken.has(section.id)) return true;
+        console.warn(
+          `[brink-studio] host settings section "${section.id}" collides with a built-in id and was dropped`,
+        );
+        return false;
+      }),
+    ];
+  }, [hostSettingsSections]);
+
   // Tear down the wasm session + story runner when the app unmounts. The
   // standalone playground never unmounts, but the embeddable/host case does —
   // this keeps the lifecycle owned instead of leaking the cached parse/HIR.
@@ -525,7 +579,7 @@ function Root({
             {/* Settings (#3174): a modal over the whole studio, inside the
                 .brink-studio root so tokens apply — the same placement the
                 other host surfaces need (#3054's eaten menu). */}
-            <SettingsModal sections={settingsSections("settings")} />
+            <SettingsModal sections={mergedSettingsSections} />
             <SymbolContextMenuHost />
             <EditorTextMenuHost />
             <SymbolRenamePrompt />
@@ -588,6 +642,69 @@ export function openSymbolTarget(
   groups.getState().setActiveTab(existing.group.id, fileKey);
   revealAt(target.path, target.start);
   return true;
+}
+
+/**
+ * Which group an editor-document open should land in when the Player holds
+ * the focused one (maintainer, 2026-09-11).
+ *
+ * `openDocument` defaults to the focused group, and every navigation FROM the
+ * Player focuses the Player's group first — the group `<section>`'s `onFocus`
+ * maps to `focusin`, which bubbles from the clicked control. So the Player's
+ * own "open in the editor" button (and a click in the Binder, Problems, or
+ * Search while the Player is focused) opened the file straight over the top
+ * of the Player: the story you were reading disappears behind the thing you
+ * asked to look at next, which is the one pair you wanted side by side.
+ *
+ * Returns the group to open into, or `undefined` to leave the policy alone.
+ * Three cases deliberately fall through untouched:
+ *
+ * - The document is already open SOMEWHERE. An explicit group target skips
+ *   the any-group reveal (§7.8: explicit targets are how you deliberately
+ *   duplicate a tab), so redirecting here would mint a second tab instead of
+ *   revealing the one that exists. The reveal policy already does the right
+ *   thing — it focuses that tab wherever it lives, which is never over the
+ *   Player unless the Player's own group already held it.
+ * - There is nowhere else to put it (a single group). Displacing the Player
+ *   is then the only option, and it is what the author asked for; this does
+ *   not silently split the editor area to avoid it.
+ * - The Player is merely open in the focused group without being its active
+ *   tab. Nothing is covering it that is not covered already.
+ *
+ * Pure over the group list so the decision is unit-testable without booting
+ * the studio, like `resolveSymbolFileTab` above.
+ */
+export function groupForEditorOpen(
+  groups: readonly EditorGroup[],
+  focusedGroupId: string,
+  key: string,
+): string | undefined {
+  if (findTab(groups, key) !== null) return undefined;
+  if (groups.length < 2) return undefined;
+  const focused = groups.find((g) => g.id === focusedGroupId);
+  if (focused === undefined || focused.activeKey !== documentKey(playerRef())) {
+    return undefined;
+  }
+  // The first group that is not the one showing the Player. In the default
+  // two-up (entry file left, Player split right) that is the editor the
+  // author was last reading, which is where they expect this to land.
+  return groups.find((g) => g.id !== focused.id)?.id;
+}
+
+/**
+ * Open an editor document, honouring `groupForEditorOpen`. Exported over the
+ * real `EditorGroupsStore` — no wasm/DocumentSessions needed — so
+ * `setDocumentOpener`'s production branches and the regression test call the
+ * exact same function, the same arrangement `openSymbolTarget` uses.
+ */
+export function openEditorDocument(
+  groups: EditorGroupsStore,
+  ref: DocumentRef,
+  pinned: boolean,
+): void {
+  const s = groups.getState();
+  const group = groupForEditorOpen(s.groups, s.focusedGroupId, documentKey(ref));
+  s.openDocument(ref, group === undefined ? { pinned } : { pinned, group });
 }
 
 // ── Mount ──────────────────────────────────────────────────────────
@@ -1240,7 +1357,7 @@ export async function mountStudio(
   }, [], {
     theme: brinkTheme,
     dialect: options.dialect,
-    proseChecker: studioProseChecker,
+    proseChecker: options.proseChecker?.(studioProseChecker) ?? studioProseChecker,
     onAddToDictionary: (word) => addWordToProjectDictionary(word),
   });
   documentsForConfig = documents;
@@ -1344,10 +1461,10 @@ export async function mountStudio(
       store.getState().setSettingsSection(SETTINGS_SECTION_IDS.general);
       return;
     }
+    // Never open an editor document over the top of the Player when there is
+    // another split to use (`openEditorDocument` / `groupForEditorOpen`).
     if (target.kind === "symbol" && shellLayout.getState().editorView === "continuous") {
-      editorGroups
-        .getState()
-        .openDocument(inkFileRef({ kind: "file", path: target.path }), { pinned });
+      openEditorDocument(editorGroups, inkFileRef({ kind: "file", path: target.path }), pinned);
       documents.revealAt(target.path, target.start);
       return;
     }
@@ -1364,7 +1481,7 @@ export async function mountStudio(
     ) {
       return;
     }
-    editorGroups.getState().openDocument(inkFileRef(target), { pinned });
+    openEditorDocument(editorGroups, inkFileRef(target), pinned);
   });
 
   // The store's tab-closer (binder delete): close every tab for a file path —
@@ -1971,6 +2088,7 @@ export async function mountStudio(
       notifications={notifications}
       keymapOverrides={keymapOverrides}
       api={api}
+      hostSettingsSections={options.settingsSections ?? []}
     />
   );
   root.render(

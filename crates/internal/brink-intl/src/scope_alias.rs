@@ -125,7 +125,11 @@ mod tests {
         let index = ScopeAliasIndex::new(&[]);
         assert!(index.is_empty());
         assert_eq!(index.current(id(1)), None);
-        assert!(index.previous(id(1)).is_empty());
+        assert!(
+            index.previous(id(1)).is_empty(),
+            "{:?}",
+            index.previous(id(1))
+        );
     }
 
     #[test]
@@ -137,7 +141,11 @@ mod tests {
         assert_eq!(index.current(id(1)), Some(id(2)));
         assert_eq!(index.previous(id(2)), &[id(1)]);
         // The reverse of an unaliased id is still empty.
-        assert!(index.previous(id(1)).is_empty());
+        assert!(
+            index.previous(id(1)).is_empty(),
+            "{:?}",
+            index.previous(id(1))
+        );
         assert_eq!(index.current(id(2)), None);
     }
 

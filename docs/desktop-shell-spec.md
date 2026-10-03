@@ -111,33 +111,17 @@ root's resolved version, and when a root major bump has no compatible copy
 here at all. Scope is deliberately the declared overlap, not the whole
 graph — the two dependency graphs resolve transitive crates differently for
 legitimate reasons, and `src-tauri` depends on no first-party crate at all
-(it reaches the compiler only through the `brink-cli` sidecar binary).
+(the compiler reaches this shell only through the wasm the webview loads).
 
-**Fourth cost, named later (#2507): `run_cli`'s subcommand allowlist doesn't
-cross the fence either.** `ALLOWED_CLI_SUBCOMMANDS` in `src-tauri/src/lib.rs`
-hand-mirrors a subset of `brink-cli`'s real `clap` subcommand surface
-(`crates/brink-cli/src/main.rs`'s `Commands` enum), and — same shape as the
-two costs above — `src-tauri` cannot take a dev-dependency on `brink-cli` to
-introspect that surface without pulling the excluded crate back across the
-fence it was pushed out of. `cli_allowlist_subcommands_exist_in_brink_cli_surface`
-in `src/lib.rs` closes the gap by reading `crates/brink-cli/src/main.rs` as
-plain text (not a Cargo dependency), extracting each top-level `Commands`
-variant name and applying clap's default kebab-case rename, then asserting
-every entry in `ALLOWED_CLI_SUBCOMMANDS` is present in that derived set. It
-is deliberately a subset check, not an equality one: `brink-cli` has more
-subcommands than the sidecar exposes (`play`, `fmt`, `convert`,
-`migrate-xliff`, `replay`, `ide` are intentionally not sidecar-invokable) —
-`brink-cli` growing one of those must not fail this test, only a rename or
-removal of a subcommand the allowlist actually depends on should. Both files
-carry a pointer comment to the other (`ALLOWED_CLI_SUBCOMMANDS`'s doc comment
-here, and a comment on `enum Commands` in `crates/brink-cli/src/main.rs`).
-Same standing as every guard above: it lives in `src-tauri`'s own,
-non-required test suite (see the ruling immediately below) — a subcommand
-rename on the `brink-cli` side alone fails `cargo test` in this crate, not
-any check branch protection requires. #2466 is the still-open question of
-whether a cross-workspace guard like this one needs a home with
-merge-blocking teeth; this one inherits the existing (unruled-on) pattern's
-non-required standing rather than resolving that question.
+**Fourth cost, named later (#2507): `run_cli`'s subcommand allowlist didn't
+cross the fence either — RETIRED.** `ALLOWED_CLI_SUBCOMMANDS` hand-mirrored a
+subset of `brink-cli`'s `clap` surface, and
+`cli_allowlist_subcommands_exist_in_brink_cli_surface` closed the gap by
+reading `crates/brink-cli/src/main.rs` as plain text. Both are gone with the
+sidecar (`docs/desktop-ota-spec.md` Stage 1): there is no longer any
+`brink-cli` surface this crate mirrors, so there is nothing for a fourth
+cross-fence guard to guard. #2466 — whether a cross-workspace guard needs a
+home with merge-blocking teeth — stays open on the three remaining ones.
 
 CI in v1: none required. A non-required smoke job (`cargo check` the shell
 crate + `pnpm build` the package) may be added if drift appears. The
@@ -235,22 +219,22 @@ asserted by tests in `src-tauri/src/lib.rs` rather than left to review:
   package/crate globs — the
   individual `ci.yml` entry alone left a reordered `npm-release.yml`, or a
   brand-new workflow file, free to skip this lane on the PR that broke it.
-  Without these a lockfile, sidecar-dependency or root-lint-policy change
+  Without these a lockfile or root-lint-policy change
   ran this lane only on the post-merge push to `main` — including the two
   `*_matches_the_root_workspace` drift tests, which could not fail the PR
   that caused the drift.
   (`desktop_smoke_path_filter_covers_its_shared_inputs`) `crates/brink-cli/**`
-  was one of those crate globs until #2477: once `BRINK_SIDECAR_STUB` (below)
-  made the sidecar step a placeholder, nothing left in the lane read
-  `brink-cli` source, so the same test now asserts the entry stays **absent**
-  rather than present.
+  was one of those crate globs until #2477, when stubbing the sidecar build
+  left nothing in the lane reading `brink-cli` source; with the sidecar
+  deleted outright (`docs/desktop-ota-spec.md` Stage 1) that is now true by
+  construction, and the same test asserts the entry stays **absent**.
 - **Checks are non-blocking for their siblings but gated on their setup
   steps.** A bare `if: '!cancelled()'` also overrides the implicit
   `success()` on a failed *prerequisite*, so a dying setup step let the
   dependent steps run and fail too, burying the root cause. Each check now
   reads `!cancelled() && steps.<setup>.outcome == 'success'` for the setup
   steps it needs (`checkout`, `linux_deps`, `wasm_build`, `pnpm_install`,
-  `check_wasm_pkg`, `sidecar`); the format check needs only the runner's
+  `check_wasm_pkg`); the format check needs only the runner's
   toolchain and the checkout, so it is gated on `checkout` alone —
   `actions/checkout` carries no `id` by default, so this lane gives its
   checkout step one. (`check_wasm_pkg` (#2514) is itself gated on
@@ -264,40 +248,17 @@ asserted by tests in `src-tauri/src/lib.rs` rather than left to review:
   `if:` text and that every prerequisite id it names still names a real
   step, since a stale id (e.g. from a renamed or `id:`-stripped setup step)
   reads as `steps.<id>.outcome == ''` and the guard is simply always false.
-- **The sidecar is staged, not shipped, in this lane — and since #2469 not
-  even built.** A file has to exist on disk before `tauri-build`'s externalBin
-  resolution will let `cargo check` run, but nothing in this lane executes it
-  (`run_cli` is the sidecar's only caller and it needs a running app, not a
-  `cargo test`). The lane therefore sets `BRINK_SIDECAR_STUB: "1"`, which
-  makes `ensureCliSidecar` write a loudly-failing placeholder under the real
-  triple-suffixed name and skip `cargo build -p brink-cli --release`
-  altogether. It is an `env:` var rather than a step flag because the lane
-  runs the script twice — its own "Stage brink-cli sidecar" step and, nested,
-  `pnpm build`. This **replaces** PR #2446's
-  `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS` stopgap —
-  but that stopgap was job-wide, not scoped to the sidecar build, so it was
-  also flattening the "Build brink-web wasm package" step's `wasm-pack
-  build` (release by default, and this lane's largest build), not only the
-  sidecar build it was written to excuse. Removing the vars un-flattens
-  that wasm build too: the lane now runs a fully-optimised `wasm-pack
-  build`, rather than keep vars that would be dead configuration for the
-  (now-gone) sidecar build while still quietly de-optimising the wasm one.
-  #2482 asked whether that build should get the sidecar's stub treatment;
-  it should not (#2502) — unlike the sidecar's staged file, whose content is
-  never read, the wasm-pack output is genuinely consumed by "Typecheck (tsc
-  --noEmit)" and `pnpm build` below, so a stub cannot stand in for it. The
-  release-vs-dev optimisation level and reusing `ci.yml`'s own artefact
-  remain open, tracked by #2482. The guard asserts the stub is wired **and**
-  that the three
-  stopgap vars are gone, so the lane cannot drift back or carry both. Every
-  other caller that runs a *release* build — `pnpm --filter @brink/desktop
-  build` on a developer machine, where the sidecar really is shipped and
-  run — still builds a real release binary, since the option defaults to
-  off. As of #2617 this is no longer the only caller that sets the var at
-  all: `src-tauri/build.rs` now sets it too, for every **debug** build with
-  no sidecar staged, on a developer machine and not only in CI — see
-  "Build-script sidecar auto-staging" below.
-  (`desktop_smoke_stubs_the_staged_sidecar`)
+- **The lane's `wasm-pack build` is deliberately a release build.** PR
+  #2446 set `CARGO_PROFILE_RELEASE_OPT_LEVEL` / `_DEBUG` / `_CODEGEN_UNITS`
+  job-wide to flatten the (now-deleted) `brink-cli` sidecar build, and in
+  doing so was also flattening "Build brink-web wasm package", this lane's
+  largest build. Those vars are gone. #2482 asked whether the wasm build
+  should get the stub treatment the sidecar's staged file got; it should not
+  (#2502) — unlike that file, whose content was never read, the wasm-pack
+  output is genuinely consumed by "Typecheck (tsc --noEmit)" and `pnpm
+  build` below, so nothing can stand in for it. The release-vs-dev
+  optimisation level and reusing `ci.yml`'s own artefact remain open,
+  tracked by #2482.
 - **This workspace's dependency graph is audited here, and nowhere else**
   (#2470). `ci.yml`'s `cargo-deny` job runs `check` exactly once, at the
   repo root, and the root `Cargo.lock` shares no resolution with this
@@ -493,54 +454,44 @@ asserted by tests in `src-tauri/src/lib.rs` rather than left to review:
   not a settled design decision; #2716 stays open for the maintainer's
   call rather than being closed by this change.
 
-### The `dev` preflight pair (#2452, #2468)
+### The `dev` preflight (#2452, #2468)
 
-`pnpm --filter @brink/desktop dev` runs `scripts/ensure-wasm.mjs` and then
-`scripts/ensure-cli-sidecar.mjs`. Both export their logic — `ensureWasm` /
-`newestSource`, and `ensureCliSidecar` / `hostTriple` / `sidecarPaths` /
-`STUB_SIDECAR` — behind an `import.meta.url === pathToFileURL(argv[1])`
-main-guard, take every input as an option defaulting to the real one, and
-route external commands through an injectable `runCommand`. Running either
-script standalone still does the whole job; importing it does nothing but
-hand over the functions, so `src/__tests__/ensure-wasm.test.ts` and
-`src/__tests__/ensure-cli-sidecar.test.ts` drive the real decisions without
-a toolchain.
+`pnpm --filter @brink/desktop dev` runs `scripts/ensure-wasm.mjs`. It
+exports its logic — `ensureWasm` / `newestSource` — behind an
+`import.meta.url === pathToFileURL(argv[1])` main-guard, takes every input
+as an option defaulting to the real one, and routes external commands
+through an injectable `runCommand`. Running it standalone still does the
+whole job; importing it does nothing but hand over the functions, so
+`src/__tests__/ensure-wasm.test.ts` drives the real decisions without a
+toolchain.
 
-As of #2715, `ensure-cli-sidecar.mjs` is no longer a single-seam, single-job
-script: it carries a SECOND injectable seam (`runLipo`, alongside
-`runCommand`), a FOURTH external command it can invoke (`lipo`, joining
-`wasm-pack`/`rustc`/`cargo`), three more exports
-(`stageUniversalCliSidecar`, `defaultRunLipo`,
-`UNIVERSAL_DARWIN_SLICE_TRIPLES`), and a standalone run that branches into
-`stageUniversalCliSidecar` rather than always doing the same host-triple job
-— either because `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"`
-(tauri-cli's own hook env var), or, as of #2729, because the script was
-invoked with the `--universal` CLI flag (`pnpm --filter @brink/desktop
-stage:universal`) — see "Reachability caveat" below for what that dispatch
-does and its limits.
+This was a *pair* until `docs/desktop-ota-spec.md` Stage 1 — the second
+script, `ensure-cli-sidecar.mjs`, staged the `brink-cli` sidecar, and is
+deleted with it. Everything below is stated as an invariant of the class,
+not of either script, which is what makes it survive one of them going
+away.
 
-The default `runCommand` (`defaultRunCommand`, exported from each script)
+The default `runCommand` (`defaultRunCommand`, exported from the script)
 carries a bound: `DEFAULT_EXEC_TIMEOUT_MS` (#2697), overridable via
-`BRINK_ENSURE_WASM_TIMEOUT_MS` / `BRINK_ENSURE_CLI_SIDECAR_TIMEOUT_MS`
-(#2702) — before this, `wasm-pack build`/`cargo build -p brink-cli
---release` ran on no clock at all on this exact preflight path, the same
-wedged-proxy hang class `scripts/check-scripts.mjs` bounds for shell
-scripts, one language over. A timeout fails `dev`/`build` with a house-style
-diagnostic naming the bound and the env var to raise, rather than hanging
-forever or surfacing a bare `Command failed`. `ensure-wasm.mjs`'s default is
-sized against the COLD case specifically — the `built === 0` branch ("no
-wasm pkg found") is the fresh-clone path, where a release-mode wasm build of
-the whole compiler graph plus `wasm-opt` is the slow case, not an
-incremental rebuild on a warm toolchain cache.
+`BRINK_ENSURE_WASM_TIMEOUT_MS` (#2702) — before this, `wasm-pack build` ran
+on no clock at all on this exact preflight path, the same wedged-proxy hang
+class `scripts/check-scripts.mjs` bounds for shell scripts, one language
+over. A timeout fails `dev`/`build` with a house-style diagnostic naming the
+bound and the env var to raise, rather than hanging forever or surfacing a
+bare `Command failed`. The default is sized against the COLD case
+specifically — the `built === 0` branch ("no wasm pkg found") is the
+fresh-clone path, where a release-mode wasm build of the whole compiler
+graph plus `wasm-opt` is the slow case, not an incremental rebuild on a warm
+toolchain cache.
 
-Treat this as an invariant of the pair, not of one script: without the
-guard, an unguarded module runs its build as a side effect of being
-imported. `ensure-cli-sidecar.mjs`'s own red-first took 178s because the
-import ran `cargo build --release`; `ensure-wasm.mjs`'s failed outright,
-because its already-fresh path called `process.exit(0)` and killed the
-importing process. Each script's `describe("the main-guard")` block holds
-the two tests that pin it (inert on import; still acts when run
-standalone). A third preflight script gets the same treatment.
+Treat the main-guard as an invariant of every preflight script, not of one:
+without it, an unguarded module runs its build as a side effect of being
+imported. `ensure-wasm.mjs`'s red-first failed outright, because its
+already-fresh path called `process.exit(0)` and killed the importing
+process; the since-deleted `ensure-cli-sidecar.mjs`'s took 178s, because the
+import ran `cargo build --release`. The script's `describe("the
+main-guard")` block holds the two tests that pin it (inert on import; still
+acts when run standalone). A new preflight script gets the same treatment.
 
 That last sentence used to be enforced by nothing (#2478), which is how the
 pair came to be named one script at a time in the first place.
@@ -570,370 +521,53 @@ the invariant should be repo-wide rather than desktop-scoped is a real
 question and is **NOT settled here** — it is raised on #2478 rather than
 answered by a package test reaching across the fence.
 
-The sidecar seam is also what made the stub option above testable — it was
-added (#2452) as a prerequisite and spent by #2469.
+### The sidecar apparatus, and why it is gone (#2617, #2631, #2687, #2699, #2715, #2729)
 
-`ensure-cli-sidecar.mjs` gained a third caller in #2617, outside this pair
-and outside CI: `src-tauri/build.rs` itself. See "Build-script sidecar
-auto-staging" below.
+`brink-cli` shipped as a Tauri sidecar (`bundle.externalBin`) so that batch
+xliff/locale operations ran against the exact workspace version the shell
+was built from. It is **deleted** — `docs/desktop-ota-spec.md` Stage 1, and
+`docs/decision-log.md` (2026-09-14). The three intl operations it existed
+for run in the wasm now (`crates/brink-web/src/intl.rs`,
+`@brink-lang/web`'s `exportXliff`/`compileLocale`/`regenerateXliff`), on the
+same side of the wire as the compile that produced the bytes.
 
-### Build-script sidecar auto-staging (#2617)
+The reason is not tidiness. `brink-format`'s container check is exact-match
+and `VERSION` moved four times in one month, so a wasm updated ahead of the
+sidecar would emit artifacts the sidecar's reader silently refuses — which
+made the over-the-air web-bundle channel unsafe by construction. Gating
+around the coupling was considered and rejected in favour of removing it.
 
-`tauri_build::build()` resolves `bundle.externalBin` unconditionally — not
-only when a bundle is actually produced — so `binaries/brink-cli-<triple>`
-has to exist on disk before this crate will even `cargo check`. That path is
-gitignored (the triple suffix is host-specific), and until #2617 nothing on
-the local path staged it, so CLAUDE.md's documented gate (`cd
-packages/brink-desktop/src-tauri && cargo test`) failed on every fresh
-checkout and every fresh git worktree before a single test ran.
+What went with it, recorded so nobody reconstructs a piece of it in
+isolation:
 
-`src-tauri/build.rs`'s `stage_dev_sidecar_if_missing` now stages a stub when
-the file is missing, by invoking the same script the smoke lane's "Stage
-brink-cli sidecar" step invokes — `ensure-cli-sidecar.mjs` — under the same
-`BRINK_SIDECAR_STUB=1` that step sets. This is a delegation, not a second
-mechanism: the stub payload, host-triple detection and staged filename
-(including #2481's Windows `.exe` refusal) stay owned by that script alone;
-`build.rs` only decides *whether* to invoke it, per
-`build_script_stages_the_dev_sidecar_the_way_ci_does`.
+- `bundle.externalBin` and `beforeBundleCommand` (`tauri.conf.json`), and
+  the `binaries/` staging directory with its gitignore entry.
+- `scripts/ensure-cli-sidecar.mjs` (603 lines: host-triple detection,
+  `STUB_SIDECAR`, the Windows `.exe` refusal of #2481, `runLipo` and
+  `stageUniversalCliSidecar` of #2715/#2729) and
+  `scripts/assert-real-sidecar.mjs` (#2631's bundle-time check, #2687's
+  ELF/Mach-O/PE magic-byte check, #2699's `--version` smoke check).
+- `src-tauri/build.rs`'s `stage_dev_sidecar_if_missing` and
+  `BRINK_SIDECAR_STUB` (#2617). The problem it solved — `tauri_build`
+  resolving `externalBin` unconditionally, so `cargo test` failed on every
+  fresh worktree — is solved at the root instead: there is no `externalBin`
+  entry to resolve. `build.rs` is now `tauri_build::build()` and nothing
+  else.
+- `ALLOWED_CLI_SUBCOMMANDS`, `validate_cli_subcommand`,
+  `prepare_cli_invocation`, the `run_cli` command and `CliOutputLine`
+  (`src-tauri/src/lib.rs`), plus the `tauri-plugin-shell` dependency — this
+  shell now spawns no subprocess at all — and `src/cli.ts`.
+- The smoke lane's "Stage brink-cli sidecar" step and the `sidecar`
+  prerequisite on four of its checks, plus five dedicated test files and
+  three workflow-guard tests.
 
-As the "Smoke-lane inputs" bullet above now notes, this makes `build.rs` a
-second caller that sets `BRINK_SIDECAR_STUB=1` outside the smoke lane's own
-step — and, unlike that step, it fires on a plain developer machine, not
-just CI, whenever a debug build finds no sidecar staged.
+⚠ The **`brink-cli` crate stays.** It is a published binary for terminal
+users and cargo-dist ships it. Only its embedding as a Tauri sidecar is
+gone.
 
-- **`PROFILE == "debug"` gates all of it.** `cargo tauri build` (release)
-  must keep failing loudly on a missing sidecar: a real bundle ships the
-  real `brink-cli`, and silently substituting a stub there would turn a
-  build-time error into a shipped, `exit 127` one. Release staging stays on
-  its existing path — `beforeBuildCommand` -> `pnpm build` ->
-  `ensure-cli-sidecar.mjs` with no stub variable set.
-- **Three cases degrade to a `cargo:warning=` instead of staging, and
-  `tauri_build::build()` is left to fail on the missing file exactly as
-  before #2617:** the target triple is a Windows one (`ensure-cli-sidecar.mjs`
-  refuses to stage the POSIX stub under a `.exe`-suffixed name, #2481); the
-  build is cross-target (`cargo test/check --target <other>`) — the script
-  stages under `hostTriple()` from `rustc -vV`, not the `TARGET` this
-  function probes, so a mismatched `HOST` would otherwise leave a
-  wrong-triple file staged for no benefit, which is why the check compares
-  `HOST` to `TARGET` before invoking the script rather than after; or `node`
-  is not on `PATH` / the script is not where expected (`Command::new("node")`
-  fails, or `script.is_file()` is false). All three are "could not stage" —
-  a developer who hits one runs the script by hand, per the warning text.
-- **The staged file lands in `src-tauri/binaries/`, not `OUT_DIR`.** This
-  contradicts the usual Cargo build-script guidance (write generated
-  artifacts under `OUT_DIR`, never back into the source tree), and the
-  contradiction is deliberate rather than an oversight:
-  `tauri.conf.json`'s `bundle.externalBin` is a path Tauri resolves
-  relative to the manifest directory, not to `OUT_DIR` — Tauri reads that
-  config independently of this crate's build-script output, so a stub
-  staged under `OUT_DIR` would be invisible to the exact resolution step
-  this function exists to satisfy. `binaries/` is gitignored specifically
-  because it now holds build output despite living in the source tree.
-
-### Bundle-time sidecar assertion (#2631)
-
-PR #2626's stated invariant is "a real bundle must ship the real
-`brink-cli`." For `cargo tauri build` (release), `build.rs` enforces that
-directly — its `stage_dev_sidecar_if_missing` only auto-stages
-`STUB_SIDECAR` when `PROFILE == "debug"`, so a release build with no sidecar
-staged keeps failing loudly on `tauri-build`'s `bundle.externalBin`
-resolution exactly as before #2617. But `tauri build --debug` is a
-debug-profile **bundling** path, and until this section's fix landed, the
-invariant held there only *indirectly*: via `beforeBuildCommand` ->
-`pnpm build` staging the real binary before `build.rs` ever ran, plus
-`bundle.active: false` making the question moot in practice. Nothing
-asserted it — an ordering coincidence (the pnpm build script happens to run
-before Tauri's own resource resolution) plus a feature flag that happens to
-be off. If the ordering assumption ever broke — a `build.rs` change, a
-`beforeBuildCommand` change, or a developer/CI shell that happens to carry
-`BRINK_SIDECAR_STUB=1` (the smoke lane's own `env:` var, #2469) into a real
-`--debug` bundle invocation — nothing would have caught the STUB shipping.
-
-The fix is `tauri.conf.json`'s `beforeBundleCommand`, a Tauri hook distinct
-from `beforeBuildCommand`: it runs immediately before the **bundling
-phase** of `tauri build`, i.e. after the crate has already compiled
-(`build.rs` has already run and either staged something or failed the build
-outright) and right before tauri-bundler reads
-`binaries/brink-cli-<triple>` off disk to package it. That is the latest
-point at which refusing is still useful, and it fires only when a bundle is
-actually being produced — unlike a check inside `build.rs` itself, it
-cannot be confused with an ordinary `cargo check`/`cargo test`, which
-legitimately wants `build.rs`'s auto-staged stub and must keep getting it.
-
-`beforeBundleCommand` runs `node scripts/assert-real-sidecar.mjs`
-(`packages/brink-desktop/scripts/`), which:
-
-- resolves the same triple-suffixed path `ensure-cli-sidecar.mjs` stages
-  (via that script's own `sidecarPaths`, not a re-derived path);
-- reads the staged file's bytes and compares them against
-  `STUB_SIDECAR` — **imported** from `ensure-cli-sidecar.mjs`, not
-  redefined. #2626's review established that the stub payload, host-triple
-  detection and staged filename live in that script alone; a second copy
-  anywhere (including here) is exactly the drift
-  `build_script_stages_the_dev_sidecar_the_way_ci_does` (`src-tauri/src/lib.rs`)
-  already guards against for `build.rs`, and
-  `before_bundle_command_asserts_the_staged_sidecar_is_real` (same file)
-  extends that same guard to this script;
-- throws — refusing the bundle — when they match;
-- and then, separately, checks **positively** that the staged file begins
-  with the executable magic its target triple's loader requires (#2687),
-  throwing if it does not.
-
-**Why two checks and not one (#2687).** The stub comparison on its own is a
-**blocklist**: it refuses the one placeholder that exists today and passes
-everything else. That fails open, because `tauri_build`'s `externalBin`
-resolution only tests that the path EXISTS — an empty file, a half-finished
-copy, or a binary built for a different platform's loader all bundled clean
-under #2660's version (measured directly against it: a zero-byte file, a
-two-byte truncated ELF, and a Mach-O staged for a linux bundle were all
-passed). Any future placeholder that is not byte-identical to `STUB_SIDECAR`
-would sail through too. The positive check covers the whole "the bundle
-shipped something that is not the CLI" class instead. The stub comparison is
-**kept alongside** it rather than replaced, because it is the only one of the
-two that can say *which* placeholder is staged and what to rebuild; it runs
-first for the specific diagnosis, and the magic check follows for the general
-class.
-
-The triple → format rule is **`executableFormatFor` in
-`ensure-cli-sidecar.mjs`**, not in the hook: `\x7fELF` for the ELF Unixes
-(linux/android/the BSDs/solaris/illumos/fuchsia/redox/haiku), any of the
-eight Mach-O header magics for Apple triples — 32- and 64-bit, both byte
-orders, thin *and* fat/universal, since a macOS release binary may
-legitimately be a universal wrapper — and the `MZ` DOS stub for Windows
-triples. It lives there because it generalises the `.exe`-suffix rule
-`sidecarPaths` already encoded for exactly the same reason (#2481), and
-because #2626's review established that triple-derived knowledge about the
-staged sidecar lives in that module **alone**; `sidecarPaths` and the
-Windows-stub guard now ask `executableFormatFor` rather than testing the
-triple substring themselves, so the rule is stated once.
-
-`executableFormatFor` returns `null` for a triple it has no rule for, and the
-hook then falls back to rejecting only an empty file or an interpreter
-script — it does **not** fall back to skipping the `--version` smoke check
-below too: `weakFallbackCheck` still calls `smokeCheckSidecar`, which
-self-gates on the staged triple matching this machine's host triple, so
-lacking format evidence is never a reason to also forgo execution evidence
-when execution is actually possible (#2699 review). That asymmetry on the
-magic side is deliberate and load-bearing: **a positive check that rejects a
-REAL binary on an unanticipated platform would be worse than the blocklist
-it replaces**, so "no rule known" must stay distinguishable from "judged and
-rejected" (`looksLikeNativeExecutable` returns `undefined`, not `false`, for
-an unknown format) and must never harden into a guess.
-
-Like the two preflight scripts it joins, it is main-guarded and exports its
-core logic (`assertRealSidecarStaged`), so
-`src/__tests__/scripts-main-guard.test.ts`'s directory scan (#2478) covers
-it automatically, and `src/__tests__/assert-real-sidecar.test.ts` drives the
-stub/non-stub/missing-file decisions directly plus the main-guard's
-inert-on-import and still-acts-standalone properties, the same shape
-`ensure-cli-sidecar.test.ts` uses for the script it imports `STUB_SIDECAR`
-from.
-
-**Deliberately inert by default, not a gap.** No documented developer
-command invokes `tauri build` (grepped at the time of #2631: only
-`pnpm --filter @brink/desktop dev`/`build` exist, neither of which reaches
-tauri-cli's bundler), and the *default*, bundle-less `tauri build` still
-does not reach this hook until D3 flips `bundle.active` — so the hook does
-not fire in the ordinary course of a developer's workflow, by design. But
-its firing condition is not simply "`bundle.active` flips to `true`":
-tauri-cli enters its bundling phase (and therefore runs this hook) on
-`!options.no_bundle && (config.bundle.active || options.bundles.is_some())`,
-so an explicit `tauri build --bundles <target>` / `-b <target>` already
-fires it **today**, with `bundle.active` still `false` — D3 flipping
-`bundle.active` to `true` only widens which invocation reaches it (the
-*default*, bundle-less `tauri build` starts doing so too); it is not the
-sole door. `.github/workflows/desktop-bundle-smoke.yml` (#2709, below) is
-the one CI lane that walks through the `--bundles` door today, deliberately
-and on every relevant change — no CI lane or documented command walks
-through the *default* door until D3 — but an ad-hoc `--bundles` invocation
-(and now that lane) reaches the hook today, as #2687's observation (below)
-did; that is a narrower claim than "unreachable."
-`before_bundle_command_asserts_the_staged_sidecar_is_real` pins that
-`bundle.active` stays `false` here specifically so a later, unrelated PR
-that does flip it does not silently change what this hook's presence means
-without anyone noticing — that assertion should be deleted (not edited)
-once D3 makes it legitimately `true`.
-
-**The firing point is OBSERVED, not inferred (#2687).** Up to and including
-#2660 it rested on Tauri's documented ordering plus a reading of tauri-cli
-2.11.4's source; at that point nothing in-repo invoked `tauri build`, so
-nobody had watched it happen. (`.github/workflows/desktop-bundle-smoke.yml`,
-#2709 below, is the lane that now does, continuously, in CI, for the
-ELF/Linux slice.) It has now been watched, three times, by driving a real
-`pnpm tauri build --debug --bundles deb` in a worktree with `bundle.active`
-left at `false`:
-
-| staged at `binaries/brink-cli-<triple>` | observed |
-|---|---|
-| `STUB_SIDECAR` (via `BRINK_SIDECAR_STUB=1`) | `Built application at …` → `Running beforeBundleCommand` → refused, `exit 1`, no bundle produced |
-| an **empty file** — which #2660's blocklist passed | same firing point, refused by the #2687 magic check, `exit 1`, no bundle produced |
-| a real ELF binary | hook logged `carries ELF executable magic — proceeding`, and tauri-bundler went on to produce `Brink Studio_0.1.0_amd64.deb` |
-
-Three things that were previously only argued are now facts on the record:
-the hook runs **after** the crate compiles and **before** tauri-bundler
-touches anything; `--bundles deb` really does reach it with `bundle.active`
-still `false` (confirming tauri-cli's `config.bundle.active ||
-options.bundles.is_some()`); and a refusal genuinely **stops** the bundle
-rather than merely printing. The third row also demonstrates the positive
-check does not false-reject a real native binary at the real firing point.
-`.github/workflows/desktop-bundle-smoke.yml` (#2709, below) now runs
-exactly this in CI — a real `tauri build --debug --bundles deb` — closing
-the ELF/Linux slice of what was, until this PR, still the standing
-follow-up. This hand-driven observation predates that lane and does not
-substitute for it; it only removes the doubt about *where* the hook fires,
-not whether CI exercises it.
-
-**The `--version` executable smoke check (#2699).** The magic check above
-proves the staged file's FORMAT (ELF/Mach-O/PE); it cannot prove the file
-IS `brink-cli` or that it runs — PR #2691's own passing observation of this
-hook stood in **GNU coreutils' `true`** for a real `brink-cli`, and that
-binary satisfies the magic check exactly as a genuine wrong-build binary
-would. `assertRealSidecarStaged` now runs `destBin --version` in addition
-to the magic check, and requires BOTH exit `0` AND that the printed output
-starts with `brink` — clap's `#[command(name = "brink", version)]` on `Cli`
-(`crates/brink-cli/src/main.rs`) formats every real build's output that
-way. The content half of that check is load-bearing, not decoration: exit
-code alone is not sufficient evidence, because `true --version` *also*
-exits `0`.
-
-This is not limited to the magic-confirmed acceptance path: the weak-fallback
-path above (an unrecognised triple, or a format `EXECUTABLE_MAGIC` has no
-entry for) runs the same smoke check too, not just the stub/empty/script
-checks it already had. Skipping it there would have meant the one path with
-*zero* format evidence also shipped with zero execution evidence, accepting
-on "not the stub, not empty, not a `#!` script" alone (#2699 review).
-`smokeCheckSidecar` is the single call site both paths share, so this is one
-behavior, not two copies that could drift.
-
-This is gated on the staged triple being **executable on** the triple the
-check is actually running on (`canExecuteStagedSidecar` in
-`assert-real-sidecar.mjs` — not a bare equality; see the `#2708` gap below
-for the one deliberate exception, a universal macOS build): a sidecar
-staged for a triple that is not executable here is a cross-build and
-**cannot be executed on this machine at all** — trying would fail for a
-reason that has nothing to do with whether the binary is a genuine
-`brink-cli`, and treating that as a rejection would refuse a legitimate
-cross-compiled bundle. That case — and the case where the host triple
-itself cannot be determined (no `rustc` on PATH) — degrades to "verified
-via magic only,"
-and the log line says so explicitly rather than silently claiming to have
-run something it did not.
-
-Driven directly (not merely argued) via `assertRealSidecarStaged` in a
-scratch tree, mirroring the shape of the table above:
-
-| staged at `binaries/brink-cli-<triple>`, triple executable on host (`canExecuteStagedSidecar`) | observed |
-|---|---|
-| a real release build of `brink-cli` | `--version` exited 0, printed `brink 0.0.11` → logged `ran successfully … confirmed a working brink-cli`, then `proceeding with the bundle` |
-| `/bin/true` (GNU coreutils, #2691's own stand-in) | `--version` exited 0, printed `true (GNU coreutils) 9.4…` → **refused**: `ran (--version exited 0) but printed "…" — that is not a brink-cli version string`, `exit 1` |
-| a synthetic Mach-O-magic file staged for `aarch64-apple-darwin` while running on `x86_64-unknown-linux-gnu` | smoke check **not executed** — logged `skipped the --version smoke check: staged triple … does not match this machine's host triple …`, then still `proceeding with the bundle` on the magic check alone |
-
-The middle row is the one that matters: it is the exact scenario #2691's PR
-body disclosed as its own limit (`/bin/true` standing in for `brink-cli`),
-and it is now refused where it previously would have passed. Until #2709 no
-CI lane exercised any of this — same standing gap as the magic check itself
-— and it was named in "CI coverage blind spots" for the macho/pe/.exe
-formats this smoke check's execute branch never reached in CI.
-`.github/workflows/desktop-bundle-smoke.yml` (#2709, below) now runs the
-third row of that table for real, against an actual host-triple-matched ELF
-binary, on every relevant change.
-
-**The `universal-apple-darwin` gap (#2708).** The table's third row —
-"cannot execute here" — is not only a genuine cross-build. `hostTriple()`'s
-gate compared `triple` to the host triple with a bare equality
-(`host !== triple`), and a **universal** macOS build stages under the
-triple `universal-apple-darwin`, which never equals `hostTriple()`'s
-`x86_64-apple-darwin`/`aarch64-apple-darwin` even when run ON a real macOS
-host that unambiguously CAN execute it — a universal binary is a fat
-Mach-O carrying both slices and runs natively on either arch. That gate
-therefore took the "cross-build, skip" branch **permanently** for the exact
-artifact macOS users install, never once running `--version` against it for
-real. `canExecuteStagedSidecar(triple, host)` in `assert-real-sidecar.mjs`
-replaces the bare equality: it still requires an exact match in the
-ordinary case, and adds the one deliberate exception — `triple ===
-"universal-apple-darwin"` on a `host` of `x86_64-apple-darwin` or
-`aarch64-apple-darwin`. It deliberately does NOT widen the other direction:
-a universal triple staged on a non-Darwin host (or an undeterminable host)
-still degrades to "verified via magic only," never a rejection — the same
-tri-state discipline #2687's review established for
-`looksLikeNativeExecutable`. `executableFormatFor("universal-apple-darwin")`
-needed no change: it already resolves to `"macho"` (the triple contains
-`"apple"`), and `EXECUTABLE_MAGIC.macho` already carries the FAT/universal
-magics alongside the thin ones (#2691) — only the smoke check's
-executability test was narrower than it should have been.
-
-**Reachability caveat, RESOLVED by #2715 for the staging mechanism (the
-two-target build itself still is not).** As of #2714, nothing in-repo
-actually staged `binaries/brink-cli-universal-apple-darwin` — a real gap,
-stated plainly rather than softened: `canExecuteStagedSidecar`'s widened
-branch was correct code that nothing could ever reach.
-`ensureCliSidecar`/`ensure-cli-sidecar.mjs`'s standalone invocation (what
-`pnpm build`, i.e. tauri.conf.json's `beforeBuildCommand`, runs) never
-consulted `TAURI_ENV_TARGET_TRIPLE` at all — its default `triple` came only
-from `hostTriple()` — so a real `tauri build --target
-universal-apple-darwin` would have staged a mislabeled single-arch sidecar
-under the wrong name (or, before #2481, nothing sensible) rather than a
-universal one, and hit the missing-file backstop (or tauri-bundler's own
-`externalBin` resolution) long before `canExecuteStagedSidecar`'s widened
-branch got a chance to run.
-
-#2715 adds `stageUniversalCliSidecar` to `ensure-cli-sidecar.mjs`: it builds
-both `x86_64-apple-darwin` and `aarch64-apple-darwin` slices for real (each
-via its own `cargo build -p brink-cli --release --target <triple>`, staged
-under its own triple-suffixed sidecar name), then runs `lipo -create` to
-combine them into `binaries/brink-cli-universal-apple-darwin`. The script's
-main-guard now dispatches to it instead of the ordinary host-triple
-`ensureCliSidecar()` whenever `TAURI_ENV_TARGET_TRIPLE ===
-"universal-apple-darwin"` — the same env var tauri-cli sets for
-`beforeBuildCommand` that `assertRealSidecarStaged` already reads for
-`beforeBundleCommand` (#2687), so a real `tauri build --target
-universal-apple-darwin` now reaches `stageUniversalCliSidecar` via `pnpm
-build` before `assertRealSidecarStaged` ever runs against the result. As of
-#2729, the same dispatch also fires from a bare `--universal` CLI flag
-(`pnpm --filter @brink/desktop stage:universal`) with no
-`TAURI_ENV_TARGET_TRIPLE` involved — a second, explicit entry point for a
-macOS developer to dry-run the path by hand; see "CI coverage blind spots"
-below for what it does and does not verify.
-`BRINK_SIDECAR_STUB=1` short-circuits to three `ensureCliSidecar({ triple,
-stub: true })` calls — one per slice triple plus `universal-apple-darwin`
-itself — no slice builds, no `lipo` — for lanes that only need the files to
-exist. All three, not just the universal name: `tauri_build::build()`
-resolves `bundle.externalBin` against the per-arch `TARGET` during each of
-the two cargo passes a universal build runs, not only against the final
-universal name, so a stub lane that staged only the universal file would
-still die partway through a universal build at the exact unreachability
-#2715 was filed about.
-
-**What #2715 did NOT do, stated plainly.** This is a Linux container with no
-Apple toolchain: `lipo`, the `x86_64-apple-darwin`/`aarch64-apple-darwin`
-rustc targets, and a real `tauri build --target universal-apple-darwin`
-invocation are all unavailable here, so none of that was run for real. What
-was verified: `stageUniversalCliSidecar`'s logic — which two `cargo build
---target` commands it issues, in what order, and the exact `lipo -create
--output … ‹slice1› ‹slice2›` argv it hands to its `runLipo` seam — driven
-with injected `runCommand`/`runLipo` fakes standing in for cargo and lipo
-(`stage-universal-cli-sidecar.test.ts`), plus the main-guard dispatch
-driven as a real subprocess with `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin`
-in its env (the stub path, so no toolchain is needed to prove the dispatch
-itself fires). Building both real slices on a real macOS host, and running a
-real `tauri build --target universal-apple-darwin` end to end, remain D3
-work — this PR delivers the staging mechanism and the wiring that lets
-`tauri build` reach it, not a verified two-target macOS build.
-
-Scope note the fix does **not** widen: `build.rs`'s own auto-staging only
-checks the **host** triple (`hostTriple()`), comparing `HOST` to `TARGET`
-before staging anything — a cross-compiled `cargo test/check --target
-<other>` gets nothing staged, and that gap is pre-existing, not one #2631
-introduces. This hook does not inherit that limit: `triple` defaults to
-`TAURI_ENV_TARGET_TRIPLE` when tauri-cli set it — the exact `--target`
-triple `app_settings` resolved for the build, exported into every hook
-tauri-cli runs, `beforeBundleCommand` included — and only falls back to
-`hostTriple()` for a standalone/manual invocation outside tauri-cli. A
-cross-compiled `--target` **bundle** is therefore checked correctly when
-run through `tauri build`; the unchecked case is `build.rs`/
-`ensure-cli-sidecar.mjs` not staging anything for a cross-target `cargo
-test`/`check` in the first place, which this hook cannot fix because there
-is nothing staged yet to check.
+**This retires one of D4's two named iOS blockers** — "iOS cannot ship
+subprocess binaries" no longer applies to anything here. `FileProvider`'s
+arbitrary-directory access is the one that remains.
 
 ### CI coverage blind spots
 
@@ -946,20 +580,6 @@ Whether to buy a macOS runner (or a `--target`-only check job) is a cost
 question and is **NOT settled here** — this section records the gap, it does
 not rule on it.
 
-The same blind spot let `STUB_SIDECAR` (above) ship as a POSIX `#!/bin/sh`
-script with no host awareness: `sidecarPaths` stages it under a
-`.exe`-suffixed name on Windows triples, same as it would a real binary, and
-Windows loads `.exe`-named files through its PE loader regardless of the
-bytes inside them — a shell script staged there could not run if anything
-ever executed it. `ensureCliSidecar` now throws rather than stage that file
-for a Windows `triple` when `stub` is requested, since no text payload
-staged at a `.exe` path can be made to "fail loudly" the way the POSIX stub
-does; a real Windows-compatible stub is future work if a non-Linux smoke
-lane is ever added (#2481, follow-up from #2474's review of #2469). The
-guard is pinned by a synthetic-triple test in
-`src/__tests__/ensure-cli-sidecar.test.ts` (`describe("the stub option")`),
-since the ubuntu-only lane itself cannot exercise it.
-
 The same Linux-only lane hides a cost of the #2415 lint policy: on the first
 mobile target, `tauri-macros`' `mobile_entry_point` expansion discards
 `run()`'s `tauri::Result<()>` (`unused_must_use`) and uses `eprintln!`
@@ -968,95 +588,22 @@ per-site `#[expect]`. A ⚠ marker above `opened_url_to_path` in
 `src-tauri/src/lib.rs` carries the detail next to the cfg gate that will
 first switch on.
 
-The same blind spot reaches `executableFormatFor`'s `macho`/`pe` branches
-and the `.exe`-suffixed staging path in `sidecarPaths` (#2699): both are
-exercised only by unit tests over synthetic byte arrays
-(`src/__tests__/assert-real-sidecar.test.ts`,
-`src/__tests__/ensure-cli-sidecar.test.ts`) — the ubuntu-only smoke lane
-never observes the real magic bytes of an actual cross-built `brink-cli`
-for either format, and never stages anything under a real `.exe` name. The
-`--version` smoke check added alongside the positive magic check (above,
-"Bundle-time sidecar assertion") inherited the same gap one layer up: its
-host-triple-match branch — the one that actually executes the staged
-binary — was likewise proven only by unit tests with a mocked `runFile`
-plus the ad-hoc, by-hand `node scripts/assert-real-sidecar.mjs` drive
-recorded in that section, not by any CI lane.
+Three blind spots recorded here were sidecar-specific and are retired with
+it (`docs/desktop-ota-spec.md` Stage 1): `executableFormatFor`'s
+`macho`/`pe` branches and the `.exe`-suffixed staging path (#2699), the
+`--version` smoke check's host-triple-match execute branch, and the whole
+`universal-apple-darwin` two-slice-plus-`lipo` staging path (#2715/#2729),
+which no CI lane or machine this repo's automation can see had ever run
+against a real Apple toolchain. None of them has a subject any more.
 
-**#2709 closes the ELF slice of this.** `.github/workflows/desktop-bundle-smoke.yml`
-runs a real, non-required `tauri build --debug --bundles deb` on
-`ubuntu-latest`: `ensure-cli-sidecar.mjs` runs a real (not
-`BRINK_SIDECAR_STUB`-stubbed) `cargo build -p brink-cli --release`, so the
-ELF branch of `executableFormatFor`/`EXECUTABLE_MAGIC` and the
-`--version` smoke check's host-triple-match execute branch both run
-against a real cross-workspace-built `brink-cli` binary, on every change
-that plausibly affects the bundle, ending in a real produced `.deb` the
-lane asserts exists. What remains open is exactly what was already
-unsettled above: the `macho`/`pe`/`.exe` paths still only ever reach the
-skip branch, because there is still no macOS/Windows runner in CI. Buying
-one is the same unsettled cost question as the file-association surface
-above — not decided by this lane either.
-
-**#2729: the `universal-apple-darwin` staging path is a blind spot of its
-own, distinct from — and deeper than — the macho/pe skip-branch gap above.**
-PR #2722 (delivering #2715) added `stageUniversalCliSidecar` in
-`ensure-cli-sidecar.mjs` — two real `cargo build -p brink-cli --release
---target <triple>` slice builds (`x86_64-apple-darwin` and
-`aarch64-apple-darwin`), then a real `lipo -create` combining them into one
-fat Mach-O — and wired the script's main-guard to dispatch there whenever
-`TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"`, the value tauri-cli's
-`beforeBuildCommand` hook sets for a `tauri build --target
-universal-apple-darwin` invocation. That dispatch is what gives #2708's
-widened `canExecuteStagedSidecar` branch (assert-real-sidecar.mjs) an actual
-path to fire on. The staging/combining LOGIC in
-`stageUniversalCliSidecar` — every assertion in
-`stage-universal-cli-sidecar.test.ts`'s `describe("stageUniversalCliSidecar")`
-block, and this section's own description above — was verified against
-injected `runCommand`/`runLipo` fakes standing in for `cargo`/`lipo`, the
-same disclosed constraint as the rest of this section: this repo's CI/dev
-containers are Linux, with neither the Apple slice rustc targets nor `lipo`
-on PATH. The main-guard DISPATCH is a separate claim with no such caveat:
-`describe("the main-guard dispatch for a universal build (#2715)")` in the
-same file — including this PR's own new `--universal` test — spawns the
-real script as a subprocess (`execFileSync`) through the
-`BRINK_SIDECAR_STUB` branch, with no injected `runCommand`/`runLipo` seam at
-all; see "What #2715 did NOT do, stated plainly" above, which draws this
-same logic/dispatch distinction. So, precisely:
-
-- **No CI lane, and no machine this repo's automation can see, has ever run
-  the real two-slice build or the real `lipo -create` invocation against
-  a real Apple toolchain — i.e. never against a real fat Mach-O on a real
-  macOS host at the real bundle-time firing point.** (#2708's widened
-  `canExecuteStagedSidecar` branch itself is NOT part of this gap:
-  `src/__tests__/assert-real-sidecar.test.ts` calls
-  `canExecuteStagedSidecar("universal-apple-darwin", "x86_64-apple-darwin"
-  | "aarch64-apple-darwin")` directly and drives
-  `assertRealSidecarStaged` through that branch, and that suite runs on
-  every PR via `pnpm --filter @brink/desktop test` — it is exercised, just
-  never against a binary a real two-slice-plus-lipo build actually
-  produced.) This is a strictly narrower and unexecuted-so-far claim than
-  the macho/pe paragraph above — that one is about `executableFormatFor`'s
-  classification logic reaching only its skip branch; this one is about the
-  staging mechanism itself (real cross-compiled builds plus an external
-  Apple-toolchain binary) never having run anywhere, on any input, real or
-  synthetic.
-- **The `TAURI_ENV_TARGET_TRIPLE === "universal-apple-darwin"` dispatch
-  condition itself is a read of tauri-cli source** (#2687/#2714), not an
-  in-repo confirmation from a real `tauri build --target
-  universal-apple-darwin` run — consistent with `assert-real-sidecar.mjs`'s
-  own default for that same env var, but not independently verified here.
-- `pnpm --filter @brink/desktop stage:universal` (`node
-  scripts/ensure-cli-sidecar.mjs --universal`, #2729) now gives a macOS
-  developer a documented dry-run entry point into this path without faking
-  `TAURI_ENV_TARGET_TRIPLE` by hand — closing the "no explicit way to
-  request universal staging" half of #2729's ask. It does not, and cannot,
-  close either bullet above: running it on this repo's Linux CI/dev
-  containers still only reaches the `BRINK_SIDECAR_STUB` stub branch (no
-  `lipo`, no Apple rustc targets to build the slices with), and the first
-  real confirmation still needs a macOS host. Buying a macOS CI runner (or
-  a maintainer's one-time manual verification) is the same unsettled cost
-  question this section already declines to rule on for the file-
-  association surface and the macho/pe bundle targets — not decided here
-  either. **Documenting this gap is not closing it.**
+`.github/workflows/desktop-bundle-smoke.yml` (#2709), added to close the
+ELF slice of those gaps, is **kept** — its remaining value outlives them:
+it is the only lane in the repo that runs a real `tauri build --debug
+--bundles deb` end to end and asserts a `.deb` was produced. Without it, a
+break in the bundling phase would first surface in `desktop-release.yml`,
+on a tag, with a release half-cut. The macOS/Windows runner question this
+section already declines to rule on for the file-association surface is
+unchanged by any of that.
 
 ## Menus
 
@@ -1172,9 +719,11 @@ in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
   close-confirmation prompt, that's dead UI given autosave + save-on-close;
   #2434, 2026-08-14 — the redispatch policy, see `docs/decision-log.md`).
 - **D3 — output.** Export `.inkb` via `compile_project` bytes + save
-  dialog; `brink-cli` as a Tauri **sidecar** for batch ops (xliff
-  export/locale compile) so both cores ship from one workspace version.
-  File associations (`.ink`, `.brink`).
+  dialog; xliff export through the wasm. (The batch ops originally shipped
+  `brink-cli` as a Tauri **sidecar** "so both cores ship from one workspace
+  version" — that sidecar is deleted, and the reasoning inverted: one core,
+  in the wasm, is what actually guarantees it. `docs/desktop-ota-spec.md`
+  Stage 1.) File associations (`.ink`, `.brink`).
 - **D4 — distribution (ACTIVE, ruled 2026-08-22).** Public distribution.
   `.github/workflows/desktop-release.yml` (NOT `release.yml` — that is
   cargo-dist-generated and forbidden to edit) builds on `desktop-v*` tags
@@ -1189,11 +738,12 @@ in `run()`, not per-`Menu`, so it keeps firing correctly across rebuilds.
   nothing.
 
   ⚠ **iOS is not built, but must not be foreclosed.** Two couplings would
-  block it and both are currently contained: the `brink-cli` **sidecar**
-  (iOS cannot ship subprocess binaries) lives behind `cli.ts` and powers
-  exactly one feature, and **arbitrary-directory access** (iOS has only a
-  sandboxed document picker) lives behind `FileProvider`. Neither may
-  become load-bearing in the core editing loop.
+  have blocked it. The `brink-cli` **sidecar** (iOS cannot ship subprocess
+  binaries) is **gone** — `docs/desktop-ota-spec.md` Stage 1 deleted it, and
+  that blocker is retired outright rather than merely contained. What
+  remains is **arbitrary-directory access** (iOS has only a sandboxed
+  document picker), behind `FileProvider`; it must not become load-bearing
+  in the core editing loop.
 
 ## Out of scope, recorded so nobody relitigates
 

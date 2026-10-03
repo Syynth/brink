@@ -289,7 +289,7 @@ fn nested_spans_close_in_reverse_order() {
 fn an_unclosed_span_is_diagnosed_not_silently_accepted() {
     let src = "flow f() {\n  <b>hi\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::SPAN));
 }
 
@@ -297,7 +297,7 @@ fn an_unclosed_span_is_diagnosed_not_silently_accepted() {
 fn a_stray_close_tag_with_no_open_is_diagnosed_and_does_not_hang() {
     let src = "flow f() {\n  surprise </b> more text after\n}\n";
     let p = assert_lossless(src);
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     // Forward progress: the text after the stray close tag must not be
     // dropped (CLAUDE.md: "flag silent data drops").
     assert!(text_run_concat(&p.syntax()).contains("more text after"));

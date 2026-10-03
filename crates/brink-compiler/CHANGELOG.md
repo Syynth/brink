@@ -7,6 +7,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-compiler-v0.0.16...brink-compiler-v0.0.17) - 2026-09-12
+
+### Added
+
+- *(brink-ir)* add E195 warning for a completely empty choice ([#3365](https://github.com/Syynth/brink/pull/3365))
+- *(compiler)* compat-deny diagnostic tier; E194 for knot temp read from stitch
+- *(compiler,runtime)* E193 for undominated `~ temp` reads; resolve them to the slot (#3354, #3362)
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(lir)* thread source provenance through Container and Stmt ([#3183](https://github.com/Syynth/brink/pull/3183))
+
+### Fixed
+
+- *(runtime)* the function-end trim stops at the read cursor ([#3556](https://github.com/Syynth/brink/pull/3556))
+- *(ir)* a lifted else-less conditional owes its line's newline ([#3530](https://github.com/Syynth/brink/pull/3530)) ([#3550](https://github.com/Syynth/brink/pull/3550))
+- *(runtime)* a shuffle removes its picked index order-preservingly ([#3538](https://github.com/Syynth/brink/pull/3538)) ([#3545](https://github.com/Syynth/brink/pull/3545))
+- *(runtime)* trim a function's whitespace-rendering value at its end ([#3536](https://github.com/Syynth/brink/pull/3536))
+- *(runtime, ir)* blank lines at a turn boundary, and tag-only lines (#3533, #3534)
+- *(runtime)* list origins follow ink's constructor and retention rules ([#3532](https://github.com/Syynth/brink/pull/3532))
+- *(runtime)* list containment is false when either operand is empty ([#3531](https://github.com/Syynth/brink/pull/3531))
+- *(runtime)* call-stack snapshot cache invalidated by every mutable frame access ([#3528](https://github.com/Syynth/brink/pull/3528))
+- *(runtime)* Choice.index numbers the visible choices; choose() maps it back ([#3527](https://github.com/Syynth/brink/pull/3527))
+- *(codegen)* compose any slot expression that contains a call ([#3525](https://github.com/Syynth/brink/pull/3525))
+- *(runtime)* drop a function's newline while it has printed nothing ([#3519](https://github.com/Syynth/brink/pull/3519))
+- *(hir)* every multi-line conditional arm starts with a newline ([#3523](https://github.com/Syynth/brink/pull/3523))
+- *(runtime)* function-end whitespace trim skips over glue ([#3522](https://github.com/Syynth/brink/pull/3522))
+- *(brink-codegen-inkb)* a choice's display text keeps its whitespace runs ([#3508](https://github.com/Syynth/brink/pull/3508))
+- *(brink-ir, brink-runtime)* the else-arm half of #3507 — spring in branch bodies, whitespace-only line refs pass the glue scan
+- *(brink-ir)* lower the whitespace between an inline construct and <> to a Spring ([#3507](https://github.com/Syynth/brink/pull/3507))
+- *(brink-ir)* lift hoists prefix interpolations ahead of the construct ([#3395](https://github.com/Syynth/brink/pull/3395))
+- *(brink-ir)* a sequence cloned into a lift's branches shares one counter ([#3401](https://github.com/Syynth/brink/pull/3401))
+- *(brink-analyzer)* E194 must fire on plain writes, not just reads
+- *(brink-analyzer)* E193 speaks the author's own surface vocabulary
+- *(brink-runtime)* GetTemp's uninitialized-temp check keys on written, not value
+- *(3181)* apply adversarial review findings — span regression + wrong choice locations
+- *(codegen)* thread real source_location through the EmitContent/ChoiceOutput flattening path ([#3181](https://github.com/Syynth/brink/pull/3181))
+- `[lints] allow` suppresses the diagnostic, and advisory codes are overridable ([#3175](https://github.com/Syynth/brink/pull/3175))
+
+### Other
+
+- Merge remote-tracking branch 'origin/main' into wt-oracle-3401
+- golden coverage for source_location values ([#3213](https://github.com/Syynth/brink/pull/3213))
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-compiler-v0.0.11...brink-compiler-v0.0.15) - 2026-08-23
 
 ### Added

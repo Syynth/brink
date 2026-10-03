@@ -564,15 +564,19 @@ mod doc_example_tests {
             }]
         );
         // Omitted `attrs` defaults to empty — a tag that takes none.
-        assert!(manifest.markup[1].attrs.is_empty());
+        assert!(
+            manifest.markup[1].attrs.is_empty(),
+            "{:?}",
+            manifest.markup[1].attrs
+        );
         // Omitted `required` defaults to `false` (optional) — `name`'s
         // requiredness is unaffected by its sibling `volume` declaring one.
         assert!(!manifest.markup[2].attrs[0].required);
         assert!(manifest.markup[2].attrs[1].required);
         // A manifest carrying only `markup` leaves the other sections empty,
         // which is what makes markup declarable independently of externals.
-        assert!(manifest.externals.is_empty());
-        assert!(manifest.types.is_empty());
+        assert!(manifest.externals.is_empty(), "{:?}", manifest.externals);
+        assert!(manifest.types.is_empty(), "{:?}", manifest.types);
 
         let serialized = serde_json::to_string(&manifest).expect("serialize");
         let round_tripped: super::HostManifest =

@@ -676,6 +676,7 @@ export function PlayerSection() {
           value={playerFontSize}
           min={0}
           max={32}
+          floor={10}
           label="player font size"
           suffix="px"
           onChange={onFontChange}

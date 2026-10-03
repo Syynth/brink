@@ -48,35 +48,14 @@
 use std::sync::Arc;
 
 use brink_ir::{Block, Diagnostic, HirFile, Knot};
-use brink_syntax::SegmentKind as SyntaxSegmentKind;
 use rowan::TextSize;
 
 use super::SourceFile;
 
-/// What a [`FileSegment`] covers — a mirror of
-/// [`brink_syntax::SegmentKind`], local so it can implement
-/// `salsa::Update` (a foreign trait on a foreign type is orphan-ruled
-/// out, and `brink-syntax` deliberately knows nothing about salsa).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, salsa::Update)]
-pub(crate) enum SegmentKind {
-    /// Everything before the first knot/stitch header.
-    Header,
-    /// One top-level knot, doc block included.
-    Knot,
-    /// One top-level stitch before any knot (promoted to a knot by
-    /// lowering), doc block included.
-    TopLevelStitch,
-}
-
-impl From<SyntaxSegmentKind> for SegmentKind {
-    fn from(kind: SyntaxSegmentKind) -> Self {
-        match kind {
-            SyntaxSegmentKind::Header => Self::Header,
-            SyntaxSegmentKind::Knot => Self::Knot,
-            SyntaxSegmentKind::TopLevelStitch => Self::TopLevelStitch,
-        }
-    }
-}
+/// What a [`FileSegment`] covers. Used directly: salsa 0.28 stores any
+/// `'static` field type without a salsa-specific trait impl, so the local
+/// mirror this once needed (to implement the old `salsa::Update`) is gone.
+pub(crate) use brink_syntax::SegmentKind;
 
 /// `heap_size` estimator for [`FileSegment`]'s field tuple (declaration
 /// order): the owned text buffer is the only heap payload.
@@ -90,6 +69,7 @@ pub(crate) fn segment_heap_size(fields: &(SegmentKind, String, Option<u32>, u32)
 #[salsa::tracked(heap_size = segment_heap_size)]
 pub(crate) struct FileSegment<'db> {
     /// Untracked → identity: what kind of segment this is.
+    #[returns(clone)]
     pub kind: SegmentKind,
     /// Untracked → identity: the segment's source text, segment-relative.
     /// Per-segment lowering reads this (and only this plus `kind`), so a
@@ -100,11 +80,13 @@ pub(crate) struct FileSegment<'db> {
     /// segment (`None` for the header segment). Content-derived — for
     /// identical text it is always identical, so it never perturbs
     /// identity.
+    #[returns(clone)]
     pub header_offset: Option<u32>,
     /// Tracked → positional value, backdated independently of the
     /// content fields: the segment's current absolute byte offset in the
     /// file. Only the range-rebasing assembly reads this.
     #[tracked]
+    #[returns(clone)]
     pub offset: u32,
 }
 
@@ -125,7 +107,7 @@ pub(crate) fn file_segments_query(
                 &text[usize::from(seg.lowered_range.start())..usize::from(seg.lowered_range.end())];
             FileSegment::new(
                 db,
-                SegmentKind::from(seg.kind),
+                seg.kind,
                 slice.to_owned(),
                 seg.header_start.map(|h| u32::from(h) - start),
                 start,
@@ -683,7 +665,7 @@ pub(crate) fn file_resolution_kinds_query(
 /// didn't change the OUTPUT is bit-identical, so
 /// [`segment_semantic_tokens_query`] backdates and never re-walks the
 /// fragment. `Vec<(start, end, kind)>` rather than a map: the payload
-/// needs `salsa::Update`, which std tuples/Vecs carry.
+/// needs `PartialEq` to backdate on, which std tuples/Vecs carry.
 #[salsa::tracked(returns(ref))]
 pub(crate) fn segment_resolution_kinds_query<'db>(
     db: &'db dyn salsa::Database,
@@ -960,7 +942,7 @@ pub(crate) fn segment_semantic_tokens_slice_with(
 mod tests {
     use salsa::plumbing::AsId;
 
-    use super::{FileSegment, SegmentKind, file_segments_query};
+    use super::{FileSegment, file_segments_query};
     use crate::ProjectDb;
 
     const BASE: &str = "\
@@ -993,7 +975,7 @@ Gamma body.
         let salsa = db.test_salsa();
         let mut pos = 0u32;
         for (seg, exp) in got.iter().zip(&expected) {
-            assert_eq!(seg.kind(salsa), SegmentKind::from(exp.kind));
+            assert_eq!(seg.kind(salsa), exp.kind);
             assert_eq!(seg.offset(salsa), u32::from(exp.range.start()));
             assert_eq!(seg.offset(salsa), pos, "segments must tile the file");
             assert_eq!(seg.text(salsa), &BASE[exp.range]);

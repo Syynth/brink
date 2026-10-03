@@ -283,7 +283,7 @@ fn error_let_missing_name_does_not_panic() {
     let src = "var x = { let = 1; 1 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -291,7 +291,7 @@ fn error_assign_missing_rhs_does_not_panic() {
     let src = "var x = { a = ; 1 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -299,7 +299,7 @@ fn error_garbage_token_inside_block_recovers() {
     let src = "var x = { @ 1 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::ERROR));
 }
 
@@ -308,7 +308,7 @@ fn error_missing_semicolon_after_let_still_finds_a_tail() {
     let src = "var x = { let a = 1 a }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     let block = stmt_block_of(&p);
     assert!(block.tail().is_some());
 }
@@ -318,7 +318,7 @@ fn error_unclosed_block_at_eof_does_not_panic() {
     let src = "var x = { let a = 1;";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -537,7 +537,7 @@ fn error_if_missing_condition_does_not_panic() {
     let src = "var x = { if { 1; } 0 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -545,7 +545,7 @@ fn error_for_missing_in_does_not_panic() {
     let src = "var x = { for item items { 0; } 0 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -553,7 +553,7 @@ fn error_until_missing_semicolon_does_not_panic() {
     let src = "var x = { until a 0 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── I. The `as` binding (B1b, issue #1475) ──────────────────────────
@@ -638,7 +638,7 @@ fn error_as_with_no_name_does_not_panic() {
     let src = "var x = { if a as { 1; } 0 }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── J. The content-ground line escape: `~ stmt` (charter §8.2, RULED ─
@@ -1059,7 +1059,7 @@ fn logic_line_block_unclosed_at_eof_does_not_panic() {
     let src = "flow greet() {\n~{\n  let m = 1;\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── K. The code-ground line escape: `> text` (charter §8.2, RULED ────

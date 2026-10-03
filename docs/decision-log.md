@@ -5436,6 +5436,188 @@
 - **A DIVERT BINDS ONLY AT OFFSET 0**, which is exactly the rule the prologue enforced by sitting there: a break divert or gather loop into the middle of a parameterized knot carries no arguments and binds nothing. Behavioural equivalence throughout was defined as "bind wherever the prologue would have run", including the paths where the prologue would have underflowed.
 - **WHY THE VERSION BUMP IS LOAD-BEARING, unlike v7-v9.** Those added opcodes; a stale artifact simply lacked them. v10 changes the *meaning* of bytecode that still decodes perfectly: a v9 artifact's prologue under a v10 runtime would re-bind parameters from an empty stack. The bump converts a silently miscalled function into a hard rejection, which is the whole point of the format's regenerate-on-mismatch rule.
 
+## Desktop web-bundle OTA: sidecar deleted, channel beside the updater, whole bundles
+- **WHEN:** 2026-09-14
+- **PROJECT:** brink
+- **SYSTEM:** `packages/brink-desktop` (`tauri.conf.json`, `src-tauri/src/lib.rs`, `src/cli.ts`, `scripts/ensure-cli-sidecar.mjs`), `crates/brink-web` — `docs/desktop-ota-spec.md`, `docs/desktop-shell-spec.md` D3/D4
+- **SCOPE:** architectural (a second update channel; removes the sidecar boundary)
+- **WHAT:** (1) The `brink-cli` **sidecar is removed** and its three intl operations move into the wasm layer. (2) A web-bundle OTA channel **sits beside** the Tauri updater rather than replacing it — the updater keeps `src-tauri`/shell changes, OTA carries `dist/` including both wasm modules. (3) OTA ships **whole bundles**, not deltas. The payload lives under `app_data_dir()`, never inside the signed `.app`; it is minisign-verified before extract, activated on next launch, and falls back to the embedded copy.
+- **WHY:** The web bundle is compiled into the binary, so a JavaScript-only change pays for codesign + notarization. Measured over commits since 2026-08-01 (no merges): 352 touch only code that flows into the bundle, 22 touch `src-tauri`/`brink-cli`. The wasm rides along for free — it is a webview-loaded asset, not a native executable, and ~90% of the payload.
+- **RULED — delete the sidecar, do not gate around it.** The recommendation on the table was a compatibility gate: `.inkb`'s container check is exact-match (`read.rs`: `if version != VERSION`), `VERSION` moved four times since August (v7→v8→v9→v10), and the sidecar is native and cannot be OTA'd — so an OTA'd wasm silently outruns the sidecar's reader. The maintainer's call was to remove the coupling instead of building machinery around it. D3 had put the sidecar there "so both cores ship from one workspace version"; OTA is precisely what breaks that invariant, and a gate would have preserved a boundary with no remaining reason to exist.
+- **THE PORT IS SMALL BECAUSE THE OPERATIONS WERE ALREADY PURE.** All three intl entry points in `brink-cli/src/main.rs` are `fs::read` → pure `brink_intl`/`xliff2` call → `fs::write`. No traversal, nothing subprocess-shaped. `brink-web` already depends on `brink-intl` and already calls it. Three `#[wasm_bindgen]` functions over bytes and strings, with the IO moving to the save dialog `export-xliff.ts` already uses.
+- **ONLY ONE FLOW WAS EVER WIRED.** `ALLOWED_CLI_SUBCOMMANDS` lists four subcommands; the single UI path invokes `export-xliff`. The other three were future-proofing that never shipped — which is why the deletion is far larger than the port: 603 lines of `ensure-cli-sidecar.mjs`, `assert-real-sidecar.mjs`, `build.rs` stub staging, `BRINK_SIDECAR_STUB`, the `run_cli` command, `cli.ts`, five test files, and most of the 111 sidecar mentions in the desktop spec. The `brink-cli` **crate stays** — it is a published binary; only its embedding as a sidecar goes.
+- **IT RETIRES AN iOS BLOCKER.** D4 names two couplings that would foreclose iOS and the sidecar is one ("iOS cannot ship subprocess binaries"). Only `FileProvider`'s arbitrary-directory access remains.
+- **`minShellVersion` IS MANDATORY, NOT ADVISORY.** With the sidecar gone the one surviving native coupling is the IPC surface (23 `#[tauri::command]`s). OTA'd JS calling a command the installed shell lacks is a hard break, and the manifest is the only place to catch it.
+- **THE PAYLOAD CANNOT LIVE IN THE `.app`.** macOS's signature covers its contents; writing assets into `Contents/Resources` invalidates it and Gatekeeper refuses to launch. This is what forces the app-data-dir layout plus the embedded copy as a known-good floor, rather than the simpler "overwrite the files in place".
+- **RULED — one keypair, shared with the updater.** The recommendation was a distinct key, on the grounds that the channels have different blast radii. The maintainer's reading: same infrastructure, same place, same purpose — signed update payloads to an installed app — so a second key buys separability nobody is asking for and adds a secret to rotate, store and get wrong. `TAURI_SIGNING_PRIVATE_KEY` and the `pubkey` already in `tauri.conf.json` cover both channels.
+
+## Stage 1 landed: the intl round trip runs in the wasm, the sidecar is gone
+- **WHEN:** 2026-09-14
+- **PROJECT:** brink
+- **SYSTEM:** `crates/brink-web` (`src/intl.rs`), `packages/wasm`, `packages/brink-desktop` (`src/export-xliff.ts`, `src/export.ts`, `src/main.tsx`, `src-tauri/{build.rs,src/lib.rs,tauri.conf.json,capabilities/default.json}`), `.github/workflows/{desktop-smoke,desktop-bundle-smoke}.yml` — `docs/desktop-ota-spec.md` Stage 1
+- **SCOPE:** architectural (removes the desktop's only native compiler boundary)
+- **WHAT:** `export_xliff` / `compile_locale` / `regenerate_xliff` are `#[wasm_bindgen]` functions over `.inkb` bytes and XLIFF text, wrapped as `exportXliff` / `compileLocale` / `regenerateXliff` in `@brink-lang/web`. File > Export XLIFF… now compiles through the same `compile.run` road Export Story (.inkb) uses, renders with the binding, and writes through `saveBytesDialog`. Everything the sidecar needed is deleted: `bundle.externalBin`, `beforeBundleCommand`, both staging scripts, `build.rs`'s stub staging, `run_cli` and its allowlist, `tauri-plugin-shell`, `src/cli.ts`, and five test files.
+- **WHY:** Executed the 2026-09-14 ruling above. The desktop no longer ships a second copy of the compiler core, so an OTA'd wasm has nothing left to outrun.
+- **`JsError::new` PANICS ON A NATIVE TARGET.** It is a wasm import stub, so a `JsError`-returning signature makes every failure path unreachable under `cargo test -p brink-web --lib` — the first version of `intl.rs` failed its own malformed-input test with a backtrace through `__wbindgen_error_new`. The shape that works: logic in plain `Result<_, String>` inner functions, and `#[wasm_bindgen]` entry points that do nothing but `.map_err(|e| JsError::new(&e))`. Tests point at the inner functions. This matters generally, not just here: `panic` has no test carve-out in this repo and a wasm panic is an unrecoverable trap for the embedder rather than a catchable exception, so an untestable error path is not a cosmetic gap.
+- **THE EXPORTED `.xlf` NOW CARRIES A REAL CHECKSUM.** The CLI accepts a non-`.inkb` input, compiles in memory and passes `0` because there is no header to read; the desktop took exactly that branch, so every `.xlf` it produced said `brink:checksum="0x00000000"`. Through wasm the input is always `.inkb`, so the real CRC lands. Verified before changing anything that nothing reads it back — `compile_locale` stamps the `.inkl`'s `base_checksum` from the base it is handed (`brink-intl/src/compile.rs:105`), and the runtime compares that stamp against the program (`brink-runtime/src/locale.rs:33`); the document attribute is provenance only. Pinned by `export_carries_the_artifacts_real_checksum_not_zero`, which first asserts the artifact's checksum is non-zero so the test cannot pass vacuously.
+- **`desktop-bundle-smoke.yml` IS KEPT, THOUGH ITS STATED PURPOSE IS GONE.** It was added (#2709) to make three sidecar assertions continuous. All three are retired with the sidecar — but it is the only lane in the repo that runs a real `tauri build --bundles deb` end to end, and without it a break in the bundling phase would first surface in `desktop-release.yml`, on a tag, with a release half-cut. Stage 2 cuts its OTA archive from that same bundle.
+- **THE DIFF SPANS SIX GATES, NONE OF WHICH IS THE ROOT `cargo test`.** `src-tauri` (its own excluded workspace: `cargo test` *and* `cargo fmt --check` in that directory), `packages/*/scripts/*.mjs` and the desktop TS (`pnpm --filter @brink/desktop test`), `crates/brink-web` (`cargo test -p brink-web --lib` plus the studio suite), the studio mock (`pnpm --filter @brink-lang/studio test`), the workflow-YAML guards (again `src-tauri`), and `scripts/check-scripts.test.mjs` (`pnpm test:scripts`, which pinned the deleted script by name in two places). Deleting a file is a change to every guard that named it.
+
+## The OTA origin change strands the studio's localStorage; take the one-time loss
+- **WHEN:** 2026-09-14
+- **PROJECT:** brink
+- **SYSTEM:** `packages/brink-desktop` (`src-tauri/src/bundles.rs`, `src-tauri/src/lib.rs`, `src/bundle-boot.ts`, `tauri.conf.json`) — `docs/desktop-ota-spec.md` Stage 2
+- **SCOPE:** architectural (the OTA serving path; a one-time data loss)
+- **WHAT:** The OTA bundle is served by a custom URI scheme (`brink://`) with the production window pointed at it. That changes the webview's origin from `tauri://localhost` to `brink://localhost` (`http://brink.localhost` on Windows), which strands everything the studio keeps in `localStorage`. **RULED: take the loss**, on the grounds that the install base is the maintainer's own.
+- **WHY:** Stage 2 needs the shell to decide what the webview loads, and a config `url` cannot be chosen at runtime. Tauri's built-in app protocol is reserved and cannot be overridden, so a custom scheme — and therefore a new origin — is the only way in.
+- **WHAT IS LOST, stated rather than waved at:** layout, theme, keymap overrides, editor settings, breakpoints, open tabs, the editor snapshot, problems/todos prefs, diagnostics/debug/player settings — **and the story save stores** (`brink-studio.saves.project.${scope}.v1`, `…saves.local.${scope}.v1`). That last one is author content, not a preference, which is why this was put to a ruling rather than absorbed.
+- **THE MIGRATION IS IMPOSSIBLE FROM JS, AND THAT IS THE WHOLE PROBLEM.** The new origin cannot read the old origin's storage — that is what an origin *is*. A shell-side migration would mean parsing WKWebView, WebKitGTK and WebView2 storage files per platform. So there is no "just migrate it" option; only the two below.
+- **DECLINED — migrate persistence to shell-side files first, then switch (two releases).** The better end state: the data would survive reinstalls, be inspectable and get backed up, and the origin question would close permanently. It is **necessarily two signed releases**, because the migration has to run on the OLD origin to see the old data at all — shipping it alongside the scheme switch would have it read empty storage. This is the right answer for a wider install base and stays on the table as the prerequisite it always was.
+- **DECLINED — keep the origin, make the embedded `index.html` a thin loader.** One release, no loss: the document stays on `tauri://localhost` and pulls JS/wasm from `brink://` with CORS, which has in-framework precedent (Tauri's own `asset://` is fetched cross-origin from the app origin — that is what `convertFileSrc` does). Declined because it adds a loader plus an asset manifest restating what vite emits, and **the loader can never itself be updated OTA** — a permanent hand-maintained coupling inside the channel whose entire purpose is shipping without a signed release, and the same drift shape that has already cost this repo the Book lane, the release lockfiles and the Demo gate.
+- **⚠ THE RULING IS SCOPED TO THE CURRENT INSTALL BASE** and does not survive the app reaching anyone else.
+- **THE REQUEST PATH IS THE SECURITY BOUNDARY, and a symlink is the case no string rule catches.** `resolve_asset` percent-decodes first (so `%2e%2e` is judged as what it decodes to), accepts only `Component::Normal`, rejects a decoded component still carrying a separator or NUL, then canonicalizes both sides and requires the result to stay inside the bundle directory. Only that last step sees a symlink planted in the archive. The test asserts the link really does resolve to the target before asserting the resolver refuses it, so a pass is a real escape rather than a missing file.
+- **`create` DEFAULTS TO TRUE, so the window wiring regresses by DELETION.** The window is built in `setup` (not by `tauri.conf.json`) because production must point it at the bundle protocol while dev keeps `devUrl`. Drop `"create": false` and Tauri opens the config's window on the built-in app URL *and* `setup` opens a second one — two windows, the visible one serving embedded assets forever, OTA silently never applying. Guarded by `the_main_window_is_created_in_setup_not_by_the_config`.
+- **THE BOOT CONFIRM MUST BE UNCONDITIONAL, and that is a design constraint, not a detail.** The sentinel is cleared only by a bundle that actually booted; gating the confirm behind a project being open (or behind `bootLanding` resolving) would roll back a working bundle every time the author launches to an empty landing screen. `confirmBundleBoot` takes no argument it could branch on, and a test pins that arity so a future "should we?" parameter has to break something to land.
+
+## OTA archives are `.tar.gz`, and the TLS feature set is copied from the updater plugin
+- **WHEN:** 2026-09-14
+- **PROJECT:** brink
+- **SYSTEM:** `packages/brink-desktop/src-tauri` (`Cargo.toml`, `src/bundle_update.rs`, `src/lib.rs`) — `docs/desktop-ota-spec.md` Stage 2
+- **SCOPE:** minor/local (two dependency choices), but both were measured rather than assumed
+- **WHAT:** The OTA archive is `.tar.gz`, not the `.tar.zst` the spec drafted. `reqwest` is declared with `rustls-no-provider` plus an explicit `rustls`/`ring`, not with its plain `rustls` feature.
+- **WHY `.tar.gz`:** `flate2` and `tar` were ALREADY in `src-tauri`'s graph — `tauri-plugin-updater` pulls both and ships its own macOS payload as `.app.tar.gz`. `zstd` was not, and adds a C toolchain dependency (`zstd-sys`) to a crate that hand-duplicates the repo lint policy and carries its own cargo-deny gate. The payoff would be roughly 15% off a ~10 MB download. One archive reader now serves both channels.
+- **WHY THE TLS FEATURE NAME MATTERS, and how it was caught:** reqwest 0.13's plain `rustls` feature defaults to the **aws-lc** provider. Enabling it added sixteen crates to this lockfile including `aws-lc-sys` (a CMake/C build) and `quinn` — found by diffing `Cargo.lock` after the change, not by reading docs. `rustls-no-provider` + `rustls`/`ring` is what the updater plugin itself enables, and returns the lockfile delta to **exactly zero new crates**. The lesson generalises past this case: "these crates are already in the graph" is a claim about a resolved lockfile, and a feature flag can falsify it — diff the lock, do not reason about it.
+- **THE CRYPTO PROVIDER IS PROCESS-GLOBAL AND THE PLUGIN INSTALLS IT LAZILY.** `tauri-plugin-updater` calls `rustls::crypto::ring::default_provider().install_default()` only when its OWN check runs. With `rustls-no-provider`, reqwest has no crypto until something installs one — so a bundle check that happened to run first (a launch check, say) would have failed every TLS handshake, and only in production. `install_crypto_provider` repeats the plugin's dance before any fetch. This is not the kind of bug a unit test finds; it was found by reading why the plugin had that code at all.
+- **VERIFY BEFORE EXTRACT IS THE ORDERING, AND IT IS TESTED AS ONE.** Hash, then signature, then unpack. Two tests assert that a bad hash and a bad signature each leave the destination **empty** — a hostile archive that reached `staging/` is one `rename` away from being served. `bundle_update_check` is a single IPC command for the same reason: splitting check/download/install across calls would put that ordering in the webview's hands, which is exactly where an OTA'd bundle's own JS runs.
+- **A SIGNATURE PROVES WHO, NEVER WHAT.** Archive entries are judged individually after the signature passes: `Component::Normal` only, and regular files and directories only — a symlink or hardlink entry is refused outright rather than sanitised, because `tar`'s own `unpack` follows links and a link is the one entry type whose target is not the path it declares. The escape tests write the hostile name straight into the raw tar header, because `tar::Builder` refuses to produce one through its safe API and a test built that way would have proved nothing.
+- **THE SIGNATURE FIXTURE IS REAL, AND ITS FIRST VERSION WAS WRONG IN AN INSTRUCTIVE WAY.** Nothing in this crate can sign, so a checked-in Ed25519 fixture in minisign's encoding is the only way to test the POSITIVE case — and without it, the rejection tests would pass just as happily against a `signature_is_valid` that returned `false` unconditionally. The first fixture zeroed minisign's *global* signature (over `signature ‖ trusted_comment`); `verify_ed25519` checks that too, so the positive test failed. That failure is the fixture doing its job.
+
+## OTA bundle versioning is independent; minShellVersion is a judgement with a staleness guard
+- **WHEN:** 2026-09-14
+- **PROJECT:** brink
+- **SYSTEM:** `packages/brink-desktop/ota-bundle.json`, `packages/brink-desktop/scripts/build-bundle-manifest.mjs`, `.github/workflows/bundle-release.yml`, `src-tauri/src/lib.rs` — `docs/desktop-ota-spec.md` Stage 2
+- **SCOPE:** architectural (the release side of the OTA channel)
+- **WHAT:** (1) An OTA bundle's `version` is an **independent sequence**, not the app's version. (2) `minShellVersion` is **hand-set**, guarded by a test that fails when the IPC surface changes without it being reconsidered.
+- **WHY INDEPENDENT VERSIONING.** `desktop-release.yml` fires on `desktop-v*` tags, and the manifest's `version` is both the bundle's directory name and what `decide()` compares against what is installed. Reusing the app version makes **two web-only updates between signed releases impossible** — the second carries the same version as the first and the shell reports "up to date". Bumping `tauri.conf.json` to work around that tells the full-app updater there is a new app, which there is not.
+- **DECLINED — `0.7.0+ota.3` (build metadata).** The obvious-looking encoding, and silently broken: **semver ignores build metadata when comparing**, so `0.7.0+ota.3 == 0.7.0+ota.2` and `decide()` would never install anything. It would have needed a custom comparison, which is a worse thing to own than a second number.
+- **DECLINED — `0.7.0-ota.3` (prerelease).** Orders correctly under the existing compare with no code change, but a bundle then always sorts *below* the app version. Harmless (the two are never compared to each other) and confusing to read forever.
+- **WHY minShellVersion CANNOT BE DERIVED.** A fingerprint of the `#[tauri::command]` list cannot distinguish an ADDED command — backward-compatible, since an older bundle never calls it — from a REMOVED or RENAMED one, which is a hard break with no recovery short of a rollback. An automatic bump would therefore refuse bundles that are perfectly safe, on exactly the older installs the channel exists to reach. The naive alternative is worse: "the app version that built this bundle" refuses every bundle on every install that is not already on the newest app release.
+- **SO THE GUARD CHECKS THAT THE JUDGEMENT WAS MADE, NOT WHAT IT WAS.** `commandsFingerprint` is a pin, not a setting: the test recomputes it and fails when it diverges, with a message that says *decide first, then update the pin*. The failure is a red check on the author's machine rather than a broken app on someone else's — the same shape as the `create: false` and `WASM_PACKAGES` guards. A second guard refuses a `minShellVersion` above the app version shipping it, which would be refused by every install including one built from that very commit.
+- **THE NEW LANE HAD TO BE ENROLLED ON PURPOSE, and that is the guard working.** `every_pnpm_install_lane_builds_wasm_first_in_the_same_job` (#2504) failed on `bundle-release.yml` — not on the ordering (the lane builds both wasm packages first) but on its exact-roster assertion, which exists so a new pnpm-install lane cannot opt out of the guard by simply existing. Adding it was one line and a comment; that is the cost the roster is meant to impose.
+- **THE PIPELINE REFUSES FOUR THINGS RATHER THAN PUBLISHING THEM**, each because the failure would otherwise be silent: a `dist/` with no `index.html` or fewer than two wasm modules (an empty bundle tars, hashes and signs perfectly happily); an empty signature (an unsigned bundle is refused by every install, and a refusal is indistinguishable from any other failed check — so `build-bundle-manifest.mjs` throws instead); a tag disagreeing with `ota-bundle.json`; and a published manifest whose `url` does not resolve, which reads to the author as "update check failed" forever.
+
+## One update from the author's side, whichever channel carries it
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** From the author's perspective there is either an update or there isn't. No toast, menu item or setting names "bundle" or "shell". One check consults both channels and produces one decision; one offer; one "Restart Now" that resolves to a process relaunch for a shell update and a pointer swap plus reload for a bundle-only one. Doing the right thing per channel is required; exposing which one fired is not.
+- **WHY:** Stages 1-3 shipped a channel that works but reads as a second mechanism, down to a manual check raising two near-identical "up to date" toasts. An author has no reason to know there are two update paths, and an inconsistency they can feel — one channel asking consent, the other not — is a bug rather than a detail.
+
+## Bundle updates ask before installing
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Split `bundle_update_check` (shipped as check-and-install in one call) into a check that reports what is available and an apply that acts on a yes.
+- **WHY:** The full-app channel was ruled "nothing installs without consent" on 2026-08-22. Under the one-update rule above, the two channels cannot differ on something the author can feel.
+
+## Activate a bundle by swapping a pointer and reloading, not by restarting
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** `BundleRuntime.dir` gains interior mutability and is read per request; `bundle_activate` swaps it; the frontend reloads. Requires `Cache-Control: no-store` on `index.html` — the only unhashed URL in a bundle — and moving the rollback handshake to per-activation. Still gated on `awaitSaveAllBeforeQuit`.
+- **WHY:** A bundle is web assets; restarting the OS process to pick them up is a cost with no cause. Three things made restart the only safe option in Stage 2 and all three are fixable: the directory was captured once in `setup` (so a reload was inert), the sentinel was per process launch (so a mid-session swap went unwitnessed), and a cached entry document would have pointed at the old hashed entry. Workers are not an obstacle — a reload destroys the document and every worker with it, so nothing survives to be stale.
+
+## The boot handshake confirms on editor-mounted, not on parsed
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Clear the rollback sentinel when the studio surface exists, with a generous timer, rather than when the bundle's JS reaches module scope. Confirming on "a project opened" was considered and declined.
+- **WHY:** Reaching module scope proves the bundle parsed and nothing more, so a bundle that parses but cannot mount the editor clears its own sentinel and is never rolled back — exactly the "locked on the welcome screen" case. Confirming on a project being opened would overshoot and roll back a good bundle every time an author launches to an empty landing screen.
+
+## The rollback escape hatch lives in the shell, not the bundle
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** A native menu item is the primary revert affordance. A version list inside the studio is a convenience on top of it, never the only door. The menu item ships in the first signed release.
+- **WHY:** A control rendered by the bundle is made of the thing that is broken. Only a shell-side affordance works when the webview renders nothing at all.
+
+## Update policy is one enum; pinned is a channel
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** `UpdatePolicy = Auto { channel } | Manual { channel } | Pinned { version }`, persisted in `AppSettings`. Not two orthogonal fields (`autoUpdate: bool` plus a channel), which was the first design.
+- **WHY:** Two fields can express "pinned and auto-updating", which must not exist; making it unrepresentable beats defending against it. Pinned-as-channel also means "a pin suspends updates" stops being a rule anyone implements — a pinned install has no manifest to consult, so a check finds nothing by construction rather than by suppression.
+
+## Pinned freezes the shell too, which designs out the bricking case
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** Under `Pinned` neither channel updates. A manual check reports the pin instead of offering an update; the version picker refuses an incompatible version at the point of choosing, from the index's own `minShellVersion`. Leaving `Pinned` restores everything.
+- **WHY:** `minShellVersion` protects a new bundle from an old shell, but nothing protects an old pinned bundle from a *new* shell that has since renamed or removed a command it calls. This was first going to be recorded as a known limitation; that was wrong — a product should not offer a button that bricks you, it should decline to do what you asked. A `maxShellVersion` was declined as over-built for the blast radius, and `commandsFingerprint` cannot serve: it changes on backward-compatible additions, so a strict runtime check would refuse pins that are perfectly safe. Freezing both channels removes the hazard instead of guarding it.
+
+## A channel switch is an install, and all three policies share one path
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** Resolve the target version for the current policy, install it if absent, activate it. `bundle-latest.json` is replaced by one append-only, entry-capped index carrying version, channel, url, sha256, signature and `minShellVersion` per entry. A picked version that is not on disk is downloaded on demand. Retention keeps the three most recent **plus the pinned version when it is not among them**.
+- **WHY:** `decide()` installs only strictly-newer versions, so beta to stable would otherwise be refused forever (a beta `0.2.0-beta.1` sorts above a stable `0.1.9`). Resolve-and-activate sidesteps ordering and is the same path that serves picking a past version. One index rather than a manifest per channel serves latest-for-channel, the picker list and pin resolution in a single fetch; trust is unchanged because each entry carries its own archive's signature, so a tampered index cannot introduce unsigned code. The retention exemption is load-bearing: without it a pin set three updates ago is pruned out from under the author.
+
+## The OS spellchecker command ships in the first signed release; Harper's role is decided later
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / brink-prose
+- **SCOPE:** moderate
+- **WHAT:** A per-platform OS spellcheck command lands in the shell, shaped to feed the existing `ProseChecker` interface. Whether Harper is replaced, kept for grammar only, or fetched on demand as a separately-signed payload is a later, frontend-only decision shipped over OTA.
+- **WHY:** Harper is 6.15 MB gzipped against the whole compiler's 2.61 MB — roughly 60% of a ~10 MB OTA update — and `prose-checker.ts`'s lazy `import()` buys nothing here, because OTA ships the tree as one archive. That is what makes an editor-quality question part of this stage. But measurement moved the conclusion: the weight is the 307 grammar rules (4.8 MB), not the dictionary (769 KB) or the spell module (132 KB), so "Harper for grammar, OS for spelling" is a quality decision with no size dividend. Since it is bundle-side and reversible it need not block the tag; only the IPC command must, and only because freezing the surface is free today and expensive after.
+
+## Stage 4 lands before the first signed desktop release
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** major
+- **WHAT:** Hold `desktop-v0.8.0` until the Rust half of Stage 4 is in. Rust, IPC and on-disk schemas must be right at tag time; purely frontend work ships afterwards over OTA, except anything that must survive a broken bundle.
+- **WHY:** No installed app has an OTA client, so the shell's IPC surface and on-disk schemas are unconstrained right now — nothing in the field consumes them. After 0.8.0 every change here becomes a `minShellVersion` bump that strands the very installs the release created. Doing it first is the cheaper order, not only the safer one.
+
+## Harper for grammar, the platform checker for spelling
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / brink-prose
+- **SCOPE:** moderate
+- **WHAT:** Resolves the deferred half of the entry above. The desktop composes both checkers: exactly one Harper category, `Spelling`, is suppressed and served from the OS instead. `Typo` stays. Where the platform answers `unavailable` (Linux, Windows) Harper keeps its spelling pass, so the composition is a runtime decision per check, not a build-time one. Harper is still shipped in full — this buys quality, not bytes, exactly as the measurement predicted.
+- **WHY:** The two checkers are good at different things. The platform checker knows *the author's own words*: every name they have taught the OS in any app is already in it, and words added here go back into it, where a bundled dictionary starts from zero on every machine. Harper knows English, not words — repetition, agreement, eggcorns — none of which is reachable from a word list. The `Spelling`/`Typo` line is Harper's own: `Spelling` is documented as "only ... used by linters doing spellcheck on individual words", while `Typo` is a real word in the wrong place (`can be seem` → `can be seen`), which a spell checker cannot see by construction. Suppressing `Typo` as well would silently delete findings nothing else produces.
+
+## Host settings sections and a prose-checker decorator, not replacements
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-studio
+- **SCOPE:** moderate
+- **WHAT:** `mountStudio` takes `settingsSections` (host sections appended to the Settings rail) and `proseChecker` (a function receiving the built-in checker and returning the one to use). Sections are appended, never merged over; an id colliding with a built-in is dropped with a warning. `SettingsRow`/`SettingsGroup`/`SettingsToggle`/`SettingsStepper`/`SETTINGS_ICONS`/`SETTINGS_SECTION_IDS` and the `SettingsSection`/`ProseChecker` types are exported for hosts.
+- **WHY:** Same rule `systemFonts` already follows: a host can own a preference the studio has no business knowing about, and an update channel and a bundle store mean nothing in a browser with no installer and nothing to pin. Appending rather than merging keeps every built-in reachable in every embedding. The collision drop is not fussiness — `SettingsModal` resolves a section by first id match, so a duplicate would put two rows in the rail with one of them permanently unreachable, which is a silently half-broken surface. `proseChecker` is a decorator rather than a replacement so a host adding one capability does not have to reimplement, or take ownership of the lifecycle of, the 6.5 MB wasm module behind the built-in.
+
+## The version picker offers what is published, and the shell judges every row
+- **WHEN:** 2026-09-15
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop
+- **SCOPE:** moderate
+- **WHAT:** `bundle_available` returns every entry in the index with per-row `active`, `downloaded` and `blocked`. `blocked` is produced by the same `bundle_update::decide` call `bundle_update_apply` makes. Picking a version writes the policy *before* asking the shell to install. `downloaded` is reported, never acted on — a switch always re-downloads and re-verifies.
+- **WHY:** `bundle_list` reports the store, so a picker built on it could only ever offer the three retained bundles; the author asked to be able to pick a version they have never downloaded and have it fetched then. One `decide` call rather than two predicates because a frontend copy of the `minShellVersion` gate is free to drift, and what drift produces is an author choosing a version, waiting for a download, and being told no. Policy-then-apply is forced by `bundle_update_apply` taking no version — the property that keeps it from installing anything the settings do not say — so applying first would install the previous pin. Re-downloading a bundle already on disk is the cost of keeping the publisher's key, rather than the store's contents, as the thing that decides what runs.
+
+## New clippy lints from a toolchain bump are evaluated, with adoption as the default
+- **WHEN:** 2026-10-01
+- **PROJECT:** brink
+- **SYSTEM:** cross-system
+- **SCOPE:** moderate
+- **WHAT:** When a Rust toolchain bump introduces new pedantic (or otherwise enabled) clippy lints, each one is evaluated on its merits at the time of the bump. The default lean is to fix the code to satisfy it rather than add it to the workspace "Pedantic allows" list, but that is not absolute — a lint judged genuinely noisy can still be allowed. First application: Rust 1.99's `assert_is_empty` (290 sites) was adopted rather than allowed. Clippy's own `--fix` rewrite (`assert_eq!(x, [] as [T; 0])`) is unusable here — it trips the workspace's `trivial_casts = "deny"` — so the house form is the message form, which the lint exempts: `assert!(x.is_empty(), "{x:?}")` (or `"{:?}", expr` for a non-identifier) and `assert!(!x.is_empty(), "expected non-empty")`.
+- **WHY:** The allow list is meant to hold only what is genuinely noisy or premature; reflexively allowlisting every new lint to unblock a bump would erode the pedantic baseline one release at a time. Evaluating each lint when it lands is the point where the cost/benefit is cheapest to judge — e.g. `assert_is_empty` buys failure output that prints the offending value.
+
 ## On the ink surface, brink must not be stricter at runtime than ink
 - **WHEN:** 2026-09-09
 - **PROJECT:** brink
@@ -5479,3 +5661,4 @@
 - **SCOPE:** moderate (the verification road for every gpui UI slice)
 - **WHAT:** UI behaviour in `crates/brink-gpui` is verified through an in-process headless harness (`app/src/harness.rs`): the real `Studio` on gpui's test platform via `HeadlessAppContext`, with real text shaping (cosmic-text) and the Metal headless renderer for screenshots. It drives the studio with actions, keystrokes and typed text, answers prompts through a harness prompt builder, keeps settings in a temp directory, and writes PNGs. Driving the running app from outside (computer use) is not the verification road. gpui's leak check is opt-in per harness until #3628 is fixed, with an ignored canary test waiting on it.
 - **WHY:** gpui stops rendering a window as soon as anything covers it, so background control sees stale frames, and the only alternative was a full-screen takeover of the maintainer's machine. The harness needs no screen, is deterministic, runs as `cargo test`, and becomes the regression gate this workspace has lacked. It wraps production code rather than threading test hooks through it; the one production seam is `settings::init_at`, so a test can never write the author's real settings.
+||||||| 13bcc1bc1

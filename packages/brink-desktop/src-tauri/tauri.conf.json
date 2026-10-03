@@ -1,18 +1,18 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Brink Studio",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "identifier": "dev.brink.studio",
   "build": {
     "beforeDevCommand": "pnpm dev",
     "devUrl": "http://localhost:5183",
     "beforeBuildCommand": "pnpm build",
-    "beforeBundleCommand": "node scripts/assert-real-sidecar.mjs",
     "frontendDist": "../dist"
   },
   "app": {
     "windows": [
       {
+        "create": false,
         "title": "Brink Studio",
         "width": 1440,
         "height": 920,
@@ -32,9 +32,6 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ],
-    "externalBin": [
-      "binaries/brink-cli"
     ],
     "fileAssociations": [
       {

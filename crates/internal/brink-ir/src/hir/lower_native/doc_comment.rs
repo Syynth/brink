@@ -111,7 +111,7 @@ mod tests {
     fn undocumented_flow_decl_has_no_doc() {
         let (doc, diags) = flow_doc("flow greet() {\n}\n");
         assert!(doc.is_none());
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
     }
 
     #[test]
@@ -157,7 +157,7 @@ mod tests {
         let mut diags = Vec::new();
         let doc = lower_doc_comment(FileId(0), body.doc(), DocPolicy::CALLABLE, &mut diags);
         let doc = doc.expect("inner doc lowers");
-        assert!(diags.is_empty());
+        assert!(diags.is_empty(), "{diags:?}");
         assert_eq!(doc.doc.as_deref(), Some("Describes this flow from within."));
     }
 }

@@ -6,15 +6,25 @@
 //! our own `pick_project_folder` dialog) plus project-relative paths; this
 //! module rejects anything absolute or `..`-carrying for every project-file
 //! path it resolves (`resolve`, used by `read_file`/`write_file`/
-//! `rename_file`/`delete_file`/`append_backups`/`run_cli`'s input path). The
-//! one deliberate exception is `run_cli`'s trailing `rest` args (e.g.
-//! `export-xliff`'s `--output <path>`), which may still be absolute — that
-//! path comes from a native save dialog, not from a project-relative key,
-//! so it is never run through `resolve` at all (see `prepare_cli_invocation`).
+//! `rename_file`/`delete_file`/`append_backups`). Absolute paths reach the
+//! shell from exactly one place — a native save dialog's chosen output —
+//! and those commands (`save_bytes_dialog`) receive the path from the
+//! dialog itself rather than from webview input, so they never go through
+//! `resolve` at all.
 
 use std::path::{Component, Path, PathBuf};
 
 use tauri_plugin_dialog::DialogExt;
+
+/// The OTA web-bundle store (`docs/desktop-ota-spec.md` Stage 2) — where an
+/// over-the-air bundle lives, how it is promoted, and how a bundle that
+/// cannot boot is rolled back.
+mod bundles;
+
+/// Fetching and verifying an OTA web bundle — the `minShellVersion` gate,
+/// the hash and signature checks, and the archive-entry rules.
+mod bundle_update;
+mod spellcheck;
 
 /// Shell I/O errors. Serialized as their display string across the IPC
 /// boundary (Tauri command errors must be `Serialize`).
@@ -28,12 +38,6 @@ enum ShellError {
         #[source]
         source: std::io::Error,
     },
-    #[error("no subcommand given")]
-    MissingSubcommand,
-    #[error("subcommand not in the sidecar allowlist: {0}")]
-    DisallowedCommand(String),
-    #[error("brink-cli sidecar error: {0}")]
-    Sidecar(String),
     #[error("cannot create project: {0}")]
     InvalidNewProject(String),
 }
@@ -541,152 +545,820 @@ async fn save_bytes_dialog(
     Ok(Some(path.display().to_string()))
 }
 
-// ── CLI sidecar (docs/desktop-shell-spec.md D3; #2392) ──────────────
+// ── OTA bundle serving (docs/desktop-ota-spec.md Stage 2) ──────────────
 //
-// `brink-cli` ships as a Tauri sidecar (`bundle.externalBin` in
-// `tauri.conf.json`, staged by `scripts/ensure-cli-sidecar.mjs`) so batch
-// xliff/locale operations run against the exact workspace version the
-// shell was built from, never whatever `brink` happens to be on the
-// user's PATH. `run_cli` is the ONLY way the webview can reach it, and it
-// is deliberately not a passthrough: the first argument must be one of a
-// fixed subcommand allowlist. A webview that can run arbitrary sidecar
-// args is a webview that can run arbitrary code with the app's
-// filesystem reach — this allowlist is the real security boundary
-// (`Shell::sidecar()` never consults the `shell:allow-execute` capability
-// scope at all, so that permission does not belong in `capabilities/
-// default.json` — 2026-08 review finding).
+// In production the webview is pointed at `brink://localhost` rather than
+// Tauri's built-in app URL, and this protocol answers every request. The
+// handler resolves against the ACTIVE bundle under `app_data_dir()` and
+// falls back to the embedded asset whenever that misses — no active bundle,
+// a file the bundle does not carry, or anything `bundles::resolve_asset`
+// refuses. The embedded copy is therefore a real floor: with no bundle
+// installed this protocol serves byte-for-byte what `frontendDist` already
+// served.
 //
-// The webview never hands this command a raw input path: `rel` is a
-// project-relative key resolved against `root` through the same
-// [`resolve`] guard every other filesystem command in this module uses,
-// exactly like `read_file`/`write_file` above. Only the *trailing* `rest`
-// args may still carry an absolute path — e.g. `export-xliff`'s
-// `--output <path>` — and that is fine, because that path comes from a
-// native save dialog (`src/main.tsx`'s `exportXliff`), never parsed out of
-// arbitrary webview input the way the old `args: Vec<String>` shape let
-// the *input* path be (2026-08 review finding: the old shape gave a
-// compromised webview an arbitrary-file-read/write primitive by passing
-// an absolute path as the positional input argument).
+// ⚠ The custom scheme changes the webview's ORIGIN (`brink://localhost`
+// instead of `tauri://localhost`; `http://brink.localhost` on Windows), so
+// the studio's `localStorage` — layout, settings, breakpoints, open tabs and
+// the story save stores — does not carry across from a pre-OTA install. That
+// one-time loss was RULED acceptable on 2026-09-14 rather than paid for with
+// a two-release migration, on the grounds that the install base is the
+// maintainer's own. It is not a free choice for a wider install base: see
+// `docs/decision-log.md` for the two alternatives that were priced.
 //
-// ⚠ House rule: the intl pipeline never consumes `.ink.json` — every
-// allowed subcommand here (mirroring `brink-cli`'s own surface) operates
-// on `.ink`/`.brink`/`.inkb`/`.inkt` inputs only.
-//
-// This list is a hand-maintained SUBSET of `brink-cli`'s real `clap`
-// subcommand surface (`crates/brink-cli/src/main.rs`'s `enum Commands`) —
-// `tests::cli_allowlist_subcommands_exist_in_brink_cli_surface` below is the
-// cross-workspace guard that fails if an entry here is renamed or removed
-// on the `brink-cli` side (docs/desktop-shell-spec.md "Workspace
-// placement", #2507).
-const ALLOWED_CLI_SUBCOMMANDS: &[&str] = &[
-    "export-xliff",
-    "compile-locale",
-    "regenerate-xliff",
-    "compile",
-];
+// Dev is untouched. `tauri::is_dev()` keeps the window on `devUrl`, so the
+// vite server, HMR and the dev origin all behave exactly as before.
 
-/// One line of sidecar output, forwarded to the webview as it streams
-/// rather than buffered until exit — `compile-locale` on a large story can
-/// run for seconds, and a future fuller intl UI wants live progress.
+/// The URI scheme the production webview is pointed at.
+const BUNDLE_SCHEME: &str = "brink";
+
+/// What this launch resolved to — computed once in `setup`, before the
+/// window exists, and read by the protocol handler on every request.
+struct BundleRuntime {
+    /// `<app_data>/bundles`.
+    root: PathBuf,
+    /// What is being served right now.
+    ///
+    /// Behind a lock because Stage 4 swaps it mid-session: a bundle is web
+    /// assets, so activating one is a pointer change plus a reload rather
+    /// than a process restart. Stage 2 captured this once in `setup`, which
+    /// made a reload inert — the webview re-requested assets and got the
+    /// same directory back.
+    ///
+    /// `RwLock` rather than `Mutex` because `serve_bundle_asset` reads it on
+    /// every single asset request and activation is rare.
+    active: std::sync::RwLock<ActiveBundle>,
+}
+
+/// The served bundle and what the frontend should be told about it.
+///
+/// One struct under one lock rather than two independently-locked fields:
+/// they must agree. A reader that saw a new `dir` with the previous launch's
+/// `info` would report a rollback that already happened, or miss one that
+/// just did.
+struct ActiveBundle {
+    /// The active bundle's directory; `None` serves the embedded floor.
+    dir: Option<PathBuf>,
+    /// Reported to the frontend by `bundle_ready`, for this launch *or* for
+    /// the most recent activation — whichever happened last.
+    info: BundleLaunchInfo,
+}
+
+/// Read the active bundle under the lock, recovering from a poisoned one.
+///
+/// A panic elsewhere must not take the asset server down with it: the worst
+/// a stale-but-consistent `ActiveBundle` can do is serve the previous
+/// bundle, while refusing to read would serve nothing at all.
+fn with_active<T>(runtime: &BundleRuntime, read: impl FnOnce(&ActiveBundle) -> T) -> T {
+    let guard = runtime
+        .active
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    read(&guard)
+}
+
+/// What the frontend learns when it confirms it booted.
 #[derive(Clone, serde::Serialize)]
-struct CliOutputLine {
-    /// `"stdout"` or `"stderr"`.
-    stream: &'static str,
-    line: String,
+#[serde(rename_all = "camelCase")]
+struct BundleLaunchInfo {
+    /// Active bundle version; `None` means the embedded floor.
+    version: Option<String>,
+    /// Set when the previous launch's bundle failed to boot and was removed.
+    /// The author is told — a silent rollback leaves them on older code with
+    /// no idea why.
+    rolled_back_from: Option<String>,
 }
 
-/// The allowlist check, pulled out of [`prepare_cli_invocation`] so it's
-/// testable in isolation: `subcommand` must be one of
-/// [`ALLOWED_CLI_SUBCOMMANDS`], checked before the sidecar is ever spawned.
-fn validate_cli_subcommand(subcommand: &str) -> Result<(), ShellError> {
-    if subcommand.is_empty() {
-        return Err(ShellError::MissingSubcommand);
-    }
-    if !ALLOWED_CLI_SUBCOMMANDS.contains(&subcommand) {
-        return Err(ShellError::DisallowedCommand(subcommand.to_owned()));
-    }
-    Ok(())
-}
-
-/// Build the full sidecar argv for one CLI invocation, pulled out of
-/// [`run_cli`] so it's testable without an `AppHandle`/sidecar (mirrors
-/// `resolve`/`project_ring_key` above): validate `subcommand` against the
-/// allowlist, resolve `rel` against `root` through the same [`resolve`]
-/// guard `read_file`/`write_file` use, and append `rest` verbatim after
-/// the resolved input path. `rest` may still contain an absolute path
-/// (e.g. `export-xliff`'s dialog-chosen `--output <path>`) — see this
-/// section's module doc for why that is the intended remaining shape.
-fn prepare_cli_invocation(
-    root: &str,
-    rel: &str,
-    subcommand: &str,
-    rest: &[String],
-) -> Result<Vec<String>, ShellError> {
-    validate_cli_subcommand(subcommand)?;
-    let input = resolve(root, rel)?;
-    let mut args = vec![subcommand.to_owned(), input.display().to_string()];
-    args.extend(rest.iter().cloned());
-    Ok(args)
-}
-
-/// Run an allowlisted `brink-cli` subcommand as a Tauri sidecar, streaming
-/// its stdout/stderr to the webview as `cli:output` events and resolving
-/// to the process exit code once it terminates. See
-/// [`prepare_cli_invocation`] for the argument-shaping/guard rules;
-/// anything it rejects is returned here before the sidecar is ever
-/// spawned.
-#[tauri::command]
-async fn run_cli(
-    app: tauri::AppHandle,
-    root: String,
-    rel: String,
-    subcommand: String,
-    rest: Vec<String>,
-) -> Result<i32, ShellError> {
-    use tauri::Emitter;
-    use tauri_plugin_shell::process::CommandEvent;
-    use tauri_plugin_shell::ShellExt;
-
-    let args = prepare_cli_invocation(&root, &rel, &subcommand, &rest)?;
-
-    let sidecar = app
-        .shell()
-        .sidecar("brink-cli")
-        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
-    let (mut rx, _child) = sidecar
-        .args(&args)
-        .spawn()
-        .map_err(|e| ShellError::Sidecar(e.to_string()))?;
-
-    let mut exit_code: i32 = -1;
-    while let Some(event) = rx.recv().await {
-        match event {
-            CommandEvent::Stdout(bytes) => {
-                let _ = app.emit(
-                    "cli:output",
-                    CliOutputLine {
-                        stream: "stdout",
-                        line: String::from_utf8_lossy(&bytes).into_owned(),
-                    },
-                );
-            }
-            CommandEvent::Stderr(bytes) => {
-                let _ = app.emit(
-                    "cli:output",
-                    CliOutputLine {
-                        stream: "stderr",
-                        line: String::from_utf8_lossy(&bytes).into_owned(),
-                    },
-                );
-            }
-            CommandEvent::Terminated(payload) => {
-                exit_code = payload.code.unwrap_or(-1);
-            }
-            CommandEvent::Error(message) => return Err(ShellError::Sidecar(message)),
-            _ => {}
+impl From<&bundles::LaunchOutcome> for BundleLaunchInfo {
+    fn from(outcome: &bundles::LaunchOutcome) -> Self {
+        match outcome {
+            bundles::LaunchOutcome::Embedded => Self {
+                version: None,
+                rolled_back_from: None,
+            },
+            bundles::LaunchOutcome::Bundle(version) => Self {
+                version: Some(version.clone()),
+                rolled_back_from: None,
+            },
+            bundles::LaunchOutcome::RolledBack {
+                failed,
+                now_serving,
+            } => Self {
+                version: now_serving.clone(),
+                rolled_back_from: Some(failed.clone()),
+            },
         }
     }
-    Ok(exit_code)
+}
+
+/// Serve one request from the active bundle, falling back to the embedded
+/// asset.
+///
+/// Never fails loudly: an unresolvable request is a 404, because a bundle
+/// that is missing one file must still boot from the floor rather than take
+/// the app down.
+fn serve_bundle_asset(app: &tauri::AppHandle, path: &str) -> tauri::http::Response<Vec<u8>> {
+    use tauri::Manager;
+
+    // Read per request, not once at startup: Stage 4 swaps this pointer
+    // while the app is running.
+    let from_bundle = app
+        .try_state::<BundleRuntime>()
+        .and_then(|runtime| with_active(&runtime, |active| active.dir.clone()))
+        .and_then(|dir| bundles::resolve_asset(&dir, path))
+        .and_then(|file| std::fs::read(&file).ok().map(|bytes| (file, bytes)));
+
+    let cache = cache_control_for(path);
+
+    if let Some((file, bytes)) = from_bundle {
+        // Tauri's own inference (content sniff, then URI), not a
+        // hand-maintained extension table that would drift from what vite
+        // actually emits.
+        let mime = tauri::utils::mime_type::MimeType::parse(&bytes, &file.to_string_lossy());
+        return tauri::http::Response::builder()
+            .header(tauri::http::header::CONTENT_TYPE, mime)
+            .header(tauri::http::header::CACHE_CONTROL, cache)
+            .body(bytes)
+            .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR));
+    }
+
+    match app.asset_resolver().get(path.to_owned()) {
+        Some(asset) => tauri::http::Response::builder()
+            .header(tauri::http::header::CONTENT_TYPE, asset.mime_type)
+            .header(tauri::http::header::CACHE_CONTROL, cache)
+            .body(asset.bytes)
+            .unwrap_or_else(|_| empty_response(tauri::http::StatusCode::INTERNAL_SERVER_ERROR)),
+        None => empty_response(tauri::http::StatusCode::NOT_FOUND),
+    }
+}
+
+/// What to tell the webview about caching this path.
+///
+/// **`index.html` is the only unhashed URL a bundle serves.** Vite
+/// content-hashes every script, chunk, worker and asset, so those cannot go
+/// stale — a new bundle simply asks for different filenames. The entry
+/// document keeps one fixed URL across every version, so a cached copy would
+/// keep pointing at the *previous* bundle's hashed entry and an activation
+/// would silently do nothing.
+///
+/// That is why this matters more in Stage 4 than it did in Stage 2: a
+/// process restart tends to re-request the entry document anyway, but an
+/// in-session reload is exactly the case a webview cache would satisfy
+/// locally.
+///
+/// Everything else is marked immutable rather than merely cacheable, which
+/// is safe for the same reason: the filename changes when the bytes do.
+fn cache_control_for(request_path: &str) -> &'static str {
+    let trimmed = request_path.trim_start_matches('/');
+    // Case-insensitively, because macOS and Windows filesystems are: an
+    // `INDEX.HTML` served as cacheable would be the same silent-no-op bug
+    // this function exists to prevent, on exactly the platforms that ship.
+    let is_html = std::path::Path::new(trimmed)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("html"));
+    let is_entry_document = trimmed.is_empty() || is_html;
+    if is_entry_document {
+        "no-store"
+    } else {
+        "public, max-age=31536000, immutable"
+    }
+}
+
+/// A body-less response — the one shape `tauri::http::Response::builder()` cannot
+/// fail to produce, so it is safe as the `unwrap_or_else` arm above.
+fn empty_response(status: tauri::http::StatusCode) -> tauri::http::Response<Vec<u8>> {
+    let mut response = tauri::http::Response::new(Vec::new());
+    *response.status_mut() = status;
+    response
+}
+
+/// Milliseconds since the Unix epoch, or 0 if the clock is before it.
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+}
+
+/// The frontend booted: clear the rollback sentinel and report what this
+/// launch is actually running.
+///
+/// Clearing the sentinel is the ONLY thing that distinguishes a bundle that
+/// works from one that wedges the webview, so this must be called from a
+/// point that proves the shell is up — not from module load.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_ready(app: tauri::AppHandle) -> BundleLaunchInfo {
+    use tauri::Manager;
+
+    let Some(runtime) = app.try_state::<BundleRuntime>() else {
+        return BundleLaunchInfo {
+            version: None,
+            rolled_back_from: None,
+        };
+    };
+    let _ = bundles::mark_ready(&runtime.root);
+    // The ACTIVE bundle, which after an in-session activation is not the one
+    // this process launched with. Reporting the launch outcome here would
+    // re-announce a rollback that already happened, every time a reloaded
+    // bundle confirmed itself.
+    with_active(&runtime, |active| active.info.clone())
+}
+
+/// What the store holds: the active bundle and the history behind it.
+///
+/// Most recent first, so a picker renders it in order without re-sorting.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleInventory {
+    /// The active bundle; `None` means the embedded floor.
+    active: Option<String>,
+    /// Previously-active bundles still on disk, most recent first.
+    history: Vec<String>,
+    /// This install's update policy, so a picker can show which version is
+    /// pinned without a second round trip.
+    policy: UpdatePolicy,
+}
+
+/// List what the store holds.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_list(app: tauri::AppHandle) -> Result<BundleInventory, String> {
+    use tauri::Manager;
+
+    let runtime = app
+        .try_state::<BundleRuntime>()
+        .ok_or("the bundle store is not initialised")?;
+    let state = bundles::read_state(&runtime.root);
+    let policy = settings_path(&app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default()
+        .update_policy;
+
+    Ok(BundleInventory {
+        active: state.version,
+        history: state.history,
+        policy,
+    })
+}
+
+/// Check text with the platform's own spell checker.
+///
+/// Shaped to feed the editor's existing `ProseChecker` seam
+/// (`packages/ink-editor/src/prose.ts`) rather than a new one, so choosing
+/// between this and Harper is a frontend decision that ships over OTA. See
+/// `spellcheck`'s module note for why `Unavailable` is an answer and not an
+/// error.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri deserialises command arguments from the IPC payload and hands them \
+              over owned — the by-value parameters are the command ABI, not an \
+              avoidable move."
+)]
+fn spellcheck_text(
+    text: String,
+    language: Option<String>,
+    dictionary: Vec<String>,
+) -> spellcheck::SpellcheckOutcome {
+    spellcheck::check(&text, language.as_deref(), &dictionary)
+}
+
+/// Step back to the previous web bundle, from the native menu.
+///
+/// ⚠ **The whole point is that this works when the frontend does not.** It
+/// touches no IPC command and asks the webview for nothing: it moves the
+/// store's pointer, swaps what the asset protocol serves, and NAVIGATES the
+/// window rather than telling the page to reload itself. A `location.reload()`
+/// needs live JS, and live JS is exactly what an author reaching for this
+/// does not have.
+///
+/// Consequently it also does NOT wait for a save. Every other path that
+/// discards the document goes through `awaitSaveAllBeforeQuit` first, and
+/// that is right when the editor is working — but this is the escape hatch,
+/// and an unsaved buffer in a frontend that cannot render is not reachable
+/// anyway. Losing it is the price of getting the author back to a working
+/// editor; hanging on a save that can never complete is not a better trade.
+///
+/// Silent on failure by design: there is nowhere reliable to report to, and
+/// the next launch recovers regardless — the sentinel `bundles::revert`
+/// stamps means a bundle that still will not boot is rolled back anyway.
+fn revert_bundle(app: &tauri::AppHandle) {
+    use tauri::Manager as _;
+
+    let Some(runtime) = app.try_state::<BundleRuntime>() else {
+        return;
+    };
+    let Ok(restored) = bundles::revert(&runtime.root) else {
+        return;
+    };
+
+    let dir = restored
+        .as_deref()
+        .and_then(|version| bundles::version_dir(&runtime.root, version));
+    {
+        let mut guard = runtime
+            .active
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        *guard = ActiveBundle {
+            dir,
+            info: BundleLaunchInfo {
+                version: restored,
+                rolled_back_from: None,
+            },
+        };
+    }
+
+    // Dev serves from the vite server, not the store, so there is nothing to
+    // step back to and re-navigating would only drop HMR state.
+    if tauri::is_dev() {
+        return;
+    }
+    if let Some(window) = app.get_webview_window("main") {
+        if let Ok(url) = format!("{BUNDLE_SCHEME}://localhost/").parse() {
+            let _ = window.navigate(url);
+        }
+    }
+}
+
+/// Serve the store's current pointer, without restarting the process.
+///
+/// The caller reloads the webview afterwards; that reload is what actually
+/// swaps the running code. Split that way because the shell cannot know when
+/// the frontend is ready to lose its in-memory state — saving first is the
+/// frontend's business (`awaitSaveAllBeforeQuit`), exactly as it is before a
+/// full relaunch.
+///
+/// ⚠ **Stamps the rollback sentinel before returning, and that ordering is
+/// the safety property.** Stage 2's sentinel was per *process launch*:
+/// stamped in `setup`, cleared when the frontend confirmed. A mid-session
+/// swap under that scheme is unwitnessed — a bundle that wedges the webview
+/// after activation would never be rolled back, which is the one thing the
+/// sentinel exists to prevent. Stamping here makes the handshake
+/// per-activation instead.
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `AppHandle` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn bundle_activate(app: tauri::AppHandle) -> Result<BundleLaunchInfo, String> {
+    use tauri::Manager;
+
+    let runtime = app
+        .try_state::<BundleRuntime>()
+        .ok_or("the bundle store is not initialised")?;
+
+    // Takes no version: it activates whatever the STORE points at, so a
+    // caller cannot name a directory to serve. Choosing a different version
+    // is a separate operation that moves the pointer first.
+    let version = bundles::begin_activation(&runtime.root)
+        .map_err(|e| format!("could not stamp the rollback sentinel: {e}"))?;
+
+    let dir = version
+        .as_deref()
+        .and_then(|version| bundles::version_dir(&runtime.root, version));
+    let info = BundleLaunchInfo {
+        version,
+        // An activation the author asked for is not a rollback. A rollback
+        // is something the shell did TO them, and is reported by the launch
+        // that discovers it.
+        rolled_back_from: None,
+    };
+
+    let mut guard = runtime
+        .active
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    *guard = ActiveBundle {
+        dir,
+        info: info.clone(),
+    };
+    drop(guard);
+
+    Ok(info)
+}
+
+// ── OTA bundle updates (docs/desktop-ota-spec.md Stage 2; split in Stage 4) ──
+//
+// Two commands, and WHERE the seam falls is the whole design.
+//
+// `bundle_update_check` fetches the manifest and judges it. `bundle_update_apply`
+// acts on a yes. Stage 4 ruled that a bundle asks before installing, matching
+// the full-app channel's "nothing installs without consent" (2026-08-22) — two
+// channels cannot differ on something the author can feel.
+//
+// What is NOT split is the safety-ordered part. Download, verify, unpack into
+// `staging/` and promote all stay inside ONE command, because the ordering
+// between them is a safety property (verify before extract, promote only a
+// verified staging) and splitting *that* across IPC calls would put the
+// ordering in the webview's hands — precisely where an OTA'd bundle's own JS
+// lives. That is Stage 2's reasoning and it is untouched; only the consent
+// step moved out from under it.
+//
+// ⚠ `bundle_update_apply` TAKES NO ARGUMENTS, and that is not an oversight —
+// it is what keeps the split safe. It re-fetches and re-judges the manifest
+// itself rather than accepting a url, hash, signature or version from the
+// caller, so a frontend that has been compromised (or is simply an older
+// bundle than the one being offered) can ask for "the update" and never for a
+// *particular* payload. The version `check` hands back is display text for a
+// toast, not an instruction this command obeys. Re-judging also closes the
+// window between the two calls: a manifest that moved, or a bundle installed
+// by another window in the meantime, is caught rather than acted on stale.
+
+/// Where the bundle index is served, beside the full-app `latest.json`.
+///
+/// ONE url for every channel and every version. The channel is a field on
+/// each entry rather than a separate file, so switching channels needs no
+/// second endpoint and a pinned version resolves from the same fetch that
+/// answers "is there anything newer".
+const BUNDLE_INDEX_URL: &str =
+    "https://github.com/Syynth/brink/releases/download/desktop-latest/bundle-index.json";
+
+/// The outcome of an update attempt, as the frontend renders it.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum BundleUpdateOutcome {
+    /// Nothing newer on offer.
+    UpToDate,
+    /// Installed; takes effect on the next launch (never a hot swap — the
+    /// running webview already holds the old JS and instantiated wasm).
+    Installed { version: String },
+    /// Refused for a reason the author can act on, `minShellVersion` above
+    /// all.
+    Refused { reason: String },
+    /// Something went wrong. Distinct from `Refused`: a refusal is the
+    /// system working.
+    Failed { reason: String },
+}
+
+/// What a check found.
+///
+/// Deliberately a separate type from [`BundleUpdateOutcome`] rather than a
+/// shared enum with an extra variant: a check that finds something has *not*
+/// installed it, and `Available` is an offer awaiting an answer. Sharing one
+/// type would make it possible to write a frontend that reports "installed"
+/// from a check, which is exactly the confusion the consent split exists to
+/// remove.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase", tag = "kind")]
+enum BundleUpdateCheck {
+    /// Nothing newer on offer.
+    UpToDate,
+    /// There is an update, and nothing has been downloaded yet.
+    Available { version: String },
+    /// Refused for a reason the author can act on, `minShellVersion` above
+    /// all.
+    Refused { reason: String },
+    /// Something went wrong. Distinct from `Refused`: a refusal is the
+    /// system working.
+    Failed { reason: String },
+}
+
+/// Install rustls' process-wide crypto provider if nothing has yet.
+///
+/// ⚠ Copied from `tauri-plugin-updater`'s own lazy install, and necessary
+/// for the same reason it exists there: with `rustls-no-provider`, reqwest
+/// has no crypto until something installs one, and the provider is
+/// PROCESS-global. The plugin only installs it when its own check runs, so a
+/// bundle check that happens first — a launch check, say — would otherwise
+/// fail on every TLS handshake. `install_default` returns `Err` when one is
+/// already set, which is the ordinary case and not a problem.
+fn install_crypto_provider() {
+    if rustls::crypto::CryptoProvider::get_default().is_none() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+}
+
+/// Fetch `url` with a bounded read.
+///
+/// `reqwest` is already in this crate's graph via `tauri-plugin-updater`.
+/// The cap is not a nicety: without it a hostile or broken server can stream
+/// forever into memory, and this runs unattended on a launch check.
+async fn fetch_bounded(url: &str, max_bytes: usize) -> Result<Vec<u8>, String> {
+    install_crypto_provider();
+    let response = reqwest::get(url)
+        .await
+        .map_err(|e| format!("fetch failed: {e}"))?;
+    if !response.status().is_success() {
+        return Err(format!("server returned {}", response.status()));
+    }
+    if let Some(len) = response.content_length() {
+        if usize::try_from(len).is_ok_and(|len| len > max_bytes) {
+            return Err(format!("payload is larger than the {max_bytes}-byte cap"));
+        }
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("download failed: {e}"))?;
+    if bytes.len() > max_bytes {
+        return Err(format!("payload is larger than the {max_bytes}-byte cap"));
+    }
+    Ok(bytes.to_vec())
+}
+
+/// 4 MiB — a manifest is a few hundred bytes; anything near this is wrong.
+const MAX_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
+
+/// 128 MiB. The real bundle is ~10 MiB compressed (the spec's measured
+/// figure), so this is an order of magnitude of headroom rather than a tight
+/// fit — it exists to bound a hostile stream, not to police size.
+const MAX_ARCHIVE_BYTES: usize = 128 * 1024 * 1024;
+
+/// Fetch and parse the published index.
+///
+/// One function rather than three inlined copies, because every caller must
+/// apply the same fetch cap and the same per-entry leniency — a second
+/// hand-rolled fetch is how one of them ends up without the cap.
+async fn fetch_index() -> Result<bundle_update::BundleIndex, String> {
+    let bytes = fetch_bounded(BUNDLE_INDEX_URL, MAX_MANIFEST_BYTES).await?;
+    let text = String::from_utf8(bytes).map_err(|_| "the bundle index is not UTF-8".to_owned())?;
+    bundle_update::parse_index(&text).map_err(|e| e.to_string())
+}
+
+/// The manifest, fetched and judged against this shell and what is installed.
+///
+/// The single place the decision is made, so `check` and `apply` cannot drift
+/// into disagreeing about what is on offer — which would show up as an offer
+/// the author accepts and the shell then refuses.
+enum Resolution {
+    UpToDate,
+    Refused(String),
+    Install(bundle_update::BundleManifest),
+}
+
+/// Fetch the manifest and judge it. Shared by both commands; see the ⚠ note
+/// at the top of this section for why `apply` runs this again rather than
+/// trusting what `check` returned.
+async fn resolve_update(app: &tauri::AppHandle) -> Result<Resolution, String> {
+    use tauri::Manager as _;
+
+    // Scoped so the `State` guard is not held across an await point.
+    let root = {
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
+    let installed = bundles::read_state(&root).version;
+
+    let policy = settings_path(app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default()
+        .update_policy;
+
+    let index = fetch_index().await?;
+
+    // The policy decides both WHAT to look for and whether ordering applies.
+    let (target, intent) = match &policy {
+        UpdatePolicy::Auto { channel } | UpdatePolicy::Manual { channel } => (
+            bundle_update::Target::Latest(channel.into()),
+            bundle_update::Intent::Update,
+        ),
+        UpdatePolicy::Pinned { version } => (
+            bundle_update::Target::Version(version.as_str()),
+            bundle_update::Intent::Switch,
+        ),
+    };
+
+    let Some(manifest) = bundle_update::resolve(&index, target) else {
+        return Ok(match &policy {
+            // A pin naming something the index no longer lists is a thing
+            // the author can act on (unpin), not a broken channel.
+            UpdatePolicy::Pinned { version } => Resolution::Refused(format!(
+                "pinned to {version}, which is no longer published. Switch to Stable or \
+                 Beta to receive updates."
+            )),
+            // A channel with no entries at all is simply nothing to install.
+            UpdatePolicy::Auto { .. } | UpdatePolicy::Manual { .. } => Resolution::UpToDate,
+        });
+    };
+
+    let shell_version = app.package_info().version.to_string();
+    Ok(
+        match bundle_update::decide(manifest, &shell_version, installed.as_deref(), intent) {
+            bundle_update::UpdateDecision::UpToDate => Resolution::UpToDate,
+            bundle_update::UpdateDecision::Refuse(reason) => Resolution::Refused(reason),
+            bundle_update::UpdateDecision::Install => Resolution::Install(manifest.clone()),
+        },
+    )
+}
+
+impl From<&UpdateChannel> for bundle_update::Channel {
+    fn from(channel: &UpdateChannel) -> Self {
+        match channel {
+            UpdateChannel::Stable => Self::Stable,
+            UpdateChannel::Beta => Self::Beta,
+        }
+    }
+}
+
+/// Check for a web-bundle update. Downloads and installs NOTHING.
+///
+/// Returns rather than throws for every *expected* outcome, so the frontend
+/// renders one shape. See [`BundleUpdateCheck`].
+#[tauri::command]
+async fn bundle_update_check(app: tauri::AppHandle) -> BundleUpdateCheck {
+    match resolve_update(&app).await {
+        Ok(Resolution::UpToDate) => BundleUpdateCheck::UpToDate,
+        Ok(Resolution::Refused(reason)) => BundleUpdateCheck::Refused { reason },
+        Ok(Resolution::Install(manifest)) => BundleUpdateCheck::Available {
+            version: manifest.version,
+        },
+        Err(reason) => BundleUpdateCheck::Failed { reason },
+    }
+}
+
+/// One row of the version picker.
+///
+/// Everything an author needs to choose between versions, and nothing that
+/// would let them choose a broken one silently: `blocked` carries the same
+/// refusal `bundle_update_apply` would give, computed by the same
+/// [`bundle_update::decide`] call, so a row the picker offers is a row the
+/// shell will actually install. A second predicate here would be free to
+/// drift from the gate that matters.
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BundleOffer {
+    version: String,
+    channel: bundle_update::Channel,
+    min_shell_version: String,
+    pub_date: Option<String>,
+    /// Currently serving. At most one row carries this.
+    active: bool,
+    /// Already unpacked in the store, so switching to it is cheap.
+    ///
+    /// Reported rather than acted on: switching still runs the full
+    /// download-verify-unpack path, which re-checks the signature. Trusting
+    /// bytes already on disk would make the store, rather than the
+    /// publisher's key, the thing that decides what runs.
+    downloaded: bool,
+    /// Why this shell cannot run it, or `None` when it can.
+    blocked: Option<String>,
+}
+
+/// Every published bundle this shell knows about, newest first.
+///
+/// Fetches the index; downloads nothing. Ordering is by semver descending
+/// with unparseable versions last in index order — a picker must not depend
+/// on how a publisher happened to append.
+#[tauri::command]
+async fn bundle_available(app: tauri::AppHandle) -> Result<Vec<BundleOffer>, String> {
+    use tauri::Manager as _;
+
+    // Scoped so the `State` guard is not held across the await below.
+    let root = {
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
+    let state = bundles::read_state(&root);
+    let installed = state.version.clone();
+    let on_disk: std::collections::BTreeSet<String> =
+        state.version.into_iter().chain(state.history).collect();
+    let shell_version = app.package_info().version.to_string();
+
+    // Everything from here down is pure, and tested. What is left in the
+    // command is the part that needs a live `AppHandle` and the network —
+    // the R8 discipline: make the untestable part as small as it goes.
+    Ok(offers_from_index(
+        &fetch_index().await?,
+        &shell_version,
+        installed.as_deref(),
+        &on_disk,
+    ))
+}
+
+/// Build the picker rows. Pure, so the ordering and gate rules are testable
+/// without an app handle or a network.
+fn offers_from_index(
+    index: &bundle_update::BundleIndex,
+    shell_version: &str,
+    installed: Option<&str>,
+    on_disk: &std::collections::BTreeSet<String>,
+) -> Vec<BundleOffer> {
+    let mut offers: Vec<(Option<semver::Version>, BundleOffer)> = index
+        .entries
+        .iter()
+        .map(|entry| {
+            let blocked = match bundle_update::decide(
+                entry,
+                shell_version,
+                installed,
+                bundle_update::Intent::Switch,
+            ) {
+                bundle_update::UpdateDecision::Refuse(reason) => Some(reason),
+                bundle_update::UpdateDecision::Install
+                | bundle_update::UpdateDecision::UpToDate => None,
+            };
+            (
+                semver::Version::parse(&entry.version).ok(),
+                BundleOffer {
+                    version: entry.version.clone(),
+                    channel: entry.channel,
+                    min_shell_version: entry.min_shell_version.clone(),
+                    pub_date: entry.pub_date.clone(),
+                    active: installed == Some(entry.version.as_str()),
+                    downloaded: on_disk.contains(&entry.version),
+                    blocked,
+                },
+            )
+        })
+        .collect();
+
+    // `sort_by` is stable, so entries that do not parse keep their index
+    // order among themselves rather than landing wherever a comparison
+    // happened to put them.
+    offers.sort_by(|(a, _), (b, _)| match (a, b) {
+        (Some(a), Some(b)) => b.cmp(a),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => std::cmp::Ordering::Equal,
+    });
+
+    offers.into_iter().map(|(_, offer)| offer).collect()
+}
+
+/// Install the available web-bundle update, if there still is one.
+///
+/// Takes no arguments by design — see the ⚠ note at the top of this section.
+#[tauri::command]
+async fn bundle_update_apply(app: tauri::AppHandle) -> BundleUpdateOutcome {
+    match bundle_update_run(&app).await {
+        Ok(outcome) => outcome,
+        Err(reason) => BundleUpdateOutcome::Failed { reason },
+    }
+}
+
+/// The body of [`bundle_update_apply`], with `?` available.
+async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome, String> {
+    // Judged again rather than taken on trust, so the answer reflects the
+    // moment of installing rather than the moment of offering.
+    let manifest = match resolve_update(app).await? {
+        Resolution::UpToDate => return Ok(BundleUpdateOutcome::UpToDate),
+        Resolution::Refused(reason) => return Ok(BundleUpdateOutcome::Refused { reason }),
+        Resolution::Install(manifest) => manifest,
+    };
+
+    // Scoped for the same reason as in `resolve_update`.
+    let root = {
+        use tauri::Manager as _;
+        let runtime = app
+            .try_state::<BundleRuntime>()
+            .ok_or("the bundle store is not initialised")?;
+        runtime.root.clone()
+    };
+
+    // The public key the full-app updater already uses — one keypair across
+    // both channels (RULED 2026-09-14), read from the same config field
+    // rather than duplicated.
+    let pubkey = app
+        .config()
+        .plugins
+        .0
+        .get("updater")
+        .and_then(|updater| updater.get("pubkey"))
+        .and_then(serde_json::Value::as_str)
+        .ok_or("tauri.conf.json declares no updater pubkey to verify against")?
+        .to_owned();
+
+    let archive = fetch_bounded(&manifest.url, MAX_ARCHIVE_BYTES).await?;
+
+    // A leftover staging directory from an interrupted attempt would be
+    // unpacked INTO, mixing two bundles. Clear it first.
+    let staging = bundles::staging_dir(&root);
+    let _ = std::fs::remove_dir_all(&staging);
+
+    bundle_update::verify_and_unpack(&archive, &manifest, &pubkey, &staging)
+        .map_err(|e| e.to_string())?;
+    // The pin is read here, not inside the store: `bundles` stays a pure
+    // function of a root path, and the pin lives in the app's settings.
+    let pinned = settings_path(app)
+        .ok()
+        .map(|path| load_settings(&path).unwrap_or_default())
+        .unwrap_or_default();
+    bundles::promote(
+        &root,
+        &manifest.version,
+        now_ms(),
+        pinned.update_policy.pinned_version(),
+    )
+    .map_err(|e| e.to_string())?;
+
+    Ok(BundleUpdateOutcome::Installed {
+        version: manifest.version,
+    })
 }
 
 // ── File associations (docs/desktop-shell-spec.md D3; #2393) ───────────
@@ -1218,12 +1890,77 @@ async fn create_project(dir: String, entry: String) -> Result<String, ShellError
 
 /// User-facing app settings, persisted as `settings.json` in app-data
 /// (same precedent as `recents.json`). One knob today; additive later.
-#[derive(Debug, Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", default)]
 struct AppSettings {
     /// "Reopen last project on launch" (#3016). Default OFF — reopening
     /// is an opt-in, per the landing checkbox.
     reopen_last_project: bool,
+    /// How this install takes updates (`docs/desktop-ota-spec.md` Stage 4).
+    update_policy: UpdatePolicy,
+}
+
+/// Which stream of bundles an install follows.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+enum UpdateChannel {
+    #[default]
+    Stable,
+    Beta,
+}
+
+/// How this install takes updates.
+///
+/// **One enum rather than an `autoUpdate` flag beside a channel** (RULED
+/// 2026-09-15). Two fields can express "pinned *and* auto-updating", which
+/// must not exist, and making a state unrepresentable beats defending
+/// against it everywhere it could be read.
+///
+/// `Pinned` being a *channel* rather than a flag on one has a second
+/// consequence worth stating: "a pin suspends updates" stops being a rule
+/// anybody implements. A pinned install has no manifest to consult, so a
+/// check finds nothing by construction rather than by suppression.
+///
+/// ⚠ **`Pinned` stops the full-app updater too, and that is what makes
+/// pinning safe.** `minShellVersion` protects a new bundle from an old
+/// shell; nothing protects an old pinned bundle from a *new* shell that has
+/// since renamed or removed a command it calls. Rather than invent a
+/// `maxShellVersion` — or misuse `commandsFingerprint`, which moves on
+/// backward-compatible additions and would refuse pins that are perfectly
+/// fine — `Pinned` freezes both channels. The shell cannot move out from
+/// under a pinned bundle because the shell does not move.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase", tag = "mode")]
+enum UpdatePolicy {
+    /// Check and offer without being asked.
+    Auto { channel: UpdateChannel },
+    /// Check only when the author asks.
+    Manual { channel: UpdateChannel },
+    /// Serve exactly this version; nothing moves, in either channel.
+    Pinned { version: String },
+}
+
+impl Default for UpdatePolicy {
+    fn default() -> Self {
+        Self::Auto {
+            channel: UpdateChannel::Stable,
+        }
+    }
+}
+
+impl UpdatePolicy {
+    /// The version this install has pinned, if any.
+    ///
+    /// The store's retention policy needs this so a pin is never pruned —
+    /// see `bundles::prune_history`. Read through a method rather than
+    /// matched at each call site so a future variant cannot silently start
+    /// reading as "not pinned".
+    fn pinned_version(&self) -> Option<&str> {
+        match self {
+            Self::Pinned { version } => Some(version.as_str()),
+            Self::Auto { .. } | Self::Manual { .. } => None,
+        }
+    }
 }
 
 /// The app-data path for `settings.json`.
@@ -1407,6 +2144,13 @@ enum MenuRoute {
     /// frontend's — routing it through the webview would add a hop and a
     /// plugin permission the frontend does not otherwise need.
     OpenUrl(&'static str),
+    /// Step back to the previous web bundle. Handled entirely in the shell.
+    ///
+    /// ⚠ **Deliberately not `Emit`.** This is the escape hatch for a bundle
+    /// that renders nothing, and a control that asks the webview to act is
+    /// made of the thing that is broken. Routing it through the frontend
+    /// would make it work in exactly the cases where it is not needed.
+    RevertBundle,
     /// Not ours: a `PredefinedMenuItem` the platform already handled.
     Ignore,
 }
@@ -1440,6 +2184,7 @@ fn route_menu_event(id: &str) -> MenuRoute {
         "view-font-decrease" => MenuRoute::emit("menu:view-font-decrease"),
         "view-font-reset" => MenuRoute::emit("menu:view-font-reset"),
         "quit" => MenuRoute::emit("menu:quit"),
+        "revert-bundle" => MenuRoute::RevertBundle,
         _ => MenuRoute::Ignore,
     }
 }
@@ -1570,9 +2315,10 @@ fn build_menu(
         true,
         None::<&str>,
     )?;
-    // Proves the sidecar path end-to-end (D3, #2392); the fuller intl UI
-    // (locale picker, progress, batch ops beyond xliff export) is future
-    // work — this item exists to exercise one real path, not to be it.
+    // D3, #2392. The compile-then-render road runs entirely in the wasm
+    // (`docs/desktop-ota-spec.md` Stage 1); the fuller intl UI (locale
+    // picker, progress, batch ops beyond xliff export) is future work —
+    // this item exists to exercise one real path, not to be it.
     let export_xliff =
         MenuItem::with_id(handle, "export-xliff", "Export XLIFF…", true, None::<&str>)?;
     let recent_items: Vec<MenuItem<tauri::Wry>> = if recents.is_empty() {
@@ -1661,7 +2407,23 @@ fn build_menu(
         true,
         None::<&str>,
     )?;
-    let help_menu = Submenu::with_items(handle, "Help", true, &[&help_docs, &help_issues])?;
+    // The escape hatch lives in a native menu because a control rendered by
+    // the bundle cannot rescue you from the bundle (docs/desktop-ota-spec.md
+    // Stage 4). In Help rather than under updates: this is what an author
+    // reaches for when the app is broken, not when it is working.
+    let revert_bundle = MenuItem::with_id(
+        handle,
+        "revert-bundle",
+        "Revert to Previous Editor Version",
+        true,
+        None::<&str>,
+    )?;
+    let help_menu = Submenu::with_items(
+        handle,
+        "Help",
+        true,
+        &[&help_docs, &help_issues, &revert_bundle],
+    )?;
     Menu::with_items(
         handle,
         &[
@@ -1688,12 +2450,13 @@ fn build_menu(
 /// mobile build; see the ⚠ marker above `opened_url_to_path`, #2428.)
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 #[expect(
-    clippy::exit,
-    reason = "the flagged `process::exit(101)` is inside `tauri::generate_context!`'s \
-              own expansion — tauri-codegen's `inner()` fallback for a panicking \
-              context-creation thread — not code this crate writes. Unlike \
-              `expect_used`, `clippy::exit` does not suppress itself inside an \
-              external macro's expansion, so the site has to be silenced here."
+    clippy::too_many_lines,
+    reason = "the builder chain is one declaration — plugins, the protocol, the \
+              managed state, setup and the command registry read top to bottom \
+              as the app's wiring. Splitting it would scatter that across \
+              helpers whose only caller is this function, which is the shape \
+              `crates/bevy-brink/src/flow.rs` already declined for the same \
+              reason."
 )]
 pub fn run() -> tauri::Result<()> {
     use tauri::Emitter;
@@ -1705,10 +2468,19 @@ pub fn run() -> tauri::Result<()> {
         // awaits the canonical save (quit.ts) before calling it.
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_shell::init())
         // Help's two outbound links. Rust-side `open_url` only — the frontend
         // never calls the plugin, so its JS permissions stay unclaimed.
         .plugin(tauri_plugin_opener::init())
+        // The OTA bundle protocol (docs/desktop-ota-spec.md Stage 2). Reads
+        // hit the disk, so they are answered off the main thread — that is
+        // the whole reason this is the ASYNCHRONOUS variant.
+        .register_asynchronous_uri_scheme_protocol(BUNDLE_SCHEME, |ctx, request, responder| {
+            let app = ctx.app_handle().clone();
+            let path = request.uri().path().to_owned();
+            std::thread::spawn(move || {
+                responder.respond(serve_bundle_asset(&app, &path));
+            });
+        })
         .manage(WatchState(std::sync::Mutex::new(None)))
         .manage(RecentsLock(std::sync::Mutex::new(())))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
@@ -1733,6 +2505,53 @@ pub fn run() -> tauri::Result<()> {
                 let _ = std::fs::write(path, "running");
             }
 
+            // OTA (docs/desktop-ota-spec.md Stage 2). Decide what to serve
+            // and stamp the rollback sentinel BEFORE the window exists —
+            // once the webview is up it can already be requesting assets,
+            // and a sentinel written after that proves nothing about the
+            // boot it was meant to witness.
+            let bundle_root = app.path().app_data_dir().map_or_else(
+                |_| PathBuf::from(bundles::BUNDLES_DIR),
+                |dir| bundles::root_of(&dir),
+            );
+            let (outcome, _) = bundles::begin_launch(&bundle_root, now_ms());
+            let active_dir = match &outcome {
+                bundles::LaunchOutcome::Bundle(version) => {
+                    bundles::version_dir(&bundle_root, version)
+                }
+                bundles::LaunchOutcome::RolledBack { now_serving, .. } => now_serving
+                    .as_deref()
+                    .and_then(|version| bundles::version_dir(&bundle_root, version)),
+                bundles::LaunchOutcome::Embedded => None,
+            };
+            app.manage(BundleRuntime {
+                root: bundle_root,
+                active: std::sync::RwLock::new(ActiveBundle {
+                    info: BundleLaunchInfo::from(&outcome),
+                    dir: active_dir,
+                }),
+            });
+
+            // The window is built here rather than by `tauri.conf.json`
+            // (`"create": false`) for one reason: in production it must load
+            // from the OTA protocol, and a config `url` cannot be chosen at
+            // runtime. Dev keeps the config's own URL, so `devUrl`, the vite
+            // server and HMR are untouched.
+            let mut window_config = app
+                .config()
+                .app
+                .windows
+                .first()
+                .cloned()
+                .ok_or("tauri.conf.json should declare the main window")?;
+            if !tauri::is_dev() {
+                let url = format!("{BUNDLE_SCHEME}://localhost/")
+                    .parse()
+                    .map_err(|e| format!("bundle protocol URL should parse: {e}"))?;
+                window_config.url = tauri::WebviewUrl::CustomProtocol(url);
+            }
+            tauri::WebviewWindowBuilder::from_config(app.handle(), &window_config)?.build()?;
+
             let initial_recents = load_recents(&recents_path(app.handle())?)?;
             let menu = build_menu(app.handle(), &initial_recents)?;
             app.set_menu(menu)?;
@@ -1752,6 +2571,7 @@ pub fn run() -> tauri::Result<()> {
                     use tauri_plugin_opener::OpenerExt;
                     let _ = app.opener().open_url(url, None::<&str>);
                 }
+                MenuRoute::RevertBundle => revert_bundle(app),
                 MenuRoute::Ignore => {}
             });
             Ok(())
@@ -1771,7 +2591,6 @@ pub fn run() -> tauri::Result<()> {
             discover_project_config,
             create_project,
             save_bytes_dialog,
-            run_cli,
             take_pending_opens,
             read_recents,
             push_recent,
@@ -1780,6 +2599,13 @@ pub fn run() -> tauri::Result<()> {
             read_app_settings,
             write_app_settings,
             previous_exit_clean,
+            bundle_ready,
+            bundle_activate,
+            bundle_list,
+            bundle_available,
+            spellcheck_text,
+            bundle_update_check,
+            bundle_update_apply,
         ])
         .build(tauri::generate_context!())?
         .run(move |app_handle, event| {
@@ -2093,8 +2919,9 @@ mod tests {
     /// deliberate overlap, where a root bump is meant to propagate. (Not
     /// first-party crates: #2451's body names `brink-runtime`/
     /// `brink-format`, but `src-tauri` depends on no workspace crate at
-    /// all — it reaches the compiler only through the `brink-cli` sidecar
-    /// binary. Its lock holds exactly one `brink-*` package, itself.)
+    /// all — the compiler reaches this shell only through the wasm the
+    /// webview loads. Its lock holds exactly one `brink-*` package,
+    /// itself.)
     /// Transitive crates are out of scope because the two graphs
     /// legitimately resolve differently; see the `toml` divergence
     /// recorded on #2451.
@@ -2410,16 +3237,13 @@ mod tests {
     /// compares root's `Cargo.lock`), whose entire purpose is catching
     /// root-policy drift, cannot fail the PR that causes it.
     ///
-    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477):
-    /// `BRINK_SIDECAR_STUB: "1"` is unconditional in this workflow's `env:`
-    /// block, so `ensure-cli-sidecar.mjs` never runs `cargo build -p
-    /// brink-cli --release` in this lane — see `STUB_SIDECAR` in
-    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs`, which stages
-    /// a placeholder without reading any `brink-cli` source. `src-tauri` is
-    /// its own excluded workspace and does not depend on the `brink-cli`
-    /// crate either, so nothing left in this lane can notice a
-    /// `crates/brink-cli/**` change; watching that tree here would only
-    /// trigger the job for a change it can no longer detect.
+    /// `crates/brink-cli/**` is deliberately NOT in this list (#2477).
+    /// It belonged here only while this lane built the crate as a Tauri
+    /// sidecar; that sidecar is gone (`docs/desktop-ota-spec.md` Stage 1),
+    /// and `src-tauri` is its own excluded workspace that never depended on
+    /// the crate, so nothing in this lane reads `brink-cli` source at all.
+    /// Watching that tree here would only trigger the job for a change it
+    /// cannot detect.
     #[test]
     fn desktop_smoke_path_filter_covers_its_shared_inputs() {
         let entries = path_filter(&workflow("desktop-smoke.yml"));
@@ -2453,11 +3277,10 @@ mod tests {
         assert!(
             !entries.iter().any(|entry| entry == "crates/brink-cli/**"),
             "desktop-smoke.yml's pull_request path filter should NOT list \
-             \"crates/brink-cli/**\" (#2477): BRINK_SIDECAR_STUB is unconditional in this \
-             workflow, so nothing left in this lane can notice a brink-cli source change \
-             — re-adding the entry without also restoring something that reads brink-cli \
-             sources would just resurrect the dead-weight trigger this test now guards \
-             against"
+             \"crates/brink-cli/**\" (#2477): the sidecar is gone, so nothing left in \
+             this lane reads brink-cli source — re-adding the entry without also \
+             restoring something that does would just resurrect the dead-weight trigger \
+             this test guards against"
         );
     }
 
@@ -2502,9 +3325,9 @@ mod tests {
     }
 
     /// #2716: `desktop-bundle-smoke.yml`'s `push` trigger had NO `paths:`
-    /// filter at all — every push to `main` re-ran the whole lane (a real
-    /// `cargo build -p brink-cli --release` plus the full `src-tauri`
-    /// Tauri build graph) and re-saved its ~784 MB rust-cache entry
+    /// filter at all — every push to `main` re-ran the whole lane (the full
+    /// `src-tauri` Tauri build graph plus two wasm builds) and re-saved its
+    /// ~784 MB rust-cache entry
     /// (`Cache Size: ~784 MB (822197295 B)`, confirmed against a real run,
     /// job 95324823667), against ci.yml's shared 10 GB repo-wide cache
     /// quota, regardless of whether the push touched anything this lane
@@ -2594,9 +3417,9 @@ on:
             .filter(|id| !id.is_empty())
             .collect();
         let dependants: [(&str, &[&str]); 8] = [
-            ("cargo check (src-tauri)", &["linux_deps", "sidecar"]),
-            ("Clippy (src-tauri)", &["linux_deps", "sidecar"]),
-            ("cargo test (src-tauri)", &["linux_deps", "sidecar"]),
+            ("cargo check (src-tauri)", &["linux_deps"]),
+            ("Clippy (src-tauri)", &["linux_deps"]),
+            ("cargo test (src-tauri)", &["linux_deps"]),
             // The step that makes the comment below's claim ("itself gated
             // on `pnpm_install`") true in the first place — without this
             // entry nothing asserted `check_wasm_pkg`'s own `if:` at all.
@@ -2616,7 +3439,7 @@ on:
                 "Typecheck (tsc --noEmit)",
                 &["wasm_build", "check_wasm_pkg"],
             ),
-            ("pnpm build", &["wasm_build", "check_wasm_pkg", "sidecar"]),
+            ("pnpm build", &["wasm_build", "check_wasm_pkg"]),
             // Format check needs nothing but the runner's toolchain and the
             // checkout: `actions/checkout` has no `id` to gate the other
             // steps on, but Format check's own `working-directory` does not
@@ -2922,177 +3745,13 @@ on:
         );
     }
 
-    /// Gap 4 (#2418): the sidecar staged in this check-only lane is only
-    /// there so `tauri-build`'s externalBin resolution finds a file on
-    /// disk — nothing here executes it ([`run_cli`] is the only caller and
-    /// it needs a running app, not a `cargo test`) — so the lane asks
-    /// `ensure-cli-sidecar.mjs` for a stub and skips the build entirely
-    /// (#2469). PR #2446's `CARGO_PROFILE_RELEASE_*` stopgap was set
-    /// job-wide, so it was also flattening the "Build brink-web wasm
-    /// package" step's `wasm-pack build` (release by default) — not only
-    /// the sidecar build it was written to excuse. Removing it un-flattens
-    /// that wasm build too: the lane now deliberately accepts a
-    /// fully-optimised one, rather than keep the vars as dead configuration
-    /// for a sidecar build that no longer happens. Both halves are asserted
-    /// here so the stub cannot quietly revert to the stopgap, or accumulate
-    /// both. Nothing else in this file would notice the wiring vanishing
-    /// from desktop-smoke.yml; this is that guard, and it is the third of
-    /// the "Three properties of `desktop-smoke.yml` ... asserted by tests"
-    /// that docs/desktop-shell-spec.md's "Smoke-lane inputs and step
-    /// gating" section claims.
-    ///
-    /// Restoring a real (non-stubbed) sidecar build here also means
-    /// re-adding `crates/brink-cli/**` to the `pull_request` path filter —
-    /// `desktop_smoke_path_filter_covers_its_shared_inputs` now asserts
-    /// that entry stays **absent** (#2477), on the premise that this guard
-    /// keeps `BRINK_SIDECAR_STUB` unconditional. Un-stub the sidecar
-    /// without also touching that test and the filter goes back to
-    /// watching a tree the lane silently ignores.
-    #[test]
-    fn desktop_smoke_stubs_the_staged_sidecar() {
-        let workflow = workflow("desktop-smoke.yml");
-        let sets_key = |key: &str| {
-            let needle = format!("{key}:");
-            workflow
-                .lines()
-                .any(|line| line.trim_start().starts_with(needle.as_str()))
-        };
-
-        assert!(
-            // Pinned to the exact value, not merely "the key is set": only
-            // the literal string "1" makes `ensureCliSidecar`'s `stub`
-            // default opt in (scripts/ensure-cli-sidecar.mjs), so e.g.
-            // `BRINK_SIDECAR_STUB: "0"` would satisfy a presence-only check
-            // while silently restoring the full release build this guard
-            // exists to keep out.
-            workflow
-                .lines()
-                .any(|line| line.trim() == "BRINK_SIDECAR_STUB: \"1\""),
-            "desktop-smoke.yml's env: block should set BRINK_SIDECAR_STUB: \"1\" (the \
-             exact string ensureCliSidecar's `stub` option opts in on) so \
-             ensure-cli-sidecar.mjs stages a placeholder instead of building a \
-             brink-cli release binary this check-only lane never runs; an env var \
-             rather than a step flag because `pnpm build` re-runs that script — if you \
-             are restoring a real sidecar build, also re-add \"crates/brink-cli/**\" to \
-             desktop-smoke.yml's pull_request path filter, which \
-             desktop_smoke_path_filter_covers_its_shared_inputs (#2477) currently \
-             forbids"
-        );
-        for key in [
-            "CARGO_PROFILE_RELEASE_OPT_LEVEL",
-            "CARGO_PROFILE_RELEASE_DEBUG",
-            "CARGO_PROFILE_RELEASE_CODEGEN_UNITS",
-        ] {
-            assert!(
-                !sets_key(key),
-                "desktop-smoke.yml still sets {key}: PR #2446's stopgap targeted the \
-                 sidecar build, which BRINK_SIDECAR_STUB now removes, but the var was \
-                 job-wide and was also flattening the wasm-pack release build this lane \
-                 still runs — keeping it would silently leave that build de-optimised, \
-                 not just the (already-gone) sidecar one"
-            );
-        }
-    }
-
-    /// This crate's own `build.rs`.
-    fn build_script() -> String {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("build.rs");
-        assert!(path.is_file(), "build.rs should exist at {path:?}");
-        std::fs::read_to_string(&path).expect("just asserted the build script exists")
-    }
-
-    /// CLAUDE.md names `cd packages/brink-desktop/src-tauri && cargo test`
-    /// as this crate's gate, and until #2617 that command was false on
-    /// every fresh checkout and every fresh git worktree: `tauri-build`
-    /// resolves `bundle.externalBin` unconditionally, `binaries/` is
-    /// gitignored (the triple suffix is host-specific), and nothing on the
-    /// local path staged it — so the build script died with `resource path
-    /// "binaries/brink-cli-x86_64-unknown-linux-gnu" doesn't exist` before
-    /// a single test ran.
-    ///
-    /// `build.rs` now stages a stub for DEBUG builds by running the very
-    /// script `desktop-smoke.yml`'s "Stage brink-cli sidecar" step runs,
-    /// under the very variable that lane sets (asserted by
-    /// [`desktop_smoke_stubs_the_staged_sidecar`] above). That reuse is the
-    /// point of this guard: the stub payload, the host-triple detection and
-    /// the staged filename must keep living in
-    /// `packages/brink-desktop/scripts/ensure-cli-sidecar.mjs` alone. A
-    /// second copy of any of them in Rust is drift waiting to happen —
-    /// #2481's Windows `.exe` refusal, for one, exists in exactly one place
-    /// today.
-    ///
-    /// The `PROFILE`/`debug` gate is the other half. `cargo tauri build`
-    /// (release) must keep failing loudly on a missing sidecar: a real
-    /// bundle ships the real `brink-cli`, and silently substituting a
-    /// loudly-failing placeholder there would turn a build-time error into
-    /// a shipped one.
-    #[test]
-    fn build_script_stages_the_dev_sidecar_the_way_ci_does() {
-        let build_rs = build_script();
-
-        assert!(
-            build_rs.contains("scripts/ensure-cli-sidecar.mjs"),
-            "build.rs should stage the missing sidecar by invoking \
-             packages/brink-desktop/scripts/ensure-cli-sidecar.mjs — the same script \
-             desktop-smoke.yml's \"Stage brink-cli sidecar\" step runs — so CLAUDE.md's \
-             documented `cd packages/brink-desktop/src-tauri && cargo test` works on a \
-             fresh tree (#2617)"
-        );
-        // The assertion above is a string-literal grep, so it stays green even if the
-        // script it names is moved or renamed — exactly the drift that would silently
-        // re-break the gate this test exists to protect. Assert the path actually
-        // resolves on disk, so a rename fails this test instead of only the vitest-side
-        // guard (`src/__tests__/scripts-main-guard.test.ts`), which does not cover this
-        // crate's build script at all.
-        assert!(
-            repo_root()
-                .join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs")
-                .is_file(),
-            "packages/brink-desktop/scripts/ensure-cli-sidecar.mjs should exist — build.rs \
-             hard-codes this path as a literal string, so a rename or move must be caught here"
-        );
-        assert!(
-            build_rs.contains("BRINK_SIDECAR_STUB"),
-            "build.rs should ask ensure-cli-sidecar.mjs for a STUB via BRINK_SIDECAR_STUB, \
-             exactly as desktop-smoke.yml's env: block does (#2469) — a `cargo build -p \
-             brink-cli --release` out of the root workspace is not something a `cargo test` \
-             in this crate should trigger, and nothing here ever executes the sidecar"
-        );
-        assert!(
-            !build_rs.contains("#!/bin/sh"),
-            "build.rs should not carry its own copy of the stub payload — STUB_SIDECAR, the \
-             host-triple detection and the staged filename (including #2481's Windows `.exe` \
-             refusal) belong to ensure-cli-sidecar.mjs alone; a second mechanism is what this \
-             guard exists to keep out"
-        );
-        assert!(
-            build_rs.contains("PROFILE") && build_rs.contains("\"debug\""),
-            "build.rs's auto-staging should be gated on PROFILE == \"debug\": `cargo tauri \
-             build` (release) must keep failing loudly on a missing sidecar rather than \
-             bundling a placeholder that exits 127 in a shipped app"
-        );
-        // #2715 review: this function probes per-arch `brink-cli-<TARGET>`
-        // (`host_matches_target` above), but ensure-cli-sidecar.mjs's
-        // main-guard stages under `universal-apple-darwin` whenever
-        // `TAURI_ENV_TARGET_TRIPLE=universal-apple-darwin` is in its env. An
-        // ambient inherited value from an enclosing `tauri build --target
-        // universal-apple-darwin` would make the child stage the wrong
-        // triple for no benefit — the HOST == TARGET guard exists to
-        // prevent exactly this. Must scrub it before spawning the child.
-        assert!(
-            build_rs.contains("env_remove(\"TAURI_ENV_TARGET_TRIPLE\")"),
-            "build.rs should env_remove(\"TAURI_ENV_TARGET_TRIPLE\") before spawning \
-             ensure-cli-sidecar.mjs — an inherited universal-apple-darwin value would stage \
-             the wrong-triple sidecar while this function keeps probing brink-cli-<TARGET> \
-             (#2715 review)"
-        );
-    }
-
     /// The doc half of #2617. CLAUDE.md's "Key commands" block is where
     /// every contributor and agent learns how to run this crate's gate, and
-    /// the whole point of the build-script staging above is that the
-    /// command printed there is TRUE as written — no unstated prerequisite
-    /// step, nothing to hand-stub first.
+    /// the point is that the command printed there is TRUE as written — no
+    /// unstated prerequisite step, nothing to hand-stub first. #2617 got it
+    /// there by staging a stub sidecar from `build.rs`; Stage 1 of
+    /// `docs/desktop-ota-spec.md` got it there for good, by removing the
+    /// `bundle.externalBin` entry that created the prerequisite.
     ///
     /// Asserted from this side of the fence deliberately: CLAUDE.md is not
     /// in any cargo workspace and nothing else in the repo checks that its
@@ -3110,9 +3769,10 @@ on:
             "CLAUDE.md's \"Key commands\" should still document `cd \
              packages/brink-desktop/src-tauri && cargo test` verbatim as the desktop gate. \
              If that command has grown a prerequisite again, the fix is to make the \
-             prerequisite unnecessary (build.rs stages the stub sidecar, #2617), not to \
-             document a caveat — a doc describing a working command is worth more than one \
-             describing a workaround"
+             prerequisite unnecessary (#2617 did it for the sidecar by staging a stub \
+             from build.rs; Stage 1 of docs/desktop-ota-spec.md removed the sidecar and \
+             the stub with it), not to document a caveat — a doc describing a working \
+             command is worth more than one describing a workaround"
         );
     }
 
@@ -3222,149 +3882,6 @@ on:
                  plaintext is one an attacker can swap before signature checking helps"
             );
         }
-    }
-
-    /// #2631: PR #2626's "a real bundle must ship the real `brink-cli`"
-    /// invariant held for `cargo tauri build --debug` only through step
-    /// ordering — `beforeBuildCommand` -> `pnpm build` happens to stage the
-    /// real binary before `build.rs` ever runs, plus `bundle.active: false`
-    /// making the whole question moot in practice. Nothing asserted it.
-    ///
-    /// `tauri.conf.json`'s `beforeBundleCommand` is the fix: tauri-cli runs
-    /// it immediately before the bundling phase of `tauri build` — after the
-    /// crate has compiled (so `build.rs` already ran) and right before
-    /// tauri-bundler reads `binaries/brink-cli-<triple>` off disk to package
-    /// it. `scripts/assert-real-sidecar.mjs` throws if that file's content
-    /// is `STUB_SIDECAR` rather than a real binary.
-    ///
-    /// Deliberately inert by default, not a gap: `bundle.active` below must
-    /// stay `false` (D3 scope, not this issue's — see
-    /// `docs/desktop-shell-spec.md`). That is not the only thing standing
-    /// between this hook and firing, though — tauri-cli's bundling phase
-    /// also runs on an explicit `tauri build --bundles <target>` even with
-    /// `bundle.active: false`, so "flip `bundle.active`" is not this hook's
-    /// only door, just the one this crate's own config controls. No CI lane
-    /// and no documented developer command invokes `tauri build` today — but
-    /// an ad-hoc `--bundles` invocation does reach the hook, as #2687's
-    /// observation (docs/desktop-shell-spec.md "Bundle-time sidecar
-    /// assertion (#2631)") demonstrated. This test below pins only that
-    /// `bundle.active` stays `false`; it does not and cannot pin the absence
-    /// of a CI lane or developer command that calls `tauri build`.
-    #[test]
-    fn before_bundle_command_asserts_the_staged_sidecar_is_real() {
-        let conf = tauri_conf();
-
-        assert!(
-            conf.contains("\"beforeBundleCommand\""),
-            "tauri.conf.json's `build` block should set `beforeBundleCommand` so tauri-cli \
-             runs a real-sidecar check right before the bundling phase of `tauri build` \
-             (#2631) — PR #2626's \"a real bundle must ship the real brink-cli\" invariant \
-             held for `--debug` bundles only via step ordering until this hook existed"
-        );
-        assert!(
-            conf.contains("scripts/assert-real-sidecar.mjs"),
-            "beforeBundleCommand should invoke packages/brink-desktop/scripts/assert-real-sidecar.mjs"
-        );
-        assert!(
-            repo_root()
-                .join("packages/brink-desktop/scripts/assert-real-sidecar.mjs")
-                .is_file(),
-            "packages/brink-desktop/scripts/assert-real-sidecar.mjs should exist — \
-             tauri.conf.json hard-codes this path as a literal string, so a rename or move \
-             must be caught here"
-        );
-
-        // #2626's review established that the stub payload, host-triple
-        // detection and staged filename live in ensure-cli-sidecar.mjs
-        // ALONE (`build_script_stages_the_dev_sidecar_the_way_ci_does`
-        // above guards build.rs the same way) — the new script must import
-        // `STUB_SIDECAR` from there rather than carry its own copy.
-        let assert_script = std::fs::read_to_string(
-            repo_root().join("packages/brink-desktop/scripts/assert-real-sidecar.mjs"),
-        )
-        .expect("just asserted assert-real-sidecar.mjs exists");
-        assert!(
-            assert_script.contains("STUB_SIDECAR")
-                && assert_script.contains("ensure-cli-sidecar.mjs"),
-            "assert-real-sidecar.mjs should import STUB_SIDECAR from ensure-cli-sidecar.mjs \
-             rather than redefine what the stub looks like"
-        );
-        assert!(
-            !assert_script.contains("#!/bin/sh"),
-            "assert-real-sidecar.mjs should not carry its own copy of the stub payload — \
-             detect it via the STUB_SIDECAR import instead, exactly as this guard requires \
-             of build.rs"
-        );
-
-        // #2687: comparing against STUB_SIDECAR alone is a BLOCKLIST — it
-        // refuses the one placeholder that exists today and passes an
-        // empty, truncated or wrong-architecture file, because
-        // `tauri_build`'s externalBin resolution only tests that the path
-        // exists. The hook must also POSITIVELY identify the staged file as
-        // a native executable for the target.
-        assert!(
-            assert_script.contains("looksLikeNativeExecutable"),
-            "assert-real-sidecar.mjs should positively identify the staged sidecar as a \
-             native executable (ELF/Mach-O/PE magic), not merely differ from STUB_SIDECAR \
-             (#2687) — a blocklist fails open on every placeholder that is not \
-             byte-identical to the one we happen to have"
-        );
-        assert!(
-            assert_script.contains("executableFormatFor"),
-            "assert-real-sidecar.mjs should ask ensure-cli-sidecar.mjs's \
-             `executableFormatFor` which executable format the target triple expects, \
-             rather than deciding that for itself (#2626's single-mechanism rule, #2687)"
-        );
-        assert!(
-            !assert_script.contains("includes(\"windows\")"),
-            "assert-real-sidecar.mjs should not re-derive platform facts from the triple \
-             string — `ensure-cli-sidecar.mjs` owns triple detection and the `.exe`/PE rule \
-             (#2481, #2626); import `executableFormatFor` instead of testing the triple here"
-        );
-        let ensure_script = std::fs::read_to_string(
-            repo_root().join("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"),
-        )
-        .expect("ensure-cli-sidecar.mjs should exist");
-        assert!(
-            ensure_script.contains("export function executableFormatFor"),
-            "`executableFormatFor` should be defined in ensure-cli-sidecar.mjs — the one \
-             module #2626's review allows to hold triple-derived knowledge about the \
-             staged sidecar (#2687)"
-        );
-
-        // #2699: the magic check above proves the staged file's FORMAT, not
-        // that it IS brink-cli or that it runs — PR #2691's own passing
-        // observation stood in GNU coreutils' `true` for a real brink-cli,
-        // and that would satisfy the magic check exactly as a genuine
-        // wrong-build binary would. A `--version` smoke check closes that
-        // gap for the one case it is safe to attempt: the staged triple
-        // matching the triple actually running the check.
-        assert!(
-            assert_script.contains("--version"),
-            "assert-real-sidecar.mjs should run a `--version` smoke check against the \
-             staged sidecar, in addition to the magic-bytes check (#2699) — the magic check \
-             alone proves the file's FORMAT, not that it is brink-cli or that it runs"
-        );
-        assert!(
-            assert_script.contains("looksLikeBrinkCliVersionOutput"),
-            "assert-real-sidecar.mjs's --version smoke check should verify the PRINTED \
-             OUTPUT identifies as brink-cli, not just the exit code (#2699) — GNU coreutils' \
-             `true` (PR #2691's own stand-in for brink-cli) also exits 0 on `--version`, so \
-             an exit-code-only check would catch nothing new"
-        );
-
-        // `bundle.active` turning this on is explicitly D3 scope (#2631's
-        // own instruction), not this fix's — this assertion exists to keep
-        // the two from getting conflated by a later, unrelated edit to this
-        // file landing bundle.active: true without anyone noticing it also
-        // silently made this hook load-bearing.
-        assert!(
-            conf.contains("\"active\": false"),
-            "tauri.conf.json's bundle.active should still read false — turning bundling on \
-             is D3 scope (docs/desktop-shell-spec.md), not #2631's; if this now legitimately \
-             reads true, this assertion's job is done and it should be removed here rather \
-             than edited to match"
-        );
     }
 
     /// Every `.github/workflows/*.yml`/`*.yaml` file, sorted by name so the
@@ -3732,12 +4249,12 @@ on:
 
         // Enumeration transparency (house convention: state exactly which
         // workflow files and jobs were checked, not just the ones known in
-        // advance): this must have walked more than just the four
-        // pnpm-install lanes (proof the walk covers every job in every
-        // workflow file, not only the ones that happen to install), and
-        // the pnpm-install lanes found must be exactly today's known four
-        // — so a fifth lane, correctly ordered or not, cannot join
-        // silently: it has to be added here on purpose.
+        // advance): this must have walked more than just the pnpm-install
+        // lanes (proof the walk covers every job in every workflow file,
+        // not only the ones that happen to install), and the lanes found
+        // must be exactly today's known set — so a new lane, correctly
+        // ordered or not, cannot join silently: it has to be added here on
+        // purpose.
         assert!(
             checked_jobs.len() > pnpm_install_lanes.len(),
             "expected to see jobs beyond just the pnpm-install lanes, proving this walked \
@@ -3747,6 +4264,14 @@ on:
         assert_eq!(
             pnpm_install_lanes,
             vec![
+                // The OTA web-bundle channel (docs/desktop-ota-spec.md
+                // Stage 2): builds and signs `dist/` with no cargo, no
+                // `tauri build` and no codesign — that absence is the
+                // feature. It still installs, and it still links both
+                // wasm-pack outputs, so it is in scope here like any other.
+                // Sorted first because `workflow_files()` walks the
+                // directory alphabetically and `bundle-` precedes `ci`.
+                "bundle-release.yml:bundle".to_owned(),
                 "ci.yml:frontend".to_owned(),
                 "ci.yml:e2e".to_owned(),
                 // #2709: desktop-bundle-smoke.yml is the non-required real
@@ -3760,7 +4285,7 @@ on:
                 "desktop-smoke.yml:desktop-smoke".to_owned(),
                 "npm-release.yml:release".to_owned(),
             ],
-            "expected exactly these six jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
+            "expected exactly these seven jobs to run a `{PNPM_INSTALL_PREFIX}` command; a new \
              pnpm-install lane must both pass the ordering assertion above AND be added to \
              this list on purpose — that is what keeps a new lane from opting out of this \
              guard by simply existing"
@@ -3886,8 +4411,8 @@ on:
     /// completed run (run 32002443794) — about 4x headroom under its own cap,
     /// consistent with the issue's "≥3.7x headroom" claim. The highest
     /// `timeout-minutes` actually set anywhere in the tree today is 60
-    /// (`desktop-bundle-smoke.yml`, a real `cargo build -p brink-cli
-    /// --release` + Tauri bundle) — and that job's last five completed runs
+    /// (`desktop-bundle-smoke.yml`, a real Tauri bundle build) — and that
+    /// job's last five completed runs
     /// took 5.8/6.1/9.8/7.0/8.2 minutes, i.e. ≥6x headroom under its own cap.
     /// 120 sits at 2x the highest cap this repo has ever needed, leaving room
     /// for a future legitimately-long lane without moving the ceiling, while
@@ -4112,199 +4637,290 @@ on:
         assert!(!is_project_file(Path::new("Cargo.toml")));
     }
 
-    fn rest(strs: &[&str]) -> Vec<String> {
-        strs.iter().map(|s| (*s).to_owned()).collect()
+    /// `BundleLaunchInfo` is what the author is told at boot, and the
+    /// rollback arm is the one that matters: a bundle that failed to boot
+    /// has been deleted and the app is running OLDER code than the author
+    /// installed. Reporting that as an ordinary launch would leave them
+    /// debugging a fix that is no longer there.
+    #[test]
+    fn launch_info_reports_a_rollback_distinctly_from_a_normal_launch() {
+        let embedded = BundleLaunchInfo::from(&bundles::LaunchOutcome::Embedded);
+        assert_eq!(embedded.version, None);
+        assert_eq!(embedded.rolled_back_from, None);
+
+        let normal = BundleLaunchInfo::from(&bundles::LaunchOutcome::Bundle("0.7.1".into()));
+        assert_eq!(normal.version.as_deref(), Some("0.7.1"));
+        assert_eq!(
+            normal.rolled_back_from, None,
+            "an ordinary launch must not look like a rollback"
+        );
+
+        let reverted = BundleLaunchInfo::from(&bundles::LaunchOutcome::RolledBack {
+            failed: "0.7.2".into(),
+            now_serving: Some("0.7.1".into()),
+        });
+        assert_eq!(
+            reverted.version.as_deref(),
+            Some("0.7.1"),
+            "version is what is RUNNING, not what failed"
+        );
+        assert_eq!(reverted.rolled_back_from.as_deref(), Some("0.7.2"));
+
+        let to_floor = BundleLaunchInfo::from(&bundles::LaunchOutcome::RolledBack {
+            failed: "0.7.1".into(),
+            now_serving: None,
+        });
+        assert_eq!(
+            to_floor.version, None,
+            "the embedded floor reports no version"
+        );
+        assert_eq!(to_floor.rolled_back_from.as_deref(), Some("0.7.1"));
     }
 
+    /// The main window must be built in `setup`, not by tauri.conf.json.
+    ///
+    /// `create: true` (the DEFAULT — so this regresses by deletion, not by
+    /// an edit) makes Tauri open the config's window at startup on the
+    /// built-in app URL, and `setup` then opens a SECOND one on the bundle
+    /// protocol. Two windows, and the visible one serving embedded assets
+    /// forever: OTA would silently never apply, which is precisely the
+    /// quiet-failure class this repo keeps getting bitten by.
     #[test]
-    fn cli_allowlist_accepts_every_documented_subcommand() {
-        for sub in [
-            "export-xliff",
-            "compile-locale",
-            "regenerate-xliff",
-            "compile",
+    fn the_main_window_is_created_in_setup_not_by_the_config() {
+        let conf =
+            std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("tauri.conf.json"))
+                .expect("tauri.conf.json should exist");
+        let parsed: serde_json::Value =
+            serde_json::from_str(&conf).expect("tauri.conf.json should be valid JSON");
+
+        let window = parsed
+            .get("app")
+            .and_then(|a| a.get("windows"))
+            .and_then(|w| w.get(0))
+            .expect("tauri.conf.json should declare app.windows[0]");
+        assert_eq!(
+            window.get("create").and_then(serde_json::Value::as_bool),
+            Some(false),
+            "app.windows[0].create must stay false — src/lib.rs's setup builds \
+             the window so production can point it at the {BUNDLE_SCHEME} \
+             protocol while dev keeps devUrl (docs/desktop-ota-spec.md Stage 2)"
+        );
+        assert!(
+            window.get("url").is_none(),
+            "app.windows[0] must not pin a url: setup chooses it per environment"
+        );
+    }
+
+    /// The desktop's OTA bundle descriptor.
+    fn ota_bundle_descriptor() -> serde_json::Value {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("ota-bundle.json");
+        assert!(path.is_file(), "ota-bundle.json should exist at {path:?}");
+        let text = std::fs::read_to_string(&path).expect("just asserted it exists");
+        serde_json::from_str(&text).expect("ota-bundle.json should be valid JSON")
+    }
+
+    /// `bundle_update_apply` must take nothing but the app handle.
+    ///
+    /// This is the property that makes splitting consent out of the install
+    /// path safe, and it is one edit away from being lost: the obvious
+    /// "improvement" is to pass the version (or url, or hash) that `check`
+    /// just returned, so `apply` need not fetch twice. That hands a caller
+    /// the ability to name a *particular* payload — and the caller is an
+    /// OTA'd bundle's own JS, which is exactly the code an attacker who has
+    /// compromised the channel would control.
+    ///
+    /// Re-fetching is the cost of not trusting the frontend. Pinned here
+    /// rather than left to review, because the diff that breaks it looks
+    /// like an optimisation.
+    #[test]
+    fn bundle_update_apply_accepts_no_caller_supplied_payload() {
+        let source = include_str!("lib.rs");
+        let signature = source
+            .split_once("async fn bundle_update_apply(")
+            .map(|(_, rest)| rest)
+            .and_then(|rest| rest.split_once(')'))
+            .map(|(params, _)| params.trim().to_owned())
+            .expect("bundle_update_apply should still be declared in this file");
+
+        assert_eq!(
+            signature, "app: tauri::AppHandle",
+            "bundle_update_apply grew a parameter. If it now takes a version, url, \
+             hash or signature from the caller, the frontend can name which payload \
+             gets installed — re-read the ⚠ note above bundle_update_check."
+        );
+    }
+
+    /// The entry document must never be cached; everything else may be
+    /// cached forever.
+    ///
+    /// This is the third of the three things that made Stage 2's activation
+    /// a process restart, and the least visible: vite content-hashes every
+    /// script, chunk, worker and asset, so those cannot go stale — a new
+    /// bundle asks for different filenames. `index.html` keeps ONE fixed URL
+    /// across every version, so a cached copy would keep pointing at the
+    /// previous bundle's hashed entry and an activation would silently do
+    /// nothing at all.
+    ///
+    /// Silently is the operative word, and it is why this is a test rather
+    /// than a comment: the failure is a reload that appears to work.
+    #[test]
+    fn only_the_entry_document_is_served_uncacheable() {
+        for path in ["", "/", "/index.html", "index.html", "/nested/page.html"] {
+            assert_eq!(
+                cache_control_for(path),
+                "no-store",
+                "entry document {path:?} must not be cached"
+            );
+        }
+
+        for path in [
+            "/assets/index-a1b2c3.js",
+            "/assets/brink_web_bg-d4e5f6.wasm",
+            "/assets/session-worker-990011.js",
+            "/favicon.ico",
         ] {
-            assert!(
-                prepare_cli_invocation("/tmp/proj", "story.brink", sub, &[]).is_ok(),
-                "expected {sub} to be allowed"
+            assert_eq!(
+                cache_control_for(path),
+                "public, max-age=31536000, immutable",
+                "content-hashed asset {path:?} should be cacheable"
             );
         }
     }
 
-    #[test]
-    fn cli_allowlist_rejects_arbitrary_passthrough() {
-        // The whole point of the allowlist: a subcommand `brink-cli` really
-        // has (`play`) but that isn't fenced for the sidecar, and an
-        // arbitrary non-brink-cli binary name/shell metacharacter, must
-        // both be rejected before the sidecar is ever spawned.
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "play", &[]),
-            Err(ShellError::DisallowedCommand(_))
-        ));
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "--", &[]),
-            Err(ShellError::DisallowedCommand(_))
-        ));
-    }
-
-    #[test]
-    fn cli_allowlist_rejects_empty_args() {
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "story.brink", "", &[]),
-            Err(ShellError::MissingSubcommand)
-        ));
-    }
-
-    /// Regression test for the 2026-08 review finding: the old `run_cli`
-    /// shape took a flat `Vec<String>` and forwarded it untouched, so a
-    /// compromised webview could pass an absolute (or `..`-carrying) input
-    /// path straight through to the sidecar — an arbitrary-file read/write
-    /// primitive. `prepare_cli_invocation` must run the input through the
-    /// same [`resolve`] guard every other filesystem command uses, exactly
-    /// like this test asserts. Reverting to the old passthrough shape (skip
-    /// `resolve` and just `args.extend([rel, ...rest])`) makes this fail.
-    #[test]
-    fn cli_invocation_rejects_path_escape_in_input() {
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "../../etc/passwd", "export-xliff", &[]),
-            Err(ShellError::PathEscape(_))
-        ));
-        assert!(matches!(
-            prepare_cli_invocation("/tmp/proj", "/etc/passwd", "export-xliff", &[]),
-            Err(ShellError::PathEscape(_))
-        ));
-    }
-
-    /// The resolved input lands right after the subcommand, and trailing
-    /// `rest` args (the dialog-chosen, possibly-absolute `--output <path>`)
-    /// are forwarded verbatim after it.
-    #[test]
-    fn cli_invocation_resolves_input_and_keeps_rest_verbatim() {
-        let args = prepare_cli_invocation(
-            "/tmp/proj",
-            "story.brink",
-            "export-xliff",
-            &rest(&["--output", "/abs/out.xlf"]),
+    /// Every command name in this file's own `generate_handler!` list, sorted.
+    ///
+    /// Read out of the source as text rather than from a macro expansion:
+    /// `generate_handler!` produces a closure, not a list this crate can
+    /// introspect, and the alternative — a hand-kept second copy of the
+    /// names — is the drift this guard exists to prevent.
+    fn ipc_command_surface() -> Vec<String> {
+        let source = std::fs::read_to_string(
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("src")
+                .join("lib.rs"),
         )
-        .expect("valid invocation should build");
-        assert_eq!(
-            args,
-            vec![
-                "export-xliff".to_owned(),
-                "/tmp/proj/story.brink".to_owned(),
-                "--output".to_owned(),
-                "/abs/out.xlf".to_owned(),
-            ]
-        );
-    }
+        .expect("this crate's own lib.rs should be readable");
 
-    /// `crates/brink-cli/src/main.rs`'s `enum Commands` body, as plain text.
-    /// Read across the workspace fence the same way
-    /// `lint_policy_matches_the_root_workspace`/
-    /// `dependency_versions_track_the_root_workspace` above do — `src-tauri`
-    /// cannot take a dev-dependency on `brink-cli` to introspect its `clap`
-    /// surface without pulling the excluded crate back across the fence it
-    /// was deliberately pushed out of (`docs/desktop-shell-spec.md`
-    /// "Workspace placement"; #2402/#2346 rule out growing a required
-    /// lane's Tauri build) — so this reads the source file as text instead.
-    fn brink_cli_commands_enum_body() -> String {
-        let main_rs = repo_root().join("crates/brink-cli/src/main.rs");
-        assert!(
-            main_rs.is_file(),
-            "crates/brink-cli/src/main.rs should exist at {main_rs:?}"
-        );
-        let source = std::fs::read_to_string(&main_rs)
-            .expect("just asserted crates/brink-cli/src/main.rs exists");
-        source
-            .split_once("enum Commands {")
-            .map(|(_, body)| body.to_owned())
-            .expect("crates/brink-cli/src/main.rs should still declare `enum Commands { ... }`")
-    }
+        let (_, after) = source
+            .split_once("tauri::generate_handler![")
+            .expect("run() should still register commands with tauri::generate_handler![");
+        let (list, _) = after
+            .split_once(']')
+            .expect("the generate_handler! list should be closed");
 
-    /// clap derive's default `#[derive(Subcommand)]` rename rule:
-    /// `PascalCase` variant name -> kebab-case subcommand. `enum Commands` in
-    /// `crates/brink-cli/src/main.rs` carries no `#[command(name = ...)]` or
-    /// `rename_all` override on any variant (checked by the caller below),
-    /// so this default is the real rule in effect.
-    fn to_kebab_case(pascal: &str) -> String {
-        let mut out = String::with_capacity(pascal.len() + 4);
-        for (i, c) in pascal.chars().enumerate() {
-            if c.is_ascii_uppercase() {
-                if i > 0 {
-                    out.push('-');
-                }
-                out.push(c.to_ascii_lowercase());
-            } else {
-                out.push(c);
-            }
-        }
-        out
-    }
-
-    /// Every top-level `Commands` variant name, converted to the kebab-case
-    /// subcommand string `brink-cli`'s real `clap` surface accepts.
-    /// Top-level variants sit at exactly 4-space indentation inside the
-    /// enum body; struct-variant fields sit at 8, and the `Ide` variant's
-    /// `#[command(long_about = "...")]` string continuations sit at column
-    /// 0 — neither is mistaken for a variant name here.
-    fn brink_cli_subcommand_surface() -> Vec<String> {
-        let source = brink_cli_commands_enum_body();
-        assert!(
-            !source.contains("rename_all") && !source.contains("#[command(name"),
-            "enum Commands now overrides clap's default kebab-case renaming; \
-             brink_cli_subcommand_surface's parsing no longer matches the real rule"
-        );
-        let names: Vec<String> = source
+        let mut names: Vec<String> = list
             .lines()
-            .filter_map(|line| {
-                let rest = line.strip_prefix("    ")?;
-                if rest.starts_with(|c: char| c.is_whitespace()) {
-                    return None; // nested field/attribute, indented further
-                }
-                let name: String = rest
-                    .chars()
-                    .take_while(char::is_ascii_alphanumeric)
-                    .collect();
-                let after = rest[name.len()..].trim_start();
-                let is_variant_head = name.starts_with(|c: char| c.is_ascii_uppercase())
-                    && (after.starts_with('{') || after.starts_with(','));
-                is_variant_head.then(|| to_kebab_case(&name))
+            .map(|line| line.trim().trim_end_matches(',').trim())
+            .filter(|line| {
+                !line.is_empty()
+                    && !line.starts_with("//")
+                    && line.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
             })
+            .map(str::to_owned)
             .collect();
+        names.sort();
+        names.dedup();
         assert!(
-            !names.is_empty(),
-            "should have parsed at least one Commands variant out of \
-             crates/brink-cli/src/main.rs's `enum Commands` body"
+            names.len() > 10,
+            "expected to parse the real command list, got {names:?}"
         );
         names
     }
 
-    /// Fourth cost of the workspace fence (`docs/desktop-shell-spec.md`
-    /// "Workspace placement", #2507): `ALLOWED_CLI_SUBCOMMANDS` hand-mirrors
-    /// a subset of `brink-cli`'s real subcommand surface, and nothing tied
-    /// the two together until this test — a subcommand rename or removal in
-    /// `crates/brink-cli/src/main.rs` was invisible here until `run_cli`
-    /// broke at runtime (issue #2507, follow-up from PR #2502's review).
+    /// A stable fingerprint of the IPC surface.
+    fn ipc_surface_fingerprint() -> String {
+        use sha2::Digest as _;
+        let joined = ipc_command_surface().join("\n");
+        let digest = sha2::Sha256::digest(joined.as_bytes());
+        digest.iter().take(8).fold(String::new(), |mut out, b| {
+            use std::fmt::Write as _;
+            let _ = write!(out, "{b:02x}");
+            out
+        })
+    }
+
+    /// ⚠ **This failing does not mean the fingerprint is wrong. It means
+    /// `minShellVersion` has not been reconsidered.**
     ///
-    /// Deliberately a subset check, not an equality one: `brink-cli` has
-    /// subcommands the sidecar never exposes (`play`, `fmt`, `convert`,
-    /// `migrate-xliff`, `replay`, `ide` — see
-    /// `cli_allowlist_rejects_arbitrary_passthrough` above), and `brink-cli`
-    /// growing one of those is not drift this guard should fail on. A
-    /// rename or removal of a subcommand `ALLOWED_CLI_SUBCOMMANDS` actually
-    /// depends on is.
+    /// `minShellVersion` is the only thing standing between an OTA'd bundle
+    /// and a hard break: bundle JS that calls a `#[tauri::command]` the
+    /// installed shell does not have fails with no recovery short of a
+    /// rollback, and the manifest is the only place that can catch it
+    /// (`docs/desktop-ota-spec.md` Stage 2).
+    ///
+    /// Deriving it automatically was considered and declined (RULED
+    /// 2026-09-14): a fingerprint cannot tell an ADDED command
+    /// (backward-compatible — old bundles never call it) from a REMOVED or
+    /// RENAMED one (breaking), so an automatic bump would refuse bundles
+    /// that are perfectly safe. So the value stays a judgement, and this
+    /// guard only ensures the judgement is *made* — the failure is a red
+    /// check on the author's machine rather than a broken app on someone
+    /// else's.
+    ///
+    /// When it fires: decide whether the change removed or altered a command
+    /// an existing bundle could call. If so, raise `minShellVersion` to the
+    /// app version shipping this change. Either way, update
+    /// `commandsFingerprint` in the same commit.
     #[test]
-    fn cli_allowlist_subcommands_exist_in_brink_cli_surface() {
-        let real = brink_cli_subcommand_surface();
-        for sub in ALLOWED_CLI_SUBCOMMANDS {
-            assert!(
-                real.iter().any(|r| r == sub),
-                "ALLOWED_CLI_SUBCOMMANDS contains {sub:?}, which crates/brink-cli/src/main.rs's \
-                 `enum Commands` no longer declares (real surface: {real:?}) — a rename or \
-                 removal on the brink-cli side has to be reflected in run_cli's allowlist here \
-                 too (docs/desktop-shell-spec.md \"Workspace placement\", #2507)"
-            );
-        }
+    fn min_shell_version_is_reconsidered_when_the_ipc_surface_changes() {
+        let descriptor = ota_bundle_descriptor();
+        let pinned = descriptor["commandsFingerprint"]
+            .as_str()
+            .expect("ota-bundle.json should declare commandsFingerprint");
+        let actual = ipc_surface_fingerprint();
+
+        assert_eq!(
+            pinned,
+            actual,
+            "the IPC surface changed since minShellVersion was last judged against it.\n\
+             Commands now: {:?}\n\
+             DECIDE FIRST, then update the pin: did this remove or rename a command an \
+             already-published bundle could call? If yes, raise minShellVersion in \
+             packages/brink-desktop/ota-bundle.json to the app version shipping this \
+             change. Adding a command is NOT breaking — old bundles never call it. \
+             Then set commandsFingerprint to {actual:?}.",
+            ipc_command_surface()
+        );
+    }
+
+    /// The descriptor's own shape, so a typo there fails here rather than in
+    /// a release job — and so `minShellVersion` cannot quietly exceed the
+    /// app it ships with, which would refuse the bundle on every install
+    /// including the newest.
+    #[test]
+    fn the_ota_descriptor_is_well_formed_and_installable() {
+        let descriptor = ota_bundle_descriptor();
+
+        let bundle_version = descriptor["version"]
+            .as_str()
+            .expect("ota-bundle.json should declare a version");
+        assert!(
+            semver::Version::parse(bundle_version).is_ok(),
+            "bundle version {bundle_version:?} should be semver"
+        );
+
+        let min_shell = descriptor["minShellVersion"]
+            .as_str()
+            .expect("ota-bundle.json should declare minShellVersion");
+        let min_shell =
+            semver::Version::parse(min_shell).expect("minShellVersion should be semver");
+
+        let conf: serde_json::Value =
+            serde_json::from_str(&tauri_conf()).expect("tauri.conf.json should be valid JSON");
+        let app_version = conf["version"]
+            .as_str()
+            .expect("tauri.conf.json should declare a version");
+        let app_version =
+            semver::Version::parse(app_version).expect("the app version should be semver");
+
+        assert!(
+            min_shell <= app_version,
+            "minShellVersion ({min_shell}) exceeds the app version ({app_version}); this \
+             bundle would be refused by every install, including one built from this \
+             very commit"
+        );
     }
 
     #[cfg(any(target_os = "macos", target_os = "ios", target_os = "android"))]
@@ -4347,7 +4963,7 @@ on:
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take()
             .unwrap_or_default();
-        assert!(second.is_empty());
+        assert!(second.is_empty(), "{second:?}");
     }
 
     /// A fresh, uniquely-named scratch file path under the OS temp dir —
@@ -4481,6 +5097,24 @@ on:
                 }
             );
         }
+    }
+
+    /// The revert item must be handled IN THE SHELL, never forwarded to the
+    /// webview.
+    ///
+    /// This is the one property the escape hatch has. `MenuRoute::Emit`
+    /// would make it work only while the frontend is alive — that is, in
+    /// exactly the cases where nobody needs it — and fail silently in the
+    /// case it exists for. The tempting edit is to route it like every other
+    /// menu item, which is why this is pinned rather than commented.
+    #[test]
+    fn reverting_a_bundle_is_handled_in_the_shell_not_forwarded_to_the_webview() {
+        let route = route_menu_event("revert-bundle");
+        assert_eq!(route, MenuRoute::RevertBundle);
+        assert!(
+            !matches!(route, MenuRoute::Emit { .. }),
+            "a control that asks the webview to act cannot rescue a broken webview"
+        );
     }
 
     #[test]
@@ -4969,6 +5603,78 @@ mod reopen_tests {
             "wire name drifted: {json}"
         );
     }
+
+    /// The forward-compat property a self-updating app actually depends on.
+    ///
+    /// A bundle newer than the shell it runs on will write `settings.json`,
+    /// and an older shell must read it without losing the author's choices.
+    /// That is not hypothetical here: it is the ordinary state of an OTA'd
+    /// install between the bundle updating and the app updating.
+    #[test]
+    fn update_policy_survives_a_settings_file_from_a_newer_bundle() {
+        // A future variant, and a future field beside it.
+        let from_the_future = r#"{
+            "reopenLastProject": true,
+            "updatePolicy": { "mode": "pinned", "version": "0.0.4" },
+            "someFutureKnob": 3
+        }"#;
+        let parsed: AppSettings = serde_json::from_str(from_the_future).unwrap_or_default();
+        assert!(
+            parsed.reopen_last_project,
+            "an unknown key reset a known one"
+        );
+        assert_eq!(
+            parsed.update_policy.pinned_version(),
+            Some("0.0.4"),
+            "the pin must survive, or retention would prune the very bundle it names"
+        );
+
+        // A settings file written before the policy existed reads as the
+        // default rather than failing the whole file.
+        let older: AppSettings =
+            serde_json::from_str(r#"{"reopenLastProject":true}"#).unwrap_or_default();
+        assert_eq!(older.update_policy, UpdatePolicy::default());
+        assert_eq!(older.update_policy.pinned_version(), None);
+        assert!(
+            older.reopen_last_project,
+            "a missing updatePolicy must not discard the rest of the file"
+        );
+    }
+
+    /// The states this enum exists to make unrepresentable.
+    ///
+    /// Two fields (`autoUpdate` beside a channel) could say "pinned and
+    /// auto-updating"; one enum cannot. Asserted rather than asserted-in-
+    /// prose because the tempting refactor is to flatten it back into flags.
+    #[test]
+    fn a_pinned_policy_carries_no_channel_to_update_from() {
+        let pinned = UpdatePolicy::Pinned {
+            version: "0.0.4".to_owned(),
+        };
+        assert_eq!(pinned.pinned_version(), Some("0.0.4"));
+
+        for moving in [
+            UpdatePolicy::Auto {
+                channel: UpdateChannel::Stable,
+            },
+            UpdatePolicy::Auto {
+                channel: UpdateChannel::Beta,
+            },
+            UpdatePolicy::Manual {
+                channel: UpdateChannel::Stable,
+            },
+        ] {
+            assert_eq!(
+                moving.pinned_version(),
+                None,
+                "only Pinned pins: {moving:?}"
+            );
+        }
+
+        // The default must be a moving one, or a fresh install would never
+        // see an update at all.
+        assert_eq!(UpdatePolicy::default().pinned_version(), None);
+    }
 }
 
 #[cfg(test)]
@@ -5065,5 +5771,128 @@ mod system_fonts_tests {
             .map(str::to_owned),
         );
         assert_eq!(got, vec!["arial", "Arial Black", "Baskerville", "Menlo"]);
+    }
+}
+
+#[cfg(test)]
+mod bundle_offer_tests {
+    use super::*;
+    use bundle_update::{BundleIndex, BundleManifest, Channel};
+    use std::collections::BTreeSet;
+
+    fn entry(version: &str, min_shell: &str, channel: Channel) -> BundleManifest {
+        BundleManifest {
+            channel,
+            version: version.to_owned(),
+            min_shell_version: min_shell.to_owned(),
+            url: "https://example.invalid/bundle.tar.gz".to_owned(),
+            sha256: String::new(),
+            signature: String::new(),
+            pub_date: None,
+        }
+    }
+
+    fn versions(offers: &[BundleOffer]) -> Vec<&str> {
+        offers.iter().map(|o| o.version.as_str()).collect()
+    }
+
+    #[test]
+    fn rows_are_newest_first_regardless_of_publish_order() {
+        // The publisher appends; the picker must not inherit that order. A
+        // list that reads "0.0.1, 0.1.0, 0.0.9" makes the newest version
+        // something the author has to hunt for.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.0.1", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+                entry("0.0.9", "0.8.0", Channel::Beta),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        assert_eq!(versions(&offers), ["0.1.0", "0.0.9", "0.0.1"]);
+    }
+
+    #[test]
+    fn an_unparseable_version_sorts_last_in_index_order_rather_than_anywhere() {
+        // Deterministic placement for a row that cannot be compared: the
+        // repo's standing rule that iteration order never decides output.
+        let index = BundleIndex {
+            entries: vec![
+                entry("not-a-version", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+                entry("also-not", "0.8.0", Channel::Stable),
+                entry("0.2.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        assert_eq!(
+            versions(&offers),
+            ["0.2.0", "0.1.0", "not-a-version", "also-not"]
+        );
+    }
+
+    #[test]
+    fn a_row_needing_a_newer_shell_is_blocked_with_the_reason_apply_would_give() {
+        // The picker must not offer a version the shell would then refuse:
+        // that is an author choosing something, waiting for a download, and
+        // being told no. Same `decide` call, so the two cannot drift.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.2.0", "0.9.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", None, &BTreeSet::new());
+        let blocked = offers[0].blocked.as_deref();
+        assert!(
+            blocked.is_some_and(|r| r.contains("0.9.0") && r.contains("0.8.0")),
+            "expected a minShellVersion refusal naming both versions, got {blocked:?}"
+        );
+        assert_eq!(offers[1].blocked, None);
+    }
+
+    #[test]
+    fn the_active_version_is_marked_and_is_not_blocked() {
+        // Switching to what is already running is a no-op, not a refusal —
+        // `decide` reports `UpToDate` for it, and a row rendered as blocked
+        // would read as "you cannot have the thing you already have".
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.2.0", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let offers = offers_from_index(&index, "0.8.0", Some("0.1.0"), &BTreeSet::new());
+        assert!(!offers[0].active, "0.2.0 is not what is running");
+        assert!(offers[1].active, "0.1.0 is");
+        assert_eq!(offers[1].blocked, None);
+    }
+
+    #[test]
+    fn downloaded_covers_the_history_as_well_as_the_active_version() {
+        // Retention keeps N=3, so the rows behind the active one are on disk
+        // too. Reporting only the active one would tell an author every
+        // rollback target needs a fresh download.
+        let index = BundleIndex {
+            entries: vec![
+                entry("0.3.0", "0.8.0", Channel::Stable),
+                entry("0.2.0", "0.8.0", Channel::Stable),
+                entry("0.1.0", "0.8.0", Channel::Stable),
+            ],
+        };
+        let on_disk: BTreeSet<String> = ["0.2.0".to_owned(), "0.1.0".to_owned()].into();
+        let offers = offers_from_index(&index, "0.8.0", Some("0.2.0"), &on_disk);
+        assert_eq!(
+            offers.iter().map(|o| o.downloaded).collect::<Vec<_>>(),
+            [false, true, true]
+        );
+    }
+
+    #[test]
+    fn an_empty_index_is_an_empty_list_rather_than_an_error() {
+        // A channel with nothing published yet is a normal state on a fresh
+        // install, not a broken one.
+        let offers = offers_from_index(&BundleIndex::default(), "0.8.0", None, &BTreeSet::new());
+        assert!(offers.is_empty());
     }
 }

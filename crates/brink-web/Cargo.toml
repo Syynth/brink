@@ -62,6 +62,11 @@ brink-format = { workspace = true, features = ["inkt-write"] }
 # built for translator consumption. No filesystem use in this crate (pure
 # `StoryData` → JSON transform), so it's wasm-safe.
 brink-intl = { workspace = true }
+# The XLIFF 2 reader/writer behind `intl.rs`'s three bindings — the
+# localization round trip that used to require the `brink-cli` sidecar
+# (`docs/desktop-ota-spec.md` Stage 1). Pure Rust: quick-xml + thiserror,
+# no filesystem and nothing platform-specific, so it builds for wasm32.
+xliff2 = { workspace = true }
 rowan.workspace = true
 serde.workspace = true
 serde_json.workspace = true

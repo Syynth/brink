@@ -475,7 +475,11 @@ mod map_key_diagnostic_tests {
     #[test]
     fn no_collision_among_distinct_keys() {
         let keys = [MapKey::from(1), MapKey::from("two"), MapKey::from(false)];
-        assert!(map_key_collisions(keys.iter()).is_empty());
+        assert!(
+            map_key_collisions(keys.iter()).is_empty(),
+            "{:?}",
+            map_key_collisions(keys.iter())
+        );
     }
 
     #[test]
@@ -644,7 +648,11 @@ mod map_key_diagnostic_tests {
     #[test]
     fn float_precision_noise_values_empty_when_nothing_noisy() {
         let values = [Value::Int(1), Value::Float(2.0), Value::from("x")];
-        assert!(float_precision_noise_values(values.iter()).is_empty());
+        assert!(
+            float_precision_noise_values(values.iter()).is_empty(),
+            "{:?}",
+            float_precision_noise_values(values.iter())
+        );
     }
 }
 

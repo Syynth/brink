@@ -352,7 +352,7 @@ mod tests {
         let new_export = make_lines_json(vec![]);
 
         let result = regenerate_lines(&new_export, &existing, &[]);
-        assert!(result.scopes.is_empty());
+        assert!(result.scopes.is_empty(), "{:?}", result.scopes);
     }
 
     #[test]

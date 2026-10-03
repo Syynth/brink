@@ -975,6 +975,15 @@
      text fades in where the block has ALREADY left — never under it. */
   animation: player-row-in 400ms ease-out 240ms both;
 }
+/* Already on screen before this pane instance mounted (PlayerPane's
+   `settledBelow`): tabbing away and back rebuilds every row as a new DOM
+   node, and `both` would blank the whole read transcript for the 240ms
+   delay before fading it back in. Arrival is for lines that arrive. */
+.brink-studio .player .player-line-row.is-settled,
+.brink-studio .player .player-run-cue.is-settled,
+.brink-studio .player .player-start-marker.is-settled {
+  animation: none;
+}
 @media (prefers-reduced-motion: reduce) {
   .brink-studio .player .player-line-row,
   .brink-studio .player .player-run-cue,

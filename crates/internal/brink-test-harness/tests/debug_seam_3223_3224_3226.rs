@@ -465,7 +465,7 @@ fn one_step_never_queues_a_second_watchpoint_hit() {
         outcome.reason,
         DebugStopReason::Watchpoint { global_idx: b_idx }
     );
-    assert!(watch.hits().is_empty());
+    assert!(watch.hits().is_empty(), "{:?}", watch.hits());
     assert_eq!(story.variable("b"), Some(&Value::Int(2)));
 
     // And the story still finishes cleanly.

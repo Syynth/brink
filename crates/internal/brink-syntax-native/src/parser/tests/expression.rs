@@ -1227,7 +1227,11 @@ fn zero_arg_lambda_takes_a_return_annotation() {
     let p = assert_lossless("var f = ||: int { 1 }\n");
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
     let lambda = lambda_of(&p);
-    assert!(lambda_param_names(&lambda_params_of(&lambda)).is_empty());
+    assert!(
+        lambda_param_names(&lambda_params_of(&lambda)).is_empty(),
+        "{:?}",
+        lambda_param_names(&lambda_params_of(&lambda))
+    );
     assert!(
         lambda
             .syntax()
@@ -1545,7 +1549,7 @@ fn error_missing_operand_at_eof_no_trailing_newline() {
     let src = "var x = 1 +";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -1557,7 +1561,7 @@ fn error_empty_parens_has_no_expression() {
     let src = "var x = ()\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     let paren = p
         .syntax()
         .descendants()
@@ -1575,7 +1579,7 @@ fn error_malformed_arg_list_leading_comma() {
     let src = "var x = foo(,)\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::ERROR));
 }
 
@@ -1584,7 +1588,7 @@ fn error_malformed_arg_list_double_comma() {
     let src = "var x = foo(1,,2)\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -1592,7 +1596,7 @@ fn error_unclosed_call_at_eof() {
     let src = "var x = foo(";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -1604,7 +1608,7 @@ fn error_unclosed_lambda_pipe_still_recovers_a_body() {
     let src = "var f = |x, y expr\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
     assert!(has_node_kind(&p.syntax(), SyntaxKind::LAMBDA_EXPR));
 }
 
@@ -1615,7 +1619,7 @@ fn error_unexpected_token_cannot_start_expression() {
     let src = "var x = +\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -1623,7 +1627,7 @@ fn error_unexpected_token_percent_cannot_start_expression() {
     let src = "var x = %5\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── N. Adversarial / fuzz-style inputs ──────────────────────────────
@@ -1693,7 +1697,7 @@ fn adversarial_mixed_garbage_tokens_in_call_args() {
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
     // Just must not panic; garbage tokens are expected to produce errors.
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── N2. Construction initializers, `TypeName { … }` (B5, #1464) ──────
@@ -1854,7 +1858,7 @@ fn unterminated_construct_literal_never_panics() {
     let src = "var m = Map { \"a\": 1\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -1862,7 +1866,7 @@ fn garbage_inside_a_construct_literal_never_panics() {
     let src = "var m = Map { @@@ }\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 /// Typed-AST accessors: form detection reads the `COLON` token, and
@@ -2014,7 +2018,7 @@ fn unterminated_array_literal_never_panics() {
     let src = "var a = [1, 2\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 #[test]
@@ -2022,7 +2026,7 @@ fn garbage_inside_an_array_literal_never_panics() {
     let src = "var a = [ @@@ ]\n";
     let p = parse(src);
     assert_eq!(src, p.syntax().text().to_string(), "lossless round-trip");
-    assert!(!p.errors().is_empty());
+    assert!(!p.errors().is_empty(), "expected non-empty");
 }
 
 // ── O. Proptest round-trip generator (local to this family file — see  ──

@@ -994,7 +994,13 @@ describe("justfileShellView (#2677)", () => {
 
   it("blanks recipe HEADERS, which are just syntax rather than shell", () => {
     const lines = view.split("\n");
-    const headerIndex = realJustfile.split("\n").findIndex((line) => line === "book-assets:");
+    // `book-assets: wasm` — a header carrying a DEPENDENCY, which is the
+    // shape `JUST_RECIPE_HEADER`'s `(?:\s+[^:]*?)?` arm exists for. Matched by
+    // prefix rather than in full so a later dependency edit retargets this
+    // assertion instead of silently skipping it.
+    const headerIndex = realJustfile
+      .split("\n")
+      .findIndex((line) => /^book-assets\s*:/.test(line));
     assert.ok(headerIndex >= 0, "the book-assets recipe must still exist");
     assert.equal(lines[headerIndex], "");
   });
@@ -1047,10 +1053,15 @@ describe("the REAL justfile (#2677)", () => {
     for (const id of ["wasm-pack", "npm", "pnpm"]) {
       assert.equal(ids.has(id), true, `expected a "${id}" finding; saw ${JSON.stringify([...ids])}`);
     }
+    // Was 7 until `book-assets` stopped building the wasm inline and took
+    // `wasm` as a dependency instead: that deleted a duplicate `wasm-pack
+    // build` site, so the population genuinely shrank by one. The floor moves
+    // with it rather than being padded — six real fetch sites across three
+    // distinct tools is still far from vacuous.
     assert.equal(
-      result.findings.length >= 7,
+      result.findings.length >= 6,
       true,
-      `expected >=7 fetch sites in the unwrapped justfile, saw ${result.findings.length}`,
+      `expected >=6 fetch sites in the unwrapped justfile, saw ${result.findings.length}`,
     );
   });
 
@@ -1619,7 +1630,7 @@ describe("EXEC_CALL_NAMES / discoverPackageScriptSources (#2697)", () => {
     const sources = discoverPackageScriptSources();
     const paths = sources.map((s) => s.path);
     assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-wasm.mjs"), true, paths.join(", "));
-    assert.equal(paths.includes("packages/brink-desktop/scripts/ensure-cli-sidecar.mjs"), true, paths.join(", "));
+    assert.equal(paths.includes("packages/brink-desktop/scripts/build-update-manifest.mjs"), true, paths.join(", "));
     // Sorted, for deterministic output.
     assert.deepEqual([...paths].sort(), paths);
   });
@@ -1647,18 +1658,6 @@ describe("findUnboundedExecCalls — the REAL packages/*/scripts/*.mjs (#2697)",
   it("is non-vacuous: stripping the real timeout out of ensure-wasm.mjs goes red", () => {
     const source = realSources.find((s) => s.path.endsWith("ensure-wasm.mjs"));
     assert.notEqual(source, undefined, "expected to discover ensure-wasm.mjs");
-
-    const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
-    assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");
-
-    const result = findUnboundedExecCalls(stripped, source.path);
-    assert.equal(result.ok, false);
-    assert.match(result.problems.join("\n"), /execSync/);
-  });
-
-  it("is non-vacuous: stripping the real timeout out of ensure-cli-sidecar.mjs goes red", () => {
-    const source = realSources.find((s) => s.path.endsWith("ensure-cli-sidecar.mjs"));
-    assert.notEqual(source, undefined, "expected to discover ensure-cli-sidecar.mjs");
 
     const stripped = source.text.replace(/timeout:\s*DEFAULT_EXEC_TIMEOUT_MS,\s*/, "");
     assert.notEqual(stripped, source.text, "the real file must still carry the literal timeout default");

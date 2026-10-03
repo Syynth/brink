@@ -1476,7 +1476,11 @@ mod tests {
             vec!["a_tag".to_string(), "b_tag".to_string()]
         );
         assert_eq!(data.fragments.parts(0).unwrap(), fragments[0].parts);
-        assert!(data.fragments.tags(1).unwrap().is_empty());
+        assert!(
+            data.fragments.tags(1).unwrap().is_empty(),
+            "{:?}",
+            data.fragments.tags(1).unwrap()
+        );
     }
 
     // Every `.brkt` file written before this fix has the fragment section
@@ -1510,7 +1514,11 @@ mod tests {
         assert!(
             matches!(&data.fragments.parts(0).unwrap()[0], OutputPart::Text(s) if s == "legacy")
         );
-        assert!(data.fragments.tags(0).unwrap().is_empty());
+        assert!(
+            data.fragments.tags(0).unwrap().is_empty(),
+            "{:?}",
+            data.fragments.tags(0).unwrap()
+        );
     }
 
     // The *other* backward-compat boundary this module's doc claims but only

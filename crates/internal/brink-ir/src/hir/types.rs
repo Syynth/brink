@@ -3147,7 +3147,7 @@ mod lambda_body_tests {
     #[test]
     fn a_statement_terminated_body_yields_nothing_from_value_exprs() {
         let body = lambda_body_of("var f = ||: int {\n  return 7;\n};\n");
-        assert!(body.value_exprs().is_empty());
+        assert!(body.value_exprs().is_empty(), "{:?}", body.value_exprs());
         assert_eq!(body.all_exprs().len(), 1, "the `return`'s operand");
     }
 
@@ -3434,7 +3434,7 @@ mod conventions_projection_tests {
     #[test]
     fn an_empty_decl_set_projects_to_an_empty_projection() {
         let projection = ConventionsProjection::from_decls(&[], &[], &no_structs());
-        assert!(projection.entries.is_empty());
+        assert!(projection.entries.is_empty(), "{:?}", projection.entries);
         assert_eq!(projection, ConventionsProjection::default());
     }
 

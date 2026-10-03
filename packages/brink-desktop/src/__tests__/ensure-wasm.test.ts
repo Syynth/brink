@@ -16,7 +16,8 @@ import { afterEach, describe, expect, it } from "vitest";
 import { DEFAULT_EXEC_TIMEOUT_MS, defaultRunCommand, ensureWasm, newestSource } from "../../scripts/ensure-wasm.mjs";
 
 // `ensure-wasm.mjs` was top-level imperative script code until #2468 — the
-// structurally parallel sibling of `ensure-cli-sidecar.mjs` (given the same
+// structurally parallel sibling of the since-deleted
+// `ensure-cli-sidecar.mjs` (given the same
 // treatment by #2452), and the script `pnpm --filter @brink/desktop dev`
 // runs immediately BEFORE it. Nothing could call it, so nothing could test
 // it: merely importing it ran the freshness scan and, on a stale tree, a

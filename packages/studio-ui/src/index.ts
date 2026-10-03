@@ -61,6 +61,7 @@ export {
   SettingsModal,
   SETTINGS_ICONS,
   type SettingsSection,
+  type SettingsScope,
 } from "./SettingsModal.js";
 export { settingsSections } from "./settingsSections.js";
 export {

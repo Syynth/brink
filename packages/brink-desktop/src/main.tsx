@@ -42,10 +42,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { systemFonts } from "./system-fonts.js";
 import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { save } from "@tauri-apps/plugin-dialog";
 import {
   mountStudio,
+  SETTINGS_ICONS,
   type Command,
+  type SettingsSection,
   type StudioApi,
   type StudioHandle,
 } from "@brink-lang/studio";
@@ -64,6 +65,12 @@ import {
   pushRecent,
   readRecents,
   saveBytesDialog,
+  bundleReady,
+  bundleUpdateCheck,
+  bundleUpdateApply,
+  bundleActivate,
+  bundleAvailable,
+  spellcheckText,
 } from "./tauri-provider.js";
 import {
   anchorForPath,
@@ -72,13 +79,27 @@ import {
   resolveBootAction,
 } from "./project-open.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
+import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
 import { awaitSaveAllBeforeQuit } from "./quit.js";
-import { runCli } from "./cli.js";
 import { exportStoryToInkb } from "./export.js";
 import { exportXliff, type ExportXliffApi } from "./export-xliff.js";
+import { exportXliff as toXliff } from "@brink-lang/web";
 import { resolveFileOpenAction } from "./file-open.js";
-import { checkForUpdates, shouldAutoCheck, type UpdateApi } from "./updater.js";
+import { shouldAutoCheck } from "./updater.js";
+import {
+  applyCurrentPolicy,
+  checkForAnyUpdate,
+  type UnifiedUpdateApi,
+  type UpdateNotice,
+} from "./update-flow.js";
+import { UpdateSettings, type UpdateSettingsApi } from "./UpdateSettings.js";
+import { desktopProseChecker } from "./desktop-prose-checker.js";
+import { SpellingSettings, type SpellingSettingsApi } from "./SpellingSettings.js";
+import {
+  readUseSystemSpellcheck,
+  writeUseSystemSpellcheck,
+} from "./spellcheck-preference.js";
 import {
   UPDATE_CHECK_COMMAND,
   UPDATE_INSTALL_COMMAND,
@@ -254,13 +275,22 @@ async function renderLanding(error?: string): Promise<void> {
   // honored by bootLanding on the next launch (after a clean exit only).
   const reopenBox = root.querySelector<HTMLInputElement>("#reopen-last");
   if (reopenBox !== null) {
+    // Read-modify-write, never construct-from-scratch: `write_app_settings`
+    // replaces the whole file, so a settings object built from one checkbox
+    // would reset every other field (notably `updatePolicy`) to its serde
+    // default. Toggling "reopen last project" must not silently un-pin an
+    // author's bundle.
+    reopenBox.addEventListener("change", () => {
+      void readAppSettings()
+        .then((settings) =>
+          writeAppSettings({ ...settings, reopenLastProject: reopenBox.checked }),
+        )
+        .catch((e: unknown) => {
+          console.error("[brink-desktop] write_app_settings failed", e);
+        });
+    });
     void readAppSettings().then((settings) => {
       reopenBox.checked = settings.reopenLastProject;
-    });
-    reopenBox.addEventListener("change", () => {
-      void writeAppSettings({ reopenLastProject: reopenBox.checked }).catch((e: unknown) => {
-        console.error("[brink-desktop] write_app_settings failed", e);
-      });
     });
   }
 
@@ -394,6 +424,16 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     // The machine's fonts for Settings › Player › Font (#3439); the web
     // build has no such list and shows the curated one.
     systemFonts: () => systemFonts().then((fonts) => (fonts.length === 0 ? [] : fonts)),
+    // Settings › Updates. A host section, because an update channel and a
+    // bundle store mean nothing in the browser build.
+    settingsSections: [updateSettingsSection(), spellingSettingsSection()],
+    // Spelling from the OS, everything else from Harper. Off macOS the
+    // command answers `unavailable` and Harper keeps its spelling pass, so
+    // this is safe to wire unconditionally.
+    proseChecker: (builtin) =>
+      desktopProseChecker(builtin, spellcheckText, () =>
+        readUseSystemSpellcheck(globalThis.localStorage),
+      ),
     // The overlay contract (D2, 2026-08-07 ruling): egress delivery is NOT
     // persistence — dirty means "diverges from the last canonical save".
     // Canonical writes happen through provider.requestSave, awaited by the
@@ -426,6 +466,11 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
   // The EFFECTIVE entry (issue #2331 precedence already applied), not the
   // host fallback computed above — see `currentEntryFile`'s doc comment.
   currentEntryFile = current.entryFile;
+
+  // A bundle rollback reported before any studio existed (the common case —
+  // the confirm runs at module scope, well before a project is opened) now
+  // has a surface to land on.
+  flushUpdateNotices();
 
   // Autosave IS saveAll (celeris §10.1.1): one save path, one artifact
   // class. Clean ticks are no-ops inside the command. See `AUTOSAVE_MS`'s
@@ -620,26 +665,31 @@ export async function closeProject(): Promise<void> {
 }
 
 /**
- * File > Export XLIFF… (D3, #2392) — proves the `brink-cli` sidecar path
- * end to end. The export logic itself lives in `export-xliff.ts` (2026-08
- * review finding: logic living directly in `main.tsx` cannot be unit-tested
- * — `quit.ts` + `QuitSaveApi` exist for exactly this reason); this wrapper's
- * only job is gathering the currently-open project (root + EFFECTIVE entry,
- * `currentEntryFile`, never the host fallback) and the studio's notify sink,
- * then handing them to the extracted, unit-tested function.
+ * File > Export XLIFF… (D3, #2392). The export logic itself lives in
+ * `export-xliff.ts` (2026-08 review finding: logic living directly in
+ * `main.tsx` cannot be unit-tested — `quit.ts` + `QuitSaveApi` exist for
+ * exactly this reason); this wrapper's only job is gathering the
+ * currently-open project (the EFFECTIVE entry, `currentEntryFile`, never
+ * the host fallback) and the live surfaces, then handing them to the
+ * extracted, unit-tested function.
+ *
+ * `toXliff` is the wasm binding, not the `brink-cli` sidecar this flow used
+ * to spawn — see `export-xliff.ts` and `docs/desktop-ota-spec.md` Stage 1.
+ * `saveBytesDialog` is the same dialog-and-write round trip Export Story
+ * (.inkb) uses, so the two exports write files the same way.
  */
 async function handleExportXliff(): Promise<void> {
   const api = current?.api;
-  if (currentRoot === null || currentEntryFile === null || api === undefined) {
+  if (currentEntryFile === null || api === undefined) {
     console.warn("[brink-desktop] Export XLIFF: no project open");
     return;
   }
   const exportApi: ExportXliffApi = {
-    runCli: (invocation) => runCli(invocation),
-    save,
-    notify: (entry) => api.notify(entry),
+    studio: api,
+    toXliff,
+    saveBytes: saveBytesDialog,
   };
-  await exportXliff({ root: currentRoot, entryFile: currentEntryFile }, exportApi);
+  await exportXliff({ entryFile: currentEntryFile }, exportApi);
 }
 
 /**
@@ -870,7 +920,10 @@ void listen<string>("menu:view-toggle", (event) => {
 // share one path (and one throttle clock).
 void listen("menu:check-updates", () => {
   lastUpdateCheckAt = Date.now();
-  void checkForUpdates(updateApi());
+  // ONE check that consults both channels and produces one answer. Stage 2
+  // fired two here, which is why a manual check used to raise two
+  // near-identical "up to date" toasts.
+  void checkForAnyUpdate(unifiedUpdateApi(), { silent: false });
 });
 
 /** One id for every update toast, so each stage REPLACES the last rather
@@ -893,6 +946,55 @@ function settleUpdateOffer(accepted: boolean): void {
   const resolve = pendingUpdateOffer;
   pendingUpdateOffer = null;
   resolve?.(accepted);
+}
+
+/**
+ * Raise an update offer and resolve with the author's answer.
+ *
+ * **Shared by both update channels on purpose** (`docs/desktop-ota-spec.md`
+ * Stage 4, RULED 2026-09-15): from the author's side there is either an
+ * update or there isn't, and which channel carries it is our problem. One
+ * offer, one notification id, one pair of actions — so a bundle update and
+ * a shell update are indistinguishable from the outside.
+ *
+ * An update offer is a notification, not an interruption: a modal steals
+ * focus mid-sentence for something that can wait. With a project open it is
+ * a sticky toast carrying its own actions; the promise settles when the
+ * author dispatches one (see UPDATE_COMMANDS), so updater.ts's decision tree
+ * is unchanged.
+ */
+async function confirmUpdate(message: string): Promise<boolean> {
+  const api = current?.api;
+  if (!api) {
+    // Landing screen: no studio surface exists yet, so there is nowhere to
+    // put a toast. The native dialog stays the fallback.
+    const { ask } = await import("@tauri-apps/plugin-dialog");
+    return ask(`${message} Install and restart?`, {
+      title: "Update available",
+      kind: "info",
+      okLabel: "Install and Restart",
+      cancelLabel: "Later",
+    });
+  }
+  // A second check while an offer is still up replaces it; the older promise
+  // settles as declined so no caller is left hanging.
+  settleUpdateOffer(false);
+  return new Promise<boolean>((resolve) => {
+    pendingUpdateOffer = resolve;
+    api.notify({
+      id: UPDATE_NOTIFICATION_ID,
+      severity: "info",
+      source: "update",
+      message,
+      // Sticky: an offer that evaporates while you read it is worse than no
+      // offer at all.
+      timeoutMs: 0,
+      actions: [
+        { label: "Install and Restart", commandId: UPDATE_INSTALL_COMMAND },
+        { label: "Later", commandId: UPDATE_LATER_COMMAND },
+      ],
+    });
+  });
 }
 
 /**
@@ -926,114 +1028,10 @@ export const UPDATE_COMMANDS: Command[] = [
       // restart its clock, so alt-tabbing right afterwards doesn't
       // immediately fire a second round trip.
       lastUpdateCheckAt = Date.now();
-      void checkForUpdates(updateApi());
+      void checkForAnyUpdate(unifiedUpdateApi(), { silent: false });
     },
   },
 ];
-
-/**
- * Bind the injected {@link UpdateApi} to the real plugins (D4). The decision
- * tree itself lives in `updater.ts`, dependency-free and unit-tested; this is
- * only the wiring.
- */
-function updateApi(): UpdateApi {
-  return {
-    check: async () => {
-      const { check } = await import("@tauri-apps/plugin-updater");
-      const update = await check();
-      if (update === null) return null;
-      return {
-        version: update.version,
-        downloadAndInstall: async () => {
-          // Amend the offer toast in place (same id) so the accepted
-          // update reports itself instead of going quiet until the app
-          // restarts under the author.
-          current?.api.notify({
-            id: UPDATE_NOTIFICATION_ID,
-            severity: "info",
-            source: "update",
-            message: `Downloading ${update.version}\u2026 the app will restart when it finishes.`,
-            timeoutMs: 0,
-          });
-          await update.downloadAndInstall();
-        },
-      };
-    },
-    confirm: async (version) => {
-      // An update offer is a notification, not an interruption: a modal
-      // steals focus mid-sentence for something that can wait. With a
-      // project open it becomes a sticky toast carrying its own actions;
-      // the promise this returns is settled by whichever the author picks
-      // (see UPDATE_COMMANDS), so updater.ts's decision tree is unchanged.
-      const api = current?.api;
-      if (!api) {
-        // Landing screen: no studio surface exists yet, so there is nowhere
-        // to put a toast. The native dialog stays the fallback.
-        const { ask } = await import("@tauri-apps/plugin-dialog");
-        return ask(`Brink Studio ${version} is available. Install and restart?`, {
-          title: "Update available",
-          kind: "info",
-          okLabel: "Install and Restart",
-          cancelLabel: "Later",
-        });
-      }
-      // A second check while an offer is still up replaces it; the older
-      // promise settles as declined so no caller is left hanging.
-      settleUpdateOffer(false);
-      return new Promise<boolean>((resolve) => {
-        pendingUpdateOffer = resolve;
-        api.notify({
-          id: UPDATE_NOTIFICATION_ID,
-          severity: "info",
-          source: "update",
-          message: `Brink Studio ${version} is available.`,
-          // Sticky: an offer that evaporates while you read it is worse
-          // than no offer at all.
-          timeoutMs: 0,
-          actions: [
-            { label: "Install and Restart", commandId: UPDATE_INSTALL_COMMAND },
-            { label: "Later", commandId: UPDATE_LATER_COMMAND },
-          ],
-        });
-      });
-    },
-    notify: (severity, message) => {
-      // With a project open the studio's own surface is the right place; on
-      // the landing screen there is no StudioApi yet, so fall back to a
-      // native dialog rather than dropping the message on the floor.
-      const api = current?.api;
-      if (api) {
-        api.notify({
-          // Same id as the offer, so an outcome REPLACES the offer in place
-          // rather than stacking a second update toast beside it.
-          id: UPDATE_NOTIFICATION_ID,
-          severity,
-          source: "update",
-          message,
-          // A failed check or install is worth retrying without hunting
-          // through the menu bar. Errors are sticky by severity default.
-          actions:
-            severity === "error"
-              ? [{ label: "Try Again", commandId: UPDATE_CHECK_COMMAND }]
-              : undefined,
-        });
-        return;
-      }
-      void import("@tauri-apps/plugin-dialog").then(({ message: dialog }) =>
-        dialog(message, { title: "Brink Studio", kind: severity === "error" ? "error" : "info" }),
-      );
-    },
-    // Reuses the quit guard rather than a third save discipline — see
-    // updater.ts's module doc. A no-op when no project is open.
-    awaitSave: async () => {
-      if (current !== null) await awaitSaveAllBeforeQuit(current.api);
-    },
-    relaunch: async () => {
-      const { relaunch } = await import("@tauri-apps/plugin-process");
-      await relaunch();
-    },
-  };
-}
 
 /** When the last check of any kind ran (epoch ms); 0 = never. */
 let lastUpdateCheckAt = 0;
@@ -1050,7 +1048,7 @@ async function autoCheckForUpdates(now: number = Date.now()): Promise<void> {
     return;
   }
   lastUpdateCheckAt = now;
-  await checkForUpdates(updateApi(), { silent: true });
+  await checkForAnyUpdate(unifiedUpdateApi(), { silent: true });
 }
 
 // Launch check (ruled 2026-08-22): silent, and deliberately delayed — the
@@ -1116,3 +1114,217 @@ void bootLanding().catch((e: unknown) => {
   console.error("[brink-desktop] boot failed", e);
   void renderLanding();
 });
+
+// OTA boot confirmation (docs/desktop-ota-spec.md Stage 2).
+//
+// Deliberately NOT chained onto `bootLanding` and deliberately not
+// conditional on anything: reaching module scope here already proves the
+// bundle's JS parsed and ran, which is the property the rollback sentinel
+// exists to witness. Gating it behind a project being open, or behind
+// `bootLanding` resolving, would roll back a working bundle every time the
+// author launches to an empty landing screen or a reopen fails.
+//
+// A rollback is reported through the studio when one is mounted and to the
+// console otherwise — an author who launches straight to the landing screen
+// still gets the message on next open, which beats losing it entirely.
+void confirmBundleBoot(bundleReady).then((info) => {
+  if (info === null) return;
+  const message = rollbackMessage(info);
+  if (message === null) return;
+  pendingUpdateNotices.push({ severity: "error", message });
+  flushUpdateNotices();
+});
+
+/**
+ * Bind the unified flow to the real plugins and commands. The decision tree
+ * lives in `update-flow.ts`, dependency-free and unit-tested; this is only
+ * the wiring.
+ */
+function unifiedUpdateApi(): UnifiedUpdateApi {
+  return {
+    policy: async () => (await readAppSettings()).updatePolicy,
+    checkShell: async () => {
+      const { check } = await import("@tauri-apps/plugin-updater");
+      const update = await check();
+      if (update === null) return null;
+      return {
+        version: update.version,
+        downloadAndInstall: async () => {
+          // Amend the offer in place (same id) so an accepted update
+          // reports itself instead of going quiet until the app restarts
+          // under the author.
+          reportUpdateNotice(
+            { severity: "info", message: "Downloading\u2026 the app will restart when it finishes." },
+            { sticky: true },
+          );
+          await update.downloadAndInstall();
+        },
+      };
+    },
+    checkBundle: bundleUpdateCheck,
+    applyBundle: bundleUpdateApply,
+    activateBundle: async () => {
+      await bundleActivate();
+      // The reload is what swaps the running code; bundleActivate only
+      // moves what the asset protocol serves.
+      window.location.reload();
+    },
+    relaunch: async () => {
+      const { relaunch } = await import("@tauri-apps/plugin-process");
+      await relaunch();
+    },
+    awaitSave: async () => {
+      if (current !== null) await awaitSaveAllBeforeQuit(current.api);
+    },
+    confirm: confirmUpdate,
+    notify: reportUpdateNotice,
+  };
+}
+
+/**
+ * Settings › Updates, bound to the real commands.
+ *
+ * The section is a host section (`mountStudio`'s `settingsSections`) because
+ * an update channel and a bundle store mean nothing in the browser build —
+ * there is no installer there and nothing to pin.
+ *
+ * `applyCurrentPolicy` goes through the SAME install-and-activate path the
+ * toast uses, minus the consent prompt: the author picking a version in a
+ * list has already consented, and asking again would be the second dialog
+ * the unification exists to remove. What must not differ is everything after
+ * that — the save before the reload, and how installed-but-not-activated is
+ * reported.
+ */
+function updateSettingsSection(): SettingsSection {
+  const api: UpdateSettingsApi = {
+    readPolicy: async () => (await readAppSettings()).updatePolicy,
+    writePolicy: async (policy) => {
+      // Read-modify-write: `write_app_settings` replaces the whole file, so
+      // a settings object built from the policy alone would reset every
+      // other preference (see `readAppSettings`'s ⚠ note).
+      const settings = await readAppSettings();
+      await writeAppSettings({ ...settings, updatePolicy: policy });
+    },
+    listVersions: bundleAvailable,
+    applyCurrentPolicy: async () => {
+      await applyCurrentPolicy(unifiedUpdateApi());
+    },
+    checkNow: async () => {
+      await checkForAnyUpdate(unifiedUpdateApi());
+    },
+  };
+  return {
+    id: "host.brink.updates",
+    scope: "app",
+    title: "Updates",
+    keywords: "update updates channel stable beta pin pinned version rollback revert install",
+    icon: SETTINGS_ICONS.project,
+    body: <UpdateSettings api={api} />,
+  };
+}
+
+/**
+ * Settings › Spelling, bound to the preference and the platform probe.
+ *
+ * Toggling dispatches `compile.run` — the documented host route to a fresh
+ * compile — because a compile is what dispatches `refreshProseEffect` into
+ * every open view (`document-sessions.ts`). Without it the squiggles would
+ * keep whichever checker's answers they already had until the next edit,
+ * and a settings switch that appears to do nothing for a minute is
+ * indistinguishable from one that does not work.
+ */
+function spellingSettingsSection(): SettingsSection {
+  const api: SpellingSettingsApi = {
+    useSystem: () => readUseSystemSpellcheck(globalThis.localStorage),
+    setUseSystem: (next) => {
+      writeUseSystemSpellcheck(globalThis.localStorage, next);
+      current?.api.dispatch("compile.run");
+    },
+    // Asking is the only honest probe: availability is the shell's answer,
+    // not something to infer from the user agent. An empty document is the
+    // cheapest question that still gets a real one.
+    probeAvailable: async () => {
+      try {
+        return (await spellcheckText("", null, [])).kind === "checked";
+      } catch {
+        // A failed probe is not a claim that the platform lacks a checker —
+        // report available and let each check fall back on its own.
+        return true;
+      }
+    },
+  };
+  return {
+    id: "host.brink.spelling",
+    scope: "app",
+    title: "Spelling",
+    keywords:
+      "spelling spellcheck system native dictionary harper checker typo misspelled words",
+    icon: SETTINGS_ICONS.prose,
+    body: <SpellingSettings api={api} />,
+  };
+}
+
+/**
+ * Put an update notice on whichever surface exists, or hold it until one
+ * does.
+ *
+ * Four things here were separately wrong before the unification, and each
+ * is fixed by there being ONE path rather than two:
+ *
+ * - it carries the notification id, so an outcome REPLACES the offer in
+ *   place instead of stacking a second update toast beside it;
+ * - it carries the notice's own severity \u2014 the bundle path used to hold a
+ *   bare string and re-emit everything as an error, so "update installed"
+ *   rendered red;
+ * - a failure offers "Try Again", which the bundle path never did;
+ * - with no studio mounted it falls back to a native dialog rather than a
+ *   `console.warn` the author will never see.
+ */
+function reportUpdateNotice(notice: UpdateNotice, options: { sticky?: boolean } = {}): void {
+  const api = current?.api;
+  if (api === undefined) {
+    pendingUpdateNotices.push(notice);
+    flushUpdateNotices();
+    return;
+  }
+  api.notify({
+    id: UPDATE_NOTIFICATION_ID,
+    severity: notice.severity,
+    source: "update",
+    message: notice.message,
+    ...(options.sticky === true ? { timeoutMs: 0 } : {}),
+    actions:
+      notice.severity === "error"
+        ? [{ label: "Try Again", commandId: UPDATE_CHECK_COMMAND }]
+        : undefined,
+  });
+}
+
+/**
+ * Notices waiting for a surface to show them on.
+ *
+ * A QUEUE rather than one slot: the rollback report is raised at module
+ * scope, long before any project is open, and a launch update check can
+ * land while it is still waiting. With a single slot the second silently
+ * overwrote the first \u2014 and the first is the one telling the author why
+ * they are suddenly running older code.
+ */
+const pendingUpdateNotices: UpdateNotice[] = [];
+
+/** Deliver anything held, once a surface exists. */
+function flushUpdateNotices(): void {
+  const api = current?.api;
+  if (api === undefined) {
+    // No surface yet. A native dialog would be an interruption before the
+    // app has drawn, so these wait \u2014 but say so, since a notice that never
+    // arrives is indistinguishable from one that was never raised.
+    for (const notice of pendingUpdateNotices) {
+      console.warn(`[brink-desktop] ${notice.message}`);
+    }
+    return;
+  }
+  while (pendingUpdateNotices.length > 0) {
+    const notice = pendingUpdateNotices.shift();
+    if (notice !== undefined) reportUpdateNotice(notice);
+  }
+}

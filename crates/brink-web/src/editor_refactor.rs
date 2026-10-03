@@ -2510,11 +2510,19 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         // A message composed from a lower-layer error carries no literal here,
         // and the scan must not invent one for it.
         let composed = "            error: Some(e.to_string()),\n";
-        assert!(refusal_message_literals_in(composed).is_empty());
+        assert!(
+            refusal_message_literals_in(composed).is_empty(),
+            "{:?}",
+            refusal_message_literals_in(composed)
+        );
 
         // An unrelated string literal on the same line is not a refusal message.
         let unrelated = "    let label = \"unknown document handle\";\n";
-        assert!(refusal_message_literals_in(unrelated).is_empty());
+        assert!(
+            refusal_message_literals_in(unrelated).is_empty(),
+            "{:?}",
+            refusal_message_literals_in(unrelated)
+        );
     }
 
     /// The guard the hand-written enumeration in [`generated`] needed: a NEW
@@ -2582,21 +2590,33 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
 
         // No `Serialize` — an internal type, not a wire payload.
         let no_derive = accepted.replace("#[derive(Serialize)]", "#[derive(Debug)]");
-        assert!(refusal_structs_in(&no_derive).is_empty());
+        assert!(
+            refusal_structs_in(&no_derive).is_empty(),
+            "{:?}",
+            refusal_structs_in(&no_derive)
+        );
 
         // `ok` without `error` is a report, not a refusal channel.
         let no_error = "#[derive(Serialize)]\n\
              struct Reports {\n\
              \x20   ok: bool,\n\
              }\n";
-        assert!(refusal_structs_in(no_error).is_empty());
+        assert!(
+            refusal_structs_in(no_error).is_empty(),
+            "{:?}",
+            refusal_structs_in(no_error)
+        );
 
         // A struct with an unrelated `error` field but no `ok` flag.
         let no_ok = "#[derive(Serialize)]\n\
              struct Diagnostic {\n\
              \x20   error: Option<String>,\n\
              }\n";
-        assert!(refusal_structs_in(no_ok).is_empty());
+        assert!(
+            refusal_structs_in(no_ok).is_empty(),
+            "{:?}",
+            refusal_structs_in(no_ok)
+        );
 
         // The struct's own body ends at its own indentation — a nested struct
         // literal inside a later fn must not be swallowed into it.

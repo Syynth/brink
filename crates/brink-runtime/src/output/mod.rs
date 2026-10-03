@@ -1997,11 +1997,11 @@ mod tests {
         let lines = buf.test_flush_lines();
         assert_eq!(lines.len(), 3);
         assert_eq!(lines[0].0, "line one");
-        assert!(lines[0].1.is_empty());
+        assert!(lines[0].1.is_empty(), "{:?}", lines[0].1);
         assert_eq!(lines[1].0, "line two");
         assert_eq!(lines[1].1, vec!["my_tag"]);
         assert_eq!(lines[2].0, "line three");
-        assert!(lines[2].1.is_empty());
+        assert!(lines[2].1.is_empty(), "{:?}", lines[2].1);
     }
 
     /// Tags on the last line (no trailing newline) should still be captured.
@@ -2109,7 +2109,7 @@ mod tests {
         assert!(result.is_some());
         let (text, tags) = result.unwrap();
         assert_eq!(text, "hello\n");
-        assert!(tags.is_empty());
+        assert!(tags.is_empty(), "{tags:?}");
 
         // Remainder should produce "world" when flushed.
         assert_eq!(buf.flush(), "world");

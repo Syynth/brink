@@ -28,6 +28,7 @@ mod editor;
 mod editor_dto;
 mod editor_refactor;
 mod external_binding;
+mod intl;
 mod perf;
 /// The Program Explorer's model now lives at the session layer
 /// (decision log 2026-09-04) — re-exported so existing paths keep working.
@@ -45,6 +46,7 @@ pub use classifier::ClassifierSession;
 pub use compile::{compile, compile_fragment, program_checksum};
 pub use editor::EditorSession;
 pub use editor_dto::{diagnostic_registry, token_modifier_names, token_type_names};
+pub use intl::{compile_locale, export_xliff, regenerate_xliff};
 pub use session::{WebSession, diff_snapshots};
 pub use speculation::WebSpeculation;
 pub use story_runner::StoryRunner;

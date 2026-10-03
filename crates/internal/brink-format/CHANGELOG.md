@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.17](https://github.com/Syynth/brink/compare/brink-format-v0.0.16...brink-format-v0.0.17) - 2026-09-12
+
+### Added
+
+- *(debug-info)* `synthetic` flag on locals rows, hidden by the studio
+- *(format,runtime)* TouchVisit + ShuffleIndexOf opcodes ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(format)* LineVariantGroups section — tag 0x12, omitted when empty ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(format)* debug file table carries `source_hash` + line index ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(lir)* thread source provenance through lir::Expr (issue #3183 D5 remainder)
+- *(debug)* emit SectionKind::DebugInfo (0x11) — D6 bytecode offset -> source range map
+
+### Fixed
+
+- *(lints)* restore stolen #[expect] attributes; satisfy -D warnings ([#3273](https://github.com/Syynth/brink/pull/3273))
+- *(3261)* accept the `.inkt` hash snapshot, correct two now-false docs
+- *(format)* `content_hash` is a specified stable hash, not `DefaultHasher` ([#3261](https://github.com/Syynth/brink/pull/3261))
+- *(3184)* apply PR #3219 review findings that merged before they landed
+- *(3184)* clear the clippy failures the build could not gate
+
+### Other
+
+- add the slot operand to the hand-written .inkt params fixture
+- record each parameter's temp slot; bump .inkb to v10
+- deduplicate line-table entries within a scope at emission
+- add the left-operand-fold superinstructions, bump .inkb to v9
+- add the binary-fusion superinstructions, bump .inkb to v8
+- add EmitLineNl superinstruction, bump .inkb to v7
+- *(runtime)* resolve global-variable operands at link time; dispatch linked instructions straight from the fetch
+- *(runtime)* resolve static jump/call targets once at link time
+- Address review findings on PR #3188
+- Retire dormant Opcode::SourceLocation (ruled Q-R1, 2026-07-19)
+
 ## [0.0.15](https://github.com/Syynth/brink/compare/brink-format-v0.0.11...brink-format-v0.0.15) - 2026-08-23
 
 ### Added

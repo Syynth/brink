@@ -58,6 +58,8 @@
  * "does the ticker fire again" from that unrelated close-time flush.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { studioMock } from "./studio-mock.js";
+import { tauriProviderMock } from "./tauri-provider-mock.js";
 
 // ── Tauri IPC surface: never exercised by this scenario, just needs to
 // resolve without throwing so module import + the menu/window wiring at the
@@ -94,7 +96,7 @@ const mountStudio = vi.fn((..._args: unknown[]) => {
     unmount: vi.fn(),
   });
 });
-vi.mock("@brink-lang/studio", () => ({ mountStudio: (...args: unknown[]) => mountStudio(...args) }));
+vi.mock("@brink-lang/studio", () => studioMock((...args: unknown[]) => mountStudio(...args)));
 
 class FakeTauriFileProvider {
   constructor(private readonly root: string) {}
@@ -108,20 +110,8 @@ class FakeTauriFileProvider {
     return Promise.resolve();
   }
 }
-vi.mock("../tauri-provider.js", () => ({
+vi.mock("../tauri-provider.js", () => tauriProviderMock({
   TauriFileProvider: FakeTauriFileProvider,
-  pickProjectFolder: vi.fn(() => Promise.resolve(null)),
-  projectAnchorExists: vi.fn(() => Promise.resolve(true)),
-  readAppSettings: vi.fn(() => Promise.resolve({ reopenLastProject: false })),
-  writeAppSettings: vi.fn(() => Promise.resolve()),
-  previousExitClean: vi.fn(() => Promise.resolve(true)),
-  pickProjectFile: vi.fn(() => Promise.resolve(null)),
-  discoverProjectConfig: vi.fn(() => Promise.resolve(null)),
-  createProject: vi.fn(() => Promise.resolve("")),
-  pruneRecent: vi.fn(() => Promise.resolve([])),
-  pushRecent: vi.fn(() => Promise.resolve([])),
-  readRecents: vi.fn(() => Promise.resolve([])),
-  saveBytesDialog: vi.fn(() => Promise.resolve(null)),
 }));
 
 describe("desktop autosave ticker is replaced, not duplicated, on project reopen (#2486)", () => {
