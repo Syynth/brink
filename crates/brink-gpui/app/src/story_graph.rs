@@ -347,9 +347,10 @@ impl StoryGraphView {
         };
         h_flex()
             .w_full()
+            .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
             .gap_2()
             .px_2()
-            .py_1()
+            .items_center()
             .border_b_1()
             .border_color(border)
             .text_xs()
@@ -422,7 +423,11 @@ impl BasePanel for StoryGraphView {
 
 impl Panel for StoryGraphView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::tab_title::tab_title(cx.entity_id(), "Story Graph", false, cx)
+        let label = brink_gpui_shell::tool_window::tab_title(
+            gpui_component::IconName::Network,
+            "Story Graph",
+        );
+        crate::tab_title::closable_tab(cx.entity_id(), label, cx)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

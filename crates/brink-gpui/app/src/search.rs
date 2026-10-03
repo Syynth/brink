@@ -66,8 +66,8 @@ use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 use regex::{Regex, RegexBuilder};
 
 use crate::document::{apply_delta, highlighter_factory};
-use crate::icons;
 use crate::project::{Project, ProjectEvent, SourceDelta};
+use brink_gpui_shell::icons;
 
 /// Hard cap on matches per search — the unbounded-growth guard.
 pub const RESULT_CAP: usize = 1000;
@@ -939,7 +939,7 @@ impl SearchView {
     /// A summary-strip affordance — the Binder's own control, as ruled.
     fn tool(
         id: &'static str,
-        src: &'static str,
+        src: icons::BrinkIcon,
         tooltip: &'static str,
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Context<Self>) + 'static,
@@ -1081,21 +1081,21 @@ impl SearchView {
                 .child(div().flex_1().child(text))
                 .child(Self::tool(
                     "search-expand-all",
-                    icons::EXPAND_ALL,
+                    icons::BrinkIcon::ExpandAll,
                     "Expand all",
                     cx,
                     |this, cx| this.set_all_collapsed(false, cx),
                 ))
                 .child(Self::tool(
                     "search-collapse-all",
-                    icons::COLLAPSE_ALL,
+                    icons::BrinkIcon::CollapseAll,
                     "Collapse all",
                     cx,
                     |this, cx| this.set_all_collapsed(true, cx),
                 ))
                 .child(Self::tool(
                     "search-refresh",
-                    icons::REFRESH,
+                    icons::BrinkIcon::Refresh,
                     "Search again against the current sources",
                     cx,
                     |this, cx| this.run(cx),

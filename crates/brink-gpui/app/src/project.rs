@@ -369,8 +369,10 @@ impl Project {
         cx.notify();
     }
 
-    pub fn open(&mut self, root: PathBuf) {
-        self.worker.send(Request::Open { root });
+    /// Load the project at `root`. `entry` is an explicit entry from the
+    /// story-file door (see `Request::Open`); `None` lets the config name it.
+    pub fn open(&mut self, root: PathBuf, entry: Option<String>) {
+        self.worker.send(Request::Open { root, entry });
     }
 
     /// An editor's new text for a file. Returns whether anything changed.

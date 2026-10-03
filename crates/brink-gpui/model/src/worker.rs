@@ -33,7 +33,7 @@ use std::time::Instant;
 use brink_ide::session::IdeSession;
 
 use crate::cues::CueLine;
-use crate::play::{Play, PlayCommand, PlayOutcome};
+use crate::play::{PlayCommand, PlayOutcome, PlaySlot};
 use crate::query::{QueryKind, QueryResult};
 use brink_ir::hir::projection::range_key;
 use brink_ir::{Severity, SymbolKind};
@@ -56,7 +56,16 @@ pub struct Diagnostic {
 #[derive(Debug)]
 pub enum Request {
     /// Discard any current project and load the one rooted at `root`.
-    Open { root: PathBuf },
+    ///
+    /// `entry` is a human's explicit choice of entry (root-relative): the
+    /// story-file door of the 2026-08-23 ruling, "A project is anchored on
+    /// a FILE". It beats the `brink.toml`'s `[project] entry`, on open and
+    /// on every later edit to the config. `None` is the config's door: the
+    /// config names the entry, or nothing does.
+    Open {
+        root: PathBuf,
+        entry: Option<String>,
+    },
     /// Ask a question of the current analysis. Answered **after** every
     /// edit queued ahead of it, so it never sees stale text.
     Query {
@@ -231,7 +240,12 @@ pub struct ConfigState {
     /// session never sees them as documents; the config's reader serves
     /// them from here (an unsaved edit wins) and then from the disk.
     artifacts: BTreeMap<String, String>,
+    /// The entry in force: [`Self::explicit_entry`] when there is one,
+    /// otherwise the config's `[project] entry`.
     entry: Option<String>,
+    /// The entry a human opened the project by (the story-file door).
+    /// Survives every re-application of the config.
+    explicit_entry: Option<String>,
     /// The applied config's warnings, unprefixed.
     warnings: Vec<String>,
     /// The current text's parse error, if it has one: its byte span in
@@ -390,13 +404,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
-    // The breakpoints the editor has marked, source-level and outliving
-    // any one play session — a mark set before Play is pressed must be
-    // armed by the Start that follows.
-    let mut breakpoints: Vec<(String, u32)> = Vec::new();
     // The author's file keys, for the play session's entry stand-in rule.
     let mut files: Vec<String> = Vec::new();
-    let mut play: Option<Play> = None;
+    // The play session, the breakpoint marks that outlive it, and what a
+    // fault left behind — see [`PlaySlot`].
+    let mut play = PlaySlot::default();
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -414,12 +426,12 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
             match request {
                 Request::Query { kind, reply } => queries.push((kind, reply)),
                 Request::Play { command, reply } => plays.push((command, reply)),
-                Request::Open { root } => {
+                Request::Open { root, entry } => {
                     session = session_with_stdlib();
                     config = ConfigState::default();
-                    play = None;
+                    play = PlaySlot::default();
                     files.clear();
-                    let opened = match open(&mut session, root) {
+                    let opened = match open(&mut session, root, entry) {
                         Ok((opened, state)) => {
                             config = state;
                             Ok(opened)
@@ -562,7 +574,6 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     config.entry.as_deref(),
                     &files,
                     &mut play,
-                    &mut breakpoints,
                     command,
                 )
             } else {
@@ -574,7 +585,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
 }
 
 /// Load every source file under `root`, then apply its `brink.toml`.
-fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState), String> {
+fn open(
+    session: &mut IdeSession,
+    root: PathBuf,
+    explicit_entry: Option<String>,
+) -> Result<(Opened, ConfigState), String> {
     let started = Instant::now();
 
     let mut files = Vec::new();
@@ -592,7 +607,15 @@ fn open(session: &mut IdeSession, root: PathBuf) -> Result<(Opened, ConfigState)
         sources.push(text);
     }
 
-    let (config, state) = load_config(session, &root, &files);
+    if let Some(entry) = &explicit_entry
+        && !files.contains(entry)
+    {
+        return Err(format!(
+            "{entry} is not a story file under {}",
+            root.display()
+        ));
+    }
+    let (config, state) = load_config(session, &root, &files, explicit_entry);
     session.refresh_analysis();
 
     // What the config pointed at, so the mirror can hold it and the
@@ -667,13 +690,21 @@ fn load_config(
     session: &mut IdeSession,
     root: &Path,
     files: &[String],
+    explicit_entry: Option<String>,
 ) -> (Option<ConfigFile>, ConfigState) {
     let mut state = ConfigState {
         root: root.to_path_buf(),
+        entry: explicit_entry.clone(),
+        explicit_entry,
         ..ConfigState::default()
     };
     let tree = brink_driver::RealFs::new(root);
-    let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, &files[0]) else {
+    let from = state.explicit_entry.as_deref().unwrap_or(&files[0]);
+    let Ok(Some(key)) = brink_project_config::discover_from_entry_in_tree(&tree, from) else {
+        // No config: an explicit entry is still an entry. Without this a
+        // project opened by its story file would have no compile closure —
+        // the configless state #3010 diagnosed.
+        set_compile_entry(session, state.entry.as_deref());
         return (None, state);
     };
     let Ok(text) = std::fs::read_to_string(root.join(&key)) else {
@@ -723,7 +754,10 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 Some(&config_dir),
                 &read_file,
             ));
-            state.entry.clone_from(&config.entry);
+            state.entry = state
+                .explicit_entry
+                .clone()
+                .or_else(|| config.entry.clone());
             state.prose = Some(ProseState {
                 // Unset means on: a project that has said nothing about
                 // prose still wants its prose checked.
@@ -949,7 +983,7 @@ mod tests {
     fn open_tree_with_config(tree: &Tree) -> (IdeSession, Opened, ConfigState) {
         let mut session = session_with_stdlib();
         let (opened, state) =
-            open(&mut session, tree.0.clone()).expect("the fixture project must load");
+            open(&mut session, tree.0.clone(), None).expect("the fixture project must load");
         (session, opened, state)
     }
 
@@ -1122,11 +1156,63 @@ mod tests {
 
     /// Drive the real worker thread, blocking on its channels.
     fn drive(tree: &Tree) -> Worker {
+        drive_with_entry(tree, None)
+    }
+
+    /// [`drive`], opened through the story-file door with `entry`.
+    fn drive_with_entry(tree: &Tree, entry: Option<&str>) -> Worker {
         let worker = Worker::spawn();
         worker.send(Request::Open {
             root: tree.0.clone(),
+            entry: entry.map(ToOwned::to_owned),
         });
         worker
+    }
+
+    /// The analysis that follows an open.
+    fn analyzed_after_open(worker: &Worker) -> Analyzed {
+        let opened = next(worker);
+        assert!(
+            matches!(&opened, Response::Opened(o) if o.is_ok()),
+            "the open must succeed: {opened:?}"
+        );
+        match next(worker) {
+            Response::Analyzed(analyzed) => *analyzed,
+            other => panic!("expected Analyzed, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_entry_beats_the_configs() {
+        // The 2026-08-23 ruling: a human's explicit open is not a default.
+        let tree = Tree::new(
+            "explicit-beats-config",
+            &[
+                ("brink.toml", "[project]\nentry = \"main.ink\"\n"),
+                ("main.ink", "Main.\n-> DONE\n"),
+                ("side.ink", "Side.\n-> DONE\n"),
+            ],
+        );
+        let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("side.ink")));
+        assert_eq!(analyzed.entry.as_deref(), Some("side.ink"));
+        assert_eq!(analyzed.closure, ["side.ink"]);
+    }
+
+    #[test]
+    fn an_explicit_entry_with_no_config_still_compiles() {
+        // Without it the configless project has no closure at all — the
+        // silent state #3010 diagnosed.
+        let tree = Tree::new("explicit-no-config", &[("story.ink", "Hi.\n-> DONE\n")]);
+        let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("story.ink")));
+        assert_eq!(analyzed.entry.as_deref(), Some("story.ink"));
+        assert_eq!(analyzed.closure, ["story.ink"]);
+    }
+
+    #[test]
+    fn an_explicit_entry_that_is_not_a_story_file_refuses_the_open() {
+        let tree = Tree::new("explicit-missing", &[("story.ink", "Hi.\n-> DONE\n")]);
+        let worker = drive_with_entry(&tree, Some("nope.ink"));
+        assert!(matches!(next(&worker), Response::Opened(o) if o.is_err()));
     }
 
     fn next(worker: &Worker) -> Response {
@@ -1358,6 +1444,88 @@ mod tests {
             matches!(&report.status, CompiledStatus::Errors(e) if !e.is_empty()),
             "{report:?}"
         );
+    }
+
+    #[test]
+    fn a_runtime_fault_names_its_site_and_leaves_its_state_readable() {
+        use crate::play::PlayError;
+        // The shape a real project tripped on: `LIST_COUNT` yields an Int,
+        // and the switch it is fed to compares that Int against list
+        // values. ink's own runtime rejects it too AND names the site —
+        // `RUNTIME ERROR: 'story.ink' line 7: Can not call use ==
+        // operation on Int and List`, checked against `tools/inkjs-oracle`
+        // — so a message with no site is a parity gap, not a nicety.
+        let tree = Tree::new(
+            "fault",
+            &[(
+                "main.ink",
+                "LIST Items = sword, shield\n\
+                 -> start\n\
+                 === function price(item)\n\
+                 { item:\n\
+                 - sword: ~ return 20\n\
+                 - shield: ~ return 12\n\
+                 }\n\
+                 === start\n\
+                 ~ temp item = LIST_COUNT((sword, shield))\n\
+                 item is {item}.\n\
+                 The price is {price(item)}.\n\
+                 -> END\n",
+            )],
+        );
+        let worker = drive(&tree);
+
+        let started = play(&worker, PlayCommand::Start { at: None });
+        // ⚠ DIVERGENCE (#3587), pinned rather than fixed. inkjs prints the line the
+        // story had already finished ("item is 2.") and THEN reports the
+        // fault; brink reports the fault alone. The output is discarded
+        // inside the runtime — `drive_to_terminal`'s `?` drops the steps it
+        // had accumulated — so no studio-side change can recover it, and
+        // the repair is a change to the shape of an API `bevy-brink`, the
+        // CLI and the wasm bindings share. If this starts failing because
+        // the line arrives, the engine was fixed: assert the line instead.
+        assert!(
+            line_texts(&started).is_empty(),
+            "a faulting turn still loses its output: {started:?}"
+        );
+        let Some(PlayError::Runtime(fault)) = &started.error else {
+            panic!("the run faults: {started:?}");
+        };
+        let Some((path, line)) = &fault.at else {
+            panic!("the fault names its site: {fault:?}");
+        };
+        assert_eq!(path, "main.ink");
+        assert!(
+            (3..=7).contains(line),
+            "the site is the comparison inside `price`, not the call: {fault:?}"
+        );
+        assert!(
+            fault.message.contains("Equal"),
+            "the engine's own words are kept: {fault:?}"
+        );
+        // The site rides the rendered message too, the way ink's does.
+        let rendered = started.error.as_ref().expect("just matched").to_string();
+        assert!(
+            rendered.contains(&format!("{path}:{line}")),
+            "the message names the site: {rendered}"
+        );
+
+        // The corpse is readable. Dropping it unread is what used to leave
+        // the State View saying nothing was running over a transcript that
+        // had just died, with the values explaining the fault already gone.
+        let after = play(&worker, PlayCommand::Snapshot);
+        let state = after.state.expect("the faulted state is kept");
+        assert_eq!(state.faulted.as_ref(), Some(fault), "{state:?}");
+        assert!(
+            state.globals.iter().any(|(name, _)| name == "Items"),
+            "it is a real snapshot, not a stub: {state:?}"
+        );
+
+        // ...but only until something supersedes it. A Stop is the author
+        // saying they are done with it.
+        let _ = play(&worker, PlayCommand::Stop);
+        let cleared = play(&worker, PlayCommand::Snapshot);
+        assert_eq!(cleared.state, None, "{cleared:?}");
     }
 
     #[test]
@@ -1911,7 +2079,8 @@ mod tests {
     fn opening_a_tree_with_no_sources_is_an_error_not_a_panic() {
         let tree = Tree::new("empty", &[("README.md", "nothing here\n")]);
         let mut session = session_with_stdlib();
-        let err = open(&mut session, tree.0.clone()).expect_err("no sources must be an error");
+        let err =
+            open(&mut session, tree.0.clone(), None).expect_err("no sources must be an error");
         assert!(err.contains("no .brink or .ink files"), "got {err}");
     }
 

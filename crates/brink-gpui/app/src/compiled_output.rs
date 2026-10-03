@@ -430,7 +430,11 @@ impl BasePanel for CompiledOutputView {
 
 impl Panel for CompiledOutputView {
     fn title(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        crate::tab_title::tab_title(cx.entity_id(), "Compiled Output", false, cx)
+        let label = brink_gpui_shell::tool_window::tab_title(
+            gpui_component::IconName::FileText,
+            "Compiled Output",
+        );
+        crate::tab_title::closable_tab(cx.entity_id(), label, cx)
     }
 
     fn inner_padding(&self, _cx: &App) -> bool {

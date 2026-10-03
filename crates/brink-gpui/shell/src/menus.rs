@@ -30,8 +30,9 @@ use crate::commands::Command;
 /// own name in a packaged app) and what the standard items say.
 pub const APP_NAME: &str = "brink";
 
-/// The registry group that holds the App menu's commands — Settings… and
-/// Quit, registered by the shell.
+/// The registry group that holds the App menu's commands — Settings…,
+/// registered by the shell. Quit is the App menu's wherever it is
+/// registered (see [`Quit`]).
 pub const APP_GROUP: &str = "App";
 
 /// The registry group whose commands make up the Help menu.
@@ -40,7 +41,11 @@ pub const HELP_GROUP: &str = "Help";
 actions!(
     brink,
     [
-        /// Close the studio. The app's `on_app_quit` hook does the saving.
+        /// Quit the application. Defined here so the menu bar can place it
+        /// — last in the App menu on the Mac, at the foot of the first menu
+        /// elsewhere — whichever registry group the app registers it in.
+        /// HANDLED by the app, never here: quitting asks about unsaved
+        /// work first, and that is the app's to ask.
         Quit,
         /// Show what this application is.
         About,
@@ -140,7 +145,6 @@ impl MenuSpec {
 /// Call once at startup. The window-scoped ones (About, Minimize, Zoom)
 /// are the workspace's.
 pub fn init(cx: &mut App) {
-    cx.on_action(|_: &Quit, cx| cx.quit());
     cx.on_action(|_: &Hide, cx| cx.hide());
     cx.on_action(|_: &HideOthers, cx| cx.hide_other_apps());
     cx.on_action(|_: &ShowAll, cx| cx.unhide_other_apps());
@@ -159,10 +163,12 @@ pub fn init(cx: &mut App) {
 /// parameter so both presentations are testable on either.
 #[must_use]
 pub fn build(commands: &[Command], layout: &[MenuSpec], platform: MenuPlatform) -> Vec<Menu> {
+    // Quit is placed by platform, not by group, so no group lists it.
+    let is_quit = |c: &Command| c.action.partial_eq(&Quit);
     let in_group = |group: &str| -> Vec<&Command> {
         commands
             .iter()
-            .filter(|c| c.group.as_ref() == group)
+            .filter(|c| c.group.as_ref() == group && !is_quit(c))
             .collect()
     };
     let item = |c: &Command| MenuItem::Action {
@@ -172,15 +178,8 @@ pub fn build(commands: &[Command], layout: &[MenuSpec], platform: MenuPlatform) 
         checked: false,
         disabled: false,
     };
-    let is_quit = |c: &Command| c.action.partial_eq(&Quit);
     // Built per use: `MenuItem` is not `Clone`.
-    let app_items = || -> Vec<MenuItem> {
-        in_group(APP_GROUP)
-            .into_iter()
-            .filter(|c| !is_quit(c))
-            .map(item)
-            .collect()
-    };
+    let app_items = || -> Vec<MenuItem> { in_group(APP_GROUP).into_iter().map(item).collect() };
     let quit = commands.iter().find(|c| is_quit(c));
 
     let mut menus = Vec::new();
@@ -245,7 +244,7 @@ pub fn build(commands: &[Command], layout: &[MenuSpec], platform: MenuPlatform) 
     // A group nobody placed still gets a menu: generated means complete.
     let mut leftover: Vec<&SharedString> = Vec::new();
     for c in commands {
-        if !placed.contains(&c.group.as_ref()) && !leftover.contains(&&c.group) {
+        if !is_quit(c) && !placed.contains(&c.group.as_ref()) && !leftover.contains(&&c.group) {
             leftover.push(&c.group);
         }
     }
@@ -363,7 +362,8 @@ mod tests {
         r.register("View", "Single File", ViewSingle, None);
         r.register("View", "Command Palette", TogglePalette, None);
         r.register(APP_GROUP, "Settings\u{2026}", OpenSettings, None);
-        r.register(APP_GROUP, "Quit", Quit, None);
+        // The app registers Quit under File; the bar moves it.
+        r.register("File", "Quit", Quit, None);
         r.register("File", "Save", Save, None);
         r.register("Play", "Play", Play, None);
         r.register("Debug", "Step", Step, None);

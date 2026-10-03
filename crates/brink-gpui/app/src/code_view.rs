@@ -19,12 +19,9 @@ use std::rc::Rc;
 use gpui::prelude::*;
 use gpui::{
     App, Context, Entity, EntityId, EventEmitter, FocusHandle, Focusable, IntoElement, Render,
-    SharedString, Subscription, Window, div, px,
+    SharedString, Subscription, Window, div,
 };
-use gpui_component::WindowExt as _;
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, Panel, PanelStyle, panel_handle};
-use gpui_component::h_flex;
 
 use crate::compiled_output::CompiledOutputView;
 use crate::document::{Document, DocumentEvent};
@@ -169,25 +166,14 @@ impl CodeView {
         }
     }
 
-    /// The author asked to close the document that is entity `id` — its
-    /// tab's ✕, a middle click, `cmd-w`. Unsaved edits are asked about
-    /// first (save / don't save / cancel); everything else closes through
-    /// [`Self::close_document`], the same door a deleted file's tab goes
-    /// out by.
-    ///
-    /// The edits would survive a silent close — the buffer is the
-    /// project's, not the tab's — but they would be unsaved edits in a
-    /// file with no tab, which the author has no reason to go looking for.
-    pub fn request_close(&mut self, id: EntityId, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(document) = self.documents.iter().find(|d| d.entity_id() == id).cloned() else {
-            return;
-        };
-        let path = document.read(cx).path().to_string();
-        if !self.project.read(cx).is_dirty(&path) {
-            self.close_document(&path, window, cx);
-            return;
-        }
-        confirm_close(cx.entity(), self.project.clone(), path, window, cx);
+    /// The path of the open document that is entity `id`, if it is one —
+    /// how a close that names a tab finds the file behind it.
+    #[must_use]
+    pub fn document_path(&self, id: EntityId, cx: &App) -> Option<String> {
+        self.documents
+            .iter()
+            .find(|d| d.entity_id() == id)
+            .map(|d| d.read(cx).path().to_string())
     }
 
     /// Take a centre tab that is not a document out of the dock — the
@@ -433,74 +419,6 @@ impl CodeView {
             DocumentEvent::Closed => self.forget(&document, cx),
         }
     }
-}
-
-/// "Save changes to `name`?" — save, don't save, or cancel. Save closes
-/// only once the write has landed: a failed save keeps the tab, and the
-/// failure is reported where every save failure is (the Output log, via
-/// `ProjectEvent::SaveFailed`).
-fn confirm_close(
-    code: Entity<CodeView>,
-    project: Entity<Project>,
-    path: String,
-    window: &mut Window,
-    cx: &mut App,
-) {
-    let name = path.rsplit('/').next().unwrap_or(&path).to_owned();
-    let path = Rc::new(path);
-    // Through the shell's helper: File → Close Tab in the in-window menu
-    // bar would otherwise pull focus back out of the prompt.
-    brink_gpui_shell::menus::open_dialog(window, cx, move |dialog, _window, _cx| {
-        let save = {
-            let (code, project, path) = (code.clone(), project.clone(), path.clone());
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                window.close_dialog(cx);
-                let failed = project.update(cx, |project, cx| !project.save(&path, cx).is_empty());
-                if !failed {
-                    code.update(cx, |code, cx| code.close_document(&path, window, cx));
-                }
-            }
-        };
-        let discard = {
-            let (code, project, path) = (code.clone(), project.clone(), path.clone());
-            move |_: &gpui::ClickEvent, window: &mut Window, cx: &mut App| {
-                window.close_dialog(cx);
-                // Back to the disk's text first: the buffer is shared, and
-                // the manuscript would otherwise go on showing the edits
-                // that were just declined.
-                project.update(cx, |project, cx| project.revert(&path, cx));
-                code.update(cx, |code, cx| code.close_document(&path, window, cx));
-            }
-        };
-        dialog
-            .title(SharedString::from(format!("Save changes to {name}?")))
-            .w(px(420.))
-            .content(|content, _window, _cx| {
-                content.child("Your changes will be lost if you don't save them.")
-            })
-            .footer(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .justify_end()
-                    .child(
-                        Button::new("close-discard")
-                            .label("Don't Save")
-                            .on_click(discard),
-                    )
-                    .child(
-                        Button::new("close-cancel")
-                            .label("Cancel")
-                            .on_click(|_, window, cx| window.close_dialog(cx)),
-                    )
-                    .child(
-                        Button::new("close-save")
-                            .primary()
-                            .label("Save")
-                            .on_click(save),
-                    ),
-            )
-    });
 }
 
 impl EventEmitter<CodeViewEvent> for CodeView {}

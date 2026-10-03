@@ -59,6 +59,12 @@ actions!(
         PaletteConfirm,
         /// Close the palette without running anything.
         PaletteDismiss,
+        /// Close this window — through whatever guard the application
+        /// installs. The shell never removes a window itself: the app
+        /// tier is the one that knows whether closing loses work, so the
+        /// title bar's own close button dispatches this rather than
+        /// calling `remove_window`.
+        CloseWindow,
     ]
 );
 

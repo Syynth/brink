@@ -49,8 +49,8 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::icons;
 use crate::project::{Project, ProjectEvent};
+use brink_gpui_shell::icons;
 
 /// One knot (with its stitches) for Structure mode — the worker's
 /// [`brink_gpui_model::query::Symbol`] with offsets widened to the `usize`
@@ -1039,52 +1039,52 @@ impl Binder {
 
     // ── Rendering ───────────────────────────────────────────────────
 
-    fn icon_for(row: &Row) -> &'static str {
+    fn icon_for(row: &Row) -> icons::BrinkIcon {
         // The fill rule: filled = collapsed over content, outline =
         // expanded or a leaf.
         let filled = row.expandable && !row.expanded;
         match row.kind {
             RowKind::Folder => {
                 if row.expandable && row.expanded {
-                    icons::FOLDER_OPEN
+                    icons::BrinkIcon::TreeFolderOpen
                 } else if filled {
-                    icons::FOLDER_FILLED
+                    icons::BrinkIcon::TreeFolderFilled
                 } else {
                     // An empty folder: a leaf, so the outline.
-                    icons::FOLDER
+                    icons::BrinkIcon::TreeFolder
                 }
             }
             RowKind::File => {
                 // The config and its artifacts are documents ABOUT the
                 // story, not part of it — the ink drop is for story text.
                 if row.path.ends_with(".toml") || row.path.ends_with(".json") {
-                    icons::DOC
+                    icons::BrinkIcon::Doc
                 } else if row.draft {
                     // Dashed, whether or not the row is selected: being a
                     // draft is a property of the file, not of the selection.
-                    icons::FILE_DRAFT
+                    icons::BrinkIcon::DropDraft
                 } else if row.entry {
                     if filled {
-                        icons::FILE_ENTRY
+                        icons::BrinkIcon::DropEntry
                     } else {
-                        icons::FILE_ENTRY_OUTLINE
+                        icons::BrinkIcon::DropEntryOutline
                     }
                 } else if filled {
-                    icons::FILE_FILLED
+                    icons::BrinkIcon::DropFilled
                 } else {
-                    icons::FILE
+                    icons::BrinkIcon::Drop
                 }
             }
             RowKind::Knot => {
                 if row.is_function {
-                    icons::FUNCTION
+                    icons::BrinkIcon::Function
                 } else if filled {
-                    icons::KNOT_FILLED
+                    icons::BrinkIcon::KnotFilled
                 } else {
-                    icons::KNOT
+                    icons::BrinkIcon::Knot
                 }
             }
-            RowKind::Stitch => icons::STITCH,
+            RowKind::Stitch => icons::BrinkIcon::Stitch,
         }
     }
 
@@ -1163,22 +1163,30 @@ impl Binder {
                 .gap_1()
                 .items_center()
                 .when(row.marks.errors > 0, |el| {
-                    el.child(icons::icon(icons::ERROR_MARK, px(8.), theme.danger))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.danger)
-                                .child(row.marks.errors.to_string()),
-                        )
+                    el.child(icons::icon(
+                        icons::BrinkIcon::ErrorMark,
+                        px(8.),
+                        theme.danger,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.danger)
+                            .child(row.marks.errors.to_string()),
+                    )
                 })
                 .when(row.marks.warnings > 0, |el| {
-                    el.child(icons::icon(icons::WARNING_MARK, px(10.), theme.warning))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(theme.warning)
-                                .child(row.marks.warnings.to_string()),
-                        )
+                    el.child(icons::icon(
+                        icons::BrinkIcon::WarningMark,
+                        px(10.),
+                        theme.warning,
+                    ))
+                    .child(
+                        div()
+                            .text_xs()
+                            .text_color(theme.warning)
+                            .child(row.marks.warnings.to_string()),
+                    )
                 })
         });
 
@@ -1223,7 +1231,11 @@ impl Binder {
                             .invisible()
                             .group_hover("", |s| s.visible())
                             .hover(|s| s.bg(theme.muted))
-                            .child(icons::icon(icons::DOTS, px(12.), theme.muted_foreground))
+                            .child(icons::icon(
+                                icons::BrinkIcon::Dots,
+                                px(12.),
+                                theme.muted_foreground,
+                            ))
                             .on_mouse_down(
                                 MouseButton::Left,
                                 cx.listener({
@@ -1395,7 +1407,7 @@ impl Binder {
     /// A header affordance: our own SVG, tinted, with an active state.
     fn tool(
         id: &'static str,
-        src: &'static str,
+        src: icons::BrinkIcon,
         active: bool,
         cx: &mut Context<Self>,
         on_click: impl Fn(&mut Self, &mut Window, &mut Context<Self>) + 'static,
@@ -1424,27 +1436,27 @@ impl Binder {
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
+        // Copied out of the theme before the chain: `Self::tool` takes
+        // `&mut cx`, and a live `&Theme` read between two of them keeps an
+        // immutable borrow across it.
+        let (border, muted) = {
+            let theme = cx.theme();
+            (theme.border, theme.muted_foreground)
+        };
         let mode = self.mode;
         let filter_open = self.filter_open;
         h_flex()
             .w_full()
-            .h(px(32.))
+            .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
             .px_2()
             .gap_1()
             .items_center()
             .border_b_1()
-            .border_color(theme.border)
-            .child(
-                div()
-                    .flex_1()
-                    .text_xs()
-                    .text_color(theme.muted_foreground)
-                    .child("BINDER"),
-            )
+            .border_color(border)
+            .child(div().flex_1().text_xs().text_color(muted).child("BINDER"))
             .child(Self::tool(
                 "new-file",
-                icons::PLUS,
+                icons::BrinkIcon::Add,
                 false,
                 cx,
                 |_, _, cx| {
@@ -1456,29 +1468,40 @@ impl Binder {
                     });
                 },
             ))
-            .child(Self::tool(
-                "mode-files",
-                icons::DOC,
-                mode == Mode::Files,
-                cx,
-                |this, _, cx| {
-                    this.mode = Mode::Files;
-                    this.rebuild(cx);
-                },
-            ))
-            .child(Self::tool(
-                "mode-structure",
-                icons::KNOT,
-                mode == Mode::Structure,
-                cx,
-                |this, _, cx| {
-                    this.mode = Mode::Structure;
-                    this.rebuild(cx);
-                },
-            ))
+            // Files and Structure are ALTERNATIVES, and sitting loose in
+            // a row of actions they read as two more buttons to press.
+            // One border around the pair is what says "pick one" — the
+            // active state itself was never the problem here, `tool`
+            // already tints and fills it.
+            .child(
+                h_flex()
+                    .rounded_sm()
+                    .border_1()
+                    .border_color(border)
+                    .child(Self::tool(
+                        "mode-files",
+                        icons::BrinkIcon::Doc,
+                        mode == Mode::Files,
+                        cx,
+                        |this, _, cx| {
+                            this.mode = Mode::Files;
+                            this.rebuild(cx);
+                        },
+                    ))
+                    .child(Self::tool(
+                        "mode-structure",
+                        icons::BrinkIcon::Knot,
+                        mode == Mode::Structure,
+                        cx,
+                        |this, _, cx| {
+                            this.mode = Mode::Structure;
+                            this.rebuild(cx);
+                        },
+                    )),
+            )
             .child(Self::tool(
                 "collapse-all",
-                icons::COLLAPSE_ALL,
+                icons::BrinkIcon::CollapseAll,
                 false,
                 cx,
                 |this, _, cx| {
@@ -1494,7 +1517,7 @@ impl Binder {
             ))
             .child(Self::tool(
                 "expand-all",
-                icons::EXPAND_ALL,
+                icons::BrinkIcon::ExpandAll,
                 false,
                 cx,
                 |this, _, cx| {
@@ -1504,7 +1527,7 @@ impl Binder {
             ))
             .child(Self::tool(
                 "filter",
-                icons::SEARCH,
+                icons::BrinkIcon::Find,
                 filter_open,
                 cx,
                 |this, window, cx| {
@@ -1779,6 +1802,16 @@ impl gpui_component::dock::BasePanel for Binder {
 impl gpui_component::dock::Panel for Binder {
     fn title(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
         SharedString::from("Binder")
+    }
+
+    /// The Binder draws its own header edge to edge, like every other tool
+    /// window here. Without this it took the skin's default `pt_2` — the
+    /// kit applies it to the active panel of any group holding more than
+    /// one, which the left dock does (Binder + Search) — and since Search
+    /// already opted out, the gap appeared above one tab and not the
+    /// other.
+    fn inner_padding(&self, _cx: &App) -> bool {
+        false
     }
 }
 

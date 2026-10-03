@@ -6,6 +6,7 @@
 //! not, and must not.
 
 mod binder;
+mod closing;
 mod code_view;
 mod compiled_output;
 mod continuous;
@@ -13,9 +14,11 @@ mod document;
 mod files;
 mod fixes;
 mod graph_layout;
-mod icons;
+#[cfg(test)]
+mod harness;
 mod inkt_highlight;
 mod knots;
+mod landing;
 mod navigation;
 mod output_log;
 mod player;
@@ -46,14 +49,17 @@ use std::path::PathBuf;
 use brink_gpui_model::play::PlayCommand;
 use brink_gpui_model::query::{ConvertTarget, QueryKind, QueryResult};
 use brink_gpui_shell::editor_view::EditorView;
+use brink_gpui_shell::icons;
 use brink_gpui_shell::menus::MenuSpec;
+use brink_gpui_shell::menus::Quit;
 use brink_gpui_shell::region::RailSlot;
 use brink_gpui_shell::settings_modal::{Scope, Section, SectionMeta};
 use brink_gpui_shell::tool_window::ToolWindowSpec;
 use brink_gpui_shell::workspace::{StatusCell, Workspace};
 use gpui::{
-    App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _, IntoElement,
-    Render, Subscription, Task, Window, WindowBounds, WindowOptions, actions, prelude::*, px, size,
+    AnyWindowHandle, App, AppContext as _, Application, Bounds, Context, Entity, Focusable as _,
+    Global, IntoElement, PromptLevel, Render, Subscription, Task, WeakEntity, Window, WindowBounds,
+    WindowOptions, actions, prelude::*, px, size,
 };
 use gpui_component::input::RopeExt as _;
 use gpui_component::{Root, TitleBar};
@@ -78,6 +84,7 @@ use crate::settings_prose::ProseSection;
 use crate::single_view::SingleFileView;
 use crate::state_view::StateView;
 use crate::todos::{OpenTodo, Todos};
+use brink_gpui_shell::commands::CloseWindow;
 use brink_gpui_shell::notify::{Severity, notify};
 
 actions!(
@@ -131,8 +138,11 @@ actions!(
         OpenStoryGraph,
         /// Go to a file, knot or stitch by name.
         QuickOpenGoTo,
-        /// Choose a project folder and open it in a new window.
+        /// Choose a story file or a `brink.toml` and open its project in a
+        /// new window (the two doors: `landing::anchor_for`).
         OpenProject,
+        /// Choose a folder, scaffold `main.ink` + `brink.toml`, open it.
+        NewProject,
         /// Give the editor the whole window, and give it back.
         MaximizeEditor,
         /// Take back the last file operation — a create, a rename, a
@@ -189,11 +199,20 @@ struct Studio {
     /// The filesystem watch, held for the window's lifetime: dropping the
     /// task stops the pump and the watcher with it.
     _watching: gpui::Task<()>,
+    /// Where this window is in closing (see [`closing`]).
+    close: CloseState,
     _subscriptions: Vec<Subscription>,
 }
 
 impl Studio {
-    fn new(root: PathBuf, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    /// `entry` is an explicit entry from the story-file door; `None` lets
+    /// the project's config name it.
+    fn new(
+        root: PathBuf,
+        entry: Option<String>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let project = cx.new(Project::new);
         let workspace = cx.new(|cx| Workspace::new(window, cx));
 
@@ -307,7 +326,7 @@ impl Studio {
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)
-                    .icon(icons::FOLDER)
+                    .icon(icons::BrinkIcon::TreeFolder)
                     .size(px(260.))
                     .open(),
                 binder.clone(),
@@ -318,7 +337,7 @@ impl Studio {
             // which is what made the rail tab-aware.
             workspace.add_tool_window(
                 ToolWindowSpec::new("search", "Search", RailSlot::LEFT_UPPER)
-                    .icon(icons::SEARCH)
+                    .icon(icons::BrinkIcon::Find)
                     .size(px(320.)),
                 search.clone(),
                 window,
@@ -328,7 +347,7 @@ impl Studio {
                 // Lower-left: with no bottom rail, this is what addresses
                 // the bottom dock (`docs/gpui-studio-spec.md` §4.1).
                 ToolWindowSpec::new("problems", "Problems", RailSlot::LEFT_LOWER)
-                    .icon(icons::WARNING_MARK)
+                    .icon(icons::BrinkIcon::WarningMark)
                     .size(px(160.))
                     .open(),
                 problems.clone(),
@@ -338,7 +357,7 @@ impl Studio {
             // Beside Problems in the lower-left dock: the second tab there.
             workspace.add_tool_window(
                 ToolWindowSpec::new("todos", "TODOs", RailSlot::LEFT_LOWER)
-                    .icon(icons::TODO)
+                    .icon(icons::BrinkIcon::Todo)
                     .size(px(160.)),
                 todos.clone(),
                 window,
@@ -349,7 +368,7 @@ impl Studio {
             // and the errors that have no file and span to sit on.
             workspace.add_tool_window(
                 ToolWindowSpec::new("output", "Output", RailSlot::LEFT_LOWER)
-                    .icon(icons::DOC)
+                    .icon(icons::BrinkIcon::Doc)
                     .size(px(160.)),
                 output.clone(),
                 window,
@@ -359,7 +378,7 @@ impl Studio {
             // tree that wants the side rather than the bottom.
             workspace.add_tool_window(
                 ToolWindowSpec::new("program", "Program", RailSlot::RIGHT_UPPER)
-                    .icon(icons::DOC)
+                    .icon(icons::BrinkIcon::Doc)
                     .size(px(380.)),
                 program.clone(),
                 window,
@@ -369,7 +388,7 @@ impl Studio {
             // pane, which reads the same session the Player runs.
             workspace.add_tool_window(
                 ToolWindowSpec::new("state", "State", RailSlot::RIGHT_UPPER)
-                    .icon(icons::KNOT)
+                    .icon(icons::BrinkIcon::Knot)
                     .size(px(380.)),
                 state.clone(),
                 window,
@@ -519,6 +538,7 @@ impl Studio {
                 Some("cmd-shift-e"),
                 cx,
             );
+            workspace.register_command("File", "New Project\u{2026}", NewProject, None, cx);
             workspace.register_command(
                 "File",
                 "Open Project\u{2026}",
@@ -548,6 +568,14 @@ impl Studio {
                 cx,
             );
             workspace.register_command("File", "Undo File Operation", UndoFileOp, None, cx);
+            workspace.register_command(
+                "File",
+                "Close Project",
+                CloseWindow,
+                Some("cmd-shift-w"),
+                cx,
+            );
+            workspace.register_command("File", "Quit", Quit, Some("cmd-q"), cx);
             // The menu bar (`brink_gpui_shell::menus`): which of the groups
             // above go in which menu. Groups, never commands — a command
             // registered into a group is in the bar with no edit here, and
@@ -600,15 +628,16 @@ impl Studio {
         // there. Toggling a tool window or switching view writes too (see
         // `save_layout` in the handlers), so a crash loses at most an
         // unfinished drag.
-        cx.on_app_quit({
-            let workspace = workspace.clone();
-            let code = code.clone();
-            let project = project.clone();
-            move |_: &mut Studio, cx: &mut Context<Studio>| {
-                let documents = document_state(&project, &code, cx);
-                Workspace::save_layout(&workspace, Some(documents), cx);
-                async move {}
-            }
+        //
+        // The hook reads the studio it is handed rather than capturing its
+        // parts: a detached quit hook lives as long as the app, so a captured
+        // `Entity` would keep a closed window's project, editors and worker
+        // thread alive until quit (found by the headless harness's leak
+        // check).
+        cx.on_app_quit(|this: &mut Studio, cx: &mut Context<Studio>| {
+            let documents = document_state(&this.project, &this.code, cx);
+            Workspace::save_layout(&this.workspace, Some(documents), cx);
+            async move {}
         })
         .detach();
 
@@ -909,11 +938,22 @@ impl Studio {
         // studio between opening a file and saving it was invisible, and
         // the next save simply overwrote it.
         let watching = watch::start(project.clone(), root.clone(), cx);
-        project.update(cx, |project, _| project.open(root));
+        project.update(cx, |project, _| project.open(root, entry));
 
         // Keys have somewhere to land from the first frame.
         let workspace_focus = workspace.read(cx).focus_handle(cx);
         window.focus(&workspace_focus, cx);
+
+        // The platform's close (the red button, a Windows caption) asks
+        // here first; `false` keeps the window while the prompt is up.
+        let this = cx.weak_entity();
+        window.on_window_should_close(cx, move |window, cx| {
+            this.update(cx, |studio, cx| studio.should_close(window, cx))
+                .unwrap_or(true)
+        });
+        // Quit asks every project window, so it needs to find them all.
+        let me = (window.window_handle(), cx.weak_entity());
+        cx.default_global::<OpenStudios>().0.push(me);
 
         Self {
             project,
@@ -927,6 +967,7 @@ impl Studio {
             quick_open: None,
             caret: None,
             _watching: watching,
+            close: CloseState::default(),
             _subscriptions: vec![
                 on_project,
                 on_binder,
@@ -1385,15 +1426,46 @@ impl Studio {
     /// "Format on save" on, every dirty file is formatted first, so what is
     /// written is what the editors then show.
     fn save(&mut self, _: &Save, window: &mut Window, cx: &mut Context<Self>) {
+        // A failure is already reported: `save_all` emits `SaveFailed`,
+        // which the Output log shows. Only closing needs the list back.
+        self.save_dirty(window, cx).detach();
+    }
+
+    /// What `Save` does, answering which writes failed — the close and
+    /// quit prompts' "Save" must not close over a file it could not write.
+    fn save_dirty(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<(String, std::io::Error)>> {
+        self.save_dirty_in(None, window, cx)
+    }
+
+    /// [`Self::save_dirty`], for every dirty file or for `only` that one —
+    /// closing a tab saves its file and nothing else.
+    fn save_dirty_in(
+        &mut self,
+        only: Option<&str>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Task<Vec<(String, std::io::Error)>> {
         let settings = brink_gpui_shell::settings::AppSettings::get(cx);
         let project = self.project.clone();
-        if !settings.format_on_save && !settings.fix_on_save {
-            write_all(&project, cx);
-            return;
-        }
         // Both are per-FILE and scoped to what is dirty: saving must not
         // rewrite a file the author has not touched.
-        let dirty = project.read(cx).dirty_paths();
+        let dirty = match only {
+            Some(path) if project.read(cx).is_dirty(path) => vec![path.to_owned()],
+            Some(_) => Vec::new(),
+            None => project.read(cx).dirty_paths(),
+        };
+        let only = only.map(str::to_owned);
+        let write = move |project: &Entity<Project>, cx: &mut App| match &only {
+            Some(path) => project.update(cx, |project, cx| project.save(path, cx)),
+            None => write_all(project, cx),
+        };
+        if !settings.format_on_save && !settings.fix_on_save {
+            return Task::ready(write(&project, cx));
+        }
         // Fixes first, then the formatter — so what is laid out is what
         // the fixes wrote, rather than a fix landing on formatted text and
         // leaving it unformatted again.
@@ -1422,9 +1494,8 @@ impl Studio {
                     format.await;
                 }
             }
-            let _ = cx.update(|_, cx| write_all(&project, cx));
+            cx.update(|_, cx| write(&project, cx)).unwrap_or_default()
         })
-        .detach();
     }
 
     /// Run the story in the Player — from the entry, or from `at`. The
@@ -1432,10 +1503,9 @@ impl Studio {
     /// the manuscript itself should host a session is parked
     /// (`HANDOFF.md`, "Open, parked").
     fn play_at(&mut self, at: Option<String>, window: &mut Window, cx: &mut Context<Self>) {
-        let root = self.workspace.read(cx).editor_root().clone();
-        if root.read(cx).view() == EditorView::Continuous {
-            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
-        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.require_editor_view(EditorView::Code, cx);
+        });
         let player = self.player.clone();
         self.code
             .update(cx, |code, cx| code.show_player(&player, window, cx));
@@ -1458,7 +1528,7 @@ impl Studio {
         cx: &mut Context<Self>,
     ) {
         self.workspace.update(cx, |workspace, cx| {
-            workspace.set_editor_view(EditorView::Code, window, cx);
+            workspace.require_editor_view(EditorView::Code, cx);
         });
         let compiled = self.compiled.clone();
         self.code
@@ -1542,45 +1612,19 @@ impl Studio {
         self.open(path, None, window, cx);
     }
 
-    /// Ask the platform for a folder, then open it in a new window.
+    /// Ask for a story file or a config, then open its project in a new
+    /// window.
     ///
     /// A new window rather than this one: every panel here is built around
     /// one root — the documents, the Binder's tree, the worker's session —
     /// so swapping the root under them would mean tearing all of it down
     /// and building it again, which is what opening a window does anyway.
-    fn open_project(&mut self, _: &OpenProject, window: &mut Window, cx: &mut Context<Self>) {
-        let paths = cx.prompt_for_paths(gpui::PathPromptOptions {
-            files: false,
-            directories: true,
-            multiple: false,
-            prompt: Some("Open".into()),
-        });
-        cx.spawn_in(window, async move |_, cx| {
-            let chosen = paths.await;
-            cx.update(|window, cx| match chosen {
-                Ok(Ok(Some(paths))) => {
-                    if let Some(root) = paths.into_iter().next() {
-                        open_project_window(root, cx);
-                    }
-                }
-                // Cancelled: the person said no, which is not news.
-                Ok(Ok(None)) => {}
-                // On Linux the picker is the desktop portal, which is not
-                // always there (a bare X session, a container). Saying so
-                // beats a menu entry that silently does nothing.
-                Ok(Err(err)) => {
-                    notify(
-                        Severity::Error,
-                        "studio",
-                        format!("Could not open the folder picker: {err}"),
-                        window,
-                        cx,
-                    );
-                }
-                Err(_) => {}
-            })
-        })
-        .detach();
+    fn open_project(&mut self, _: &OpenProject, _: &mut Window, cx: &mut Context<Self>) {
+        landing::choose_and_open(cx);
+    }
+
+    fn new_project(&mut self, _: &NewProject, _: &mut Window, cx: &mut Context<Self>) {
+        landing::new_project(cx);
     }
 
     fn open_recent(
@@ -1589,24 +1633,11 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let root = PathBuf::from(&action.path);
-        if !root.is_dir() {
-            // A recent outlives the folder it names. Say so and drop it,
-            // rather than opening a window onto nothing.
-            notify(
-                Severity::Error,
-                "studio",
-                format!("{} is no longer there.", action.path),
-                window,
-                cx,
-            );
-            let gone = action.path.clone();
-            brink_gpui_shell::settings::update(cx, |settings| {
-                settings.recents.retain(|p| p != &gone);
-            });
-            return;
+        // A recent outlives the file it names: `open_recent` drops it from
+        // the list, and the reason is said here rather than nowhere.
+        if let Err(error) = landing::open_recent(&action.path, cx) {
+            notify(Severity::Error, "studio", error, window, cx);
         }
-        open_project_window(root, cx);
     }
 
     fn maximize_editor(&mut self, _: &MaximizeEditor, window: &mut Window, cx: &mut Context<Self>) {
@@ -1622,10 +1653,9 @@ impl Studio {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let root = self.workspace.read(cx).editor_root().clone();
-        if root.read(cx).view() == EditorView::Continuous {
-            root.update(cx, |root, cx| root.set_view(EditorView::Code, cx));
-        }
+        self.workspace.update(cx, |workspace, cx| {
+            workspace.require_editor_view(EditorView::Code, cx);
+        });
         let graph = self.graph.clone();
         self.code
             .update(cx, |code, cx| code.show_graph(&graph, window, cx));
@@ -1743,9 +1773,185 @@ impl Studio {
         } else if id == self.graph.entity_id() {
             let graph = self.graph.clone();
             code.update(cx, |code, cx| code.close_panel(graph, window, cx));
-        } else {
-            code.update(cx, |code, cx| code.request_close(id, window, cx));
+        } else if let Some(path) = self.code.read(cx).document_path(id, cx) {
+            self.close_document_asking(path, window, cx);
         }
+    }
+
+    /// Close a document's tab, asking first when its file has unsaved
+    /// edits: the window-close prompt's wording and answers (`closing`),
+    /// for the one file. The edits would survive a silent close — the
+    /// buffer is the project's, not the tab's — but as unsaved edits in a
+    /// file with no tab, which the author has no reason to go looking for.
+    ///
+    /// Save is `cmd-s`'s save scoped to the file (fix/format on save
+    /// included), and closes only once the write has landed. Don't Save
+    /// puts the buffer back to the disk's text before closing, since the
+    /// manuscript shows the same buffer and would go on showing the edits.
+    fn close_document_asking(&mut self, path: String, window: &mut Window, cx: &mut Context<Self>) {
+        let close = |studio: &mut Self, path: &str, window: &mut Window, cx: &mut Context<Self>| {
+            studio
+                .code
+                .update(cx, |code, cx| code.close_document(path, window, cx));
+        };
+        if !self.project.read(cx).is_dirty(&path) {
+            close(self, &path, window, cx);
+            return;
+        }
+        if self.close.asking {
+            // gpui cannot hold two prompts on one window.
+            return;
+        }
+        let name = self.project_name(cx);
+        let (message, detail) = closing::prompt_text(&name, std::slice::from_ref(&path));
+        self.close.asking = true;
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &closing::answers(),
+            cx,
+        );
+        cx.spawn_in(window, async move |this, cx| {
+            let choice = answer
+                .await
+                .map_or(closing::Choice::Cancel, closing::choice);
+            let closing = match choice {
+                closing::Choice::Cancel => false,
+                closing::Choice::Discard => this
+                    .update(cx, |studio, cx| {
+                        studio
+                            .project
+                            .update(cx, |project, cx| project.revert(&path, cx));
+                    })
+                    .is_ok(),
+                closing::Choice::Save => {
+                    let saving = this.update_in(cx, |studio, window, cx| {
+                        studio.save_dirty_in(Some(&path), window, cx)
+                    });
+                    match saving {
+                        Ok(saving) => saving.await.is_empty(),
+                        Err(_) => false,
+                    }
+                }
+            };
+            let _ = this.update_in(cx, |studio, window, cx| {
+                studio.close.asking = false;
+                if closing {
+                    close(studio, &path, window, cx);
+                } else if choice == closing::Choice::Save {
+                    studio.report_unsaved(window, cx);
+                }
+            });
+        })
+        .detach();
+    }
+
+    fn quit(&mut self, _: &Quit, _window: &mut Window, cx: &mut Context<Self>) {
+        // `on_app_quit` saves the layout; the unsaved FILES are asked
+        // about first, window by window, because that hook cannot cancel.
+        quit_asking(cx);
+    }
+
+    fn close_window(&mut self, _: &CloseWindow, window: &mut Window, cx: &mut Context<Self>) {
+        if self.should_close(window, cx) {
+            self.close.confirmed = true;
+            window.remove_window();
+        }
+    }
+
+    /// May this window close now? Yes when nothing is dirty or the author
+    /// has already answered; otherwise the prompt goes up and the answer
+    /// closes the window itself, so this says no.
+    fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.close.confirmed {
+            return true;
+        }
+        if self.close.asking {
+            // gpui cannot hold two prompts on one window; the one up
+            // already answers this.
+            return false;
+        }
+        let Some(answer) = self.ask_about_unsaved(window, cx) else {
+            return true;
+        };
+        cx.spawn_in(window, async move |this, cx| {
+            let choice = answer
+                .await
+                .map_or(closing::Choice::Cancel, closing::choice);
+            let close = match choice {
+                closing::Choice::Cancel => false,
+                closing::Choice::Discard => true,
+                closing::Choice::Save => {
+                    let saving =
+                        this.update_in(cx, |studio, window, cx| studio.save_dirty(window, cx));
+                    match saving {
+                        Ok(saving) => saving.await.is_empty(),
+                        Err(_) => false,
+                    }
+                }
+            };
+            let _ = this.update_in(cx, |studio, window, cx| {
+                studio.close.asking = false;
+                if close {
+                    studio.close.confirmed = true;
+                    window.remove_window();
+                } else if choice == closing::Choice::Save {
+                    studio.report_unsaved(window, cx);
+                }
+            });
+        })
+        .detach();
+        false
+    }
+
+    /// Put the unsaved-work prompt up if anything is dirty, answering the
+    /// button index; `None` when there is nothing to ask about.
+    /// What the unsaved-work prompts call this project: its folder's name.
+    fn project_name(&self, cx: &App) -> String {
+        self.project.read(cx).root().file_name().map_or_else(
+            || "this project".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        )
+    }
+
+    fn ask_about_unsaved(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Option<impl std::future::Future<Output = Option<usize>> + use<>> {
+        let dirty = self.project.read(cx).dirty_paths();
+        if dirty.is_empty() {
+            return None;
+        }
+        let name = self.project_name(cx);
+        let (message, detail) = closing::prompt_text(&name, &dirty);
+        self.close.asking = true;
+        window.activate_window();
+        let answer = window.prompt(
+            PromptLevel::Warning,
+            &message,
+            Some(&detail),
+            &closing::answers(),
+            cx,
+        );
+        Some(async move { answer.await.ok() })
+    }
+
+    /// "Save" was answered and a write failed: the window stays, and says
+    /// why. The Output log already has the row per file.
+    fn report_unsaved(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let still = self.project.read(cx).dirty_paths();
+        notify(
+            Severity::Error,
+            "files",
+            format!(
+                "Could not save {} — nothing was closed. See the Output log.",
+                still.join(", ")
+            ),
+            window,
+            cx,
+        );
     }
 
     fn play(&mut self, _: &Play, window: &mut Window, cx: &mut Context<Self>) {
@@ -1908,13 +2114,113 @@ fn document_state(
     }
 }
 
-fn write_all(project: &Entity<Project>, cx: &mut App) {
+fn write_all(project: &Entity<Project>, cx: &mut App) -> Vec<(String, std::io::Error)> {
     // `save_all` emits `ProjectEvent::SaveFailed` per failure, which the
     // Output log turns into an error row — so a failed write is visible in
     // the window rather than only on a stderr nobody is reading.
-    project.update(cx, |project, cx| {
-        let _ = project.save_all(cx);
-    });
+    project.update(cx, |project, cx| project.save_all(cx))
+}
+
+/// Where one project window is in closing.
+#[derive(Default)]
+struct CloseState {
+    /// The author has answered (or there was nothing to ask): the next
+    /// close goes straight through.
+    confirmed: bool,
+    /// The unsaved-work prompt is up on this window.
+    asking: bool,
+}
+
+/// Every project window, so Quit can ask each one. Dead entries (a closed
+/// window) are skipped when read rather than tracked on close.
+#[derive(Default)]
+struct OpenStudios(Vec<(AnyWindowHandle, WeakEntity<Studio>)>);
+
+impl Global for OpenStudios {}
+
+/// A quit is being asked about; a second `cmd-q` meanwhile is the same quit.
+#[derive(Default)]
+struct Quitting(bool);
+
+impl Global for Quitting {}
+
+/// Quit, asking first in each project window with unsaved files — one
+/// prompt at a time, in that window, brought to the front. Cancel in any
+/// window, or a Save that cannot write, stops the whole quit.
+fn quit_asking(cx: &mut App) {
+    if std::mem::replace(&mut cx.default_global::<Quitting>().0, true) {
+        return;
+    }
+    let studios: Vec<(AnyWindowHandle, WeakEntity<Studio>)> = cx
+        .default_global::<OpenStudios>()
+        .0
+        .iter()
+        .filter(|(_, studio)| studio.upgrade().is_some())
+        .cloned()
+        .collect();
+    cx.spawn(async move |cx| {
+        let mut go = true;
+        for (handle, studio) in &studios {
+            let asked = cx.update_window(*handle, |_, window, cx| {
+                studio.update(cx, |studio, cx| {
+                    if studio.close.asking {
+                        // A close prompt is already up here; answer that.
+                        window.activate_window();
+                        Err(())
+                    } else {
+                        Ok(studio.ask_about_unsaved(window, cx))
+                    }
+                })
+            });
+            let answer = match asked {
+                Ok(Ok(Ok(Some(answer)))) => answer,
+                // Nothing dirty, or the window went away meanwhile.
+                Ok(Ok(Ok(None))) | Err(_) | Ok(Err(_)) => continue,
+                Ok(Ok(Err(()))) => {
+                    go = false;
+                    break;
+                }
+            };
+            let choice = answer
+                .await
+                .map_or(closing::Choice::Cancel, closing::choice);
+            let _ = studio.update(cx, |studio, _| studio.close.asking = false);
+            match choice {
+                closing::Choice::Discard => {}
+                closing::Choice::Cancel => {
+                    go = false;
+                    break;
+                }
+                closing::Choice::Save => {
+                    let saving = cx.update_window(*handle, |_, window, cx| {
+                        studio.update(cx, |studio, cx| studio.save_dirty(window, cx))
+                    });
+                    let saved = match saving {
+                        Ok(Ok(saving)) => saving.await.is_empty(),
+                        _ => false,
+                    };
+                    if !saved {
+                        let _ = cx.update_window(*handle, |_, window, cx| {
+                            studio.update(cx, |studio, cx| studio.report_unsaved(window, cx))
+                        });
+                        go = false;
+                        break;
+                    }
+                }
+            }
+        }
+        cx.update(|cx| {
+            cx.default_global::<Quitting>().0 = false;
+            if go {
+                for (_, studio) in &studios {
+                    let _ = studio.update(cx, |studio, _| studio.close.confirmed = true);
+                }
+                landing::begin_shutdown(cx);
+                cx.quit();
+            }
+        });
+    })
+    .detach();
 }
 
 impl Render for Studio {
@@ -1956,12 +2262,15 @@ impl Render for Studio {
             .on_action(cx.listener(Self::open_story_graph))
             .on_action(cx.listener(Self::quick_open))
             .on_action(cx.listener(Self::open_project))
+            .on_action(cx.listener(Self::new_project))
             .on_action(cx.listener(Self::maximize_editor))
             .on_action(cx.listener(Self::open_recent))
             .on_action(cx.listener(Self::undo_file_op))
             .on_action(cx.listener(Self::focus_editor))
             .on_action(cx.listener(Self::close_tab))
             .on_action(cx.listener(Self::close_tab_by_id))
+            .on_action(cx.listener(Self::quit))
+            .on_action(cx.listener(Self::close_window))
             .child(self.workspace.clone())
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.
@@ -1985,67 +2294,85 @@ fn recent_label(path: &str) -> String {
     }
 }
 
-/// Open a studio window on `root`, and remember it as a recent.
+/// Open a studio window on `root`, answering its handle.
 ///
-/// The one place a window is made: `main` and Open Project both come
-/// through here, so the rem size, the title bar options and the recents
+/// The one place a project window is made: `landing::open_anchor` is the
+/// one caller, so the rem size, the title bar options and the recents
 /// bookkeeping cannot drift apart between the first window and the rest.
-fn open_project_window(root: PathBuf, cx: &mut App) -> bool {
+/// The recent is remembered there, after this, because `Studio::new`
+/// registers one command per recent and a window must not offer to reopen
+/// itself.
+fn open_project_window(
+    root: PathBuf,
+    entry: Option<String>,
+    cx: &mut App,
+) -> Option<AnyWindowHandle> {
     let root = root.canonicalize().unwrap_or(root);
     let bounds = Bounds::centered(None, size(px(1280.), px(840.)), cx);
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(bounds)),
         ..TitleBar::window_options()
     };
-    let opening = root.clone();
     let opened = cx.open_window(options, move |window, cx| {
         // The app font size scales the window's rem.
         let rem = brink_gpui_shell::settings::AppSettings::get(cx).rem_size();
         window.set_rem_size(px(rem));
-        let view = cx.new(|cx| Studio::new(opening, window, cx));
+        let view = cx.new(|cx| Studio::new(root, entry, window, cx));
         cx.new(|cx| Root::new(view, window, cx))
     });
     match opened {
-        Ok(_) => {
-            // After the window: `Studio::new` registers one command per
-            // recent, and a window must not offer to reopen itself.
-            brink_gpui_shell::settings::remember_project(&root, cx);
-            true
-        }
+        Ok(window) => Some(window.into()),
         Err(err) => {
             eprintln!("failed to open window: {err:#}");
-            false
+            None
         }
     }
 }
 
 fn main() {
-    let root = std::env::args()
-        .nth(1)
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("../../tests/tier1-native/conventions-cross-file"));
-    let root = root.canonicalize().unwrap_or(root);
+    // A path on the command line is opened by its door (`landing::anchor_for`):
+    // a `.ink`, a `brink.toml`, or a folder.
+    let arg = std::env::args().nth(1).map(PathBuf::from);
 
     // gpui-pre publishes the core without a platform backend; the macOS/
     // Windows/Linux implementations live in `gpui-pre-platform`.
     // The kit's icons (`IconName`) are assets the application has to
     // register; a `Button::icon(IconName::ChevronDown)` with no asset
     // source silently draws nothing.
-    Application::with_platform(gpui_platform::current_platform(false))
-        .with_assets(gpui_kit_assets::Assets)
-        .run(move |cx| {
-            gpui_component::init(cx);
-            // Quit, Hide and the platform's own chords — before any window,
-            // since the menu bar is the application's.
-            brink_gpui_shell::menus::init(cx);
-            // The persisted settings and their theme, before the first paint.
-            brink_gpui_shell::settings::init(cx);
-            brink_gpui_shell::theme::init(cx);
-            if !open_project_window(root.clone(), cx) {
-                std::process::exit(1);
+    let app = Application::with_platform(gpui_platform::current_platform(false))
+        .with_assets(brink_gpui_shell::icons::Assets);
+    // The Dock icon with nothing open brings the landing back.
+    app.on_reopen(|cx| {
+        if cx.windows().is_empty() {
+            landing::open_landing_window(None, cx);
+        }
+    });
+    app.run(move |cx| {
+        gpui_component::init(cx);
+        // Hide and the platform's own chords — before any window, since
+        // the menu bar is the application's.
+        brink_gpui_shell::menus::init(cx);
+        // The persisted settings and their theme, before the first paint.
+        brink_gpui_shell::settings::init(cx);
+        brink_gpui_shell::theme::init(cx);
+        landing::install(cx);
+        let previous_was_clean = brink_gpui_shell::settings::begin_session(cx);
+        let settings = brink_gpui_shell::settings::AppSettings::get(cx);
+        match landing::launch(
+            arg,
+            settings.reopen_last,
+            previous_was_clean,
+            &settings.recents,
+        ) {
+            landing::Launch::Open(path) => {
+                if let Err(error) = landing::open_anchor(&path, cx) {
+                    landing::open_landing_window(Some(error), cx);
+                }
             }
-            cx.activate(true);
-        });
+            landing::Launch::Landing => landing::open_landing_window(None, cx),
+        }
+        cx.activate(true);
+    });
 }
 
 #[cfg(test)]

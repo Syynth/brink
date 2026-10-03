@@ -14,6 +14,8 @@ publish.workspace = true
 gpui.workspace = true
 gpui-component.workspace = true
 gpui-base.workspace = true
+gpui-kit-assets.workspace = true
+rust-embed = { version = "8.7.2", features = ["include-exclude"] }
 anyhow.workspace = true
 serde_json.workspace = true
 

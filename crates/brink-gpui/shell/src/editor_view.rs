@@ -86,6 +86,30 @@ impl EditorView {
         }
     }
 
+    /// The switcher's glyph.
+    ///
+    /// Two come from lucide and one does not, which is the icon ruling
+    /// (2026-09-09) meeting its first edge: "generic chrome comes from
+    /// lucide" assumes lucide SHIPS it, and the kit's subset has no
+    /// infinity. Drawn to that set's own conventions — 24x24, stroke 2,
+    /// round caps — so it sits with the others rather than beside them.
+    ///
+    /// `LayoutDashboard` is panes, for the view that has tabs, groups and
+    /// splits. `File` is the one that shows exactly one. Continuous is the
+    /// lemniscate: every file as one manuscript, with no seam and no end —
+    /// which an open book says less exactly.
+    ///
+    /// Returns an `Icon` and not a name because the two sets are different
+    /// types; `Icon` is what both convert into and what a widget takes.
+    #[must_use]
+    pub fn icon(self) -> gpui_component::Icon {
+        match self {
+            Self::Code => gpui_component::IconName::LayoutDashboard.into(),
+            Self::Single => gpui_component::IconName::File.into(),
+            Self::Continuous => crate::icons::BrinkIcon::Infinity.into(),
+        }
+    }
+
     const fn slot(self) -> usize {
         match self {
             Self::Code => 0,

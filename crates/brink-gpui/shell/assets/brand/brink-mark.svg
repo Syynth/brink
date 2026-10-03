@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120">
+  <!-- brink app icon — "carve · night" (Round 4, variant A) -->
+  <!-- tile: iOS-style squircle, night #101420 -->
+  <path d="M60,0 C12,0 0,12 0,60 C0,108 12,120 60,120 C108,120 120,108 120,60 C120,12 108,0 60,0 Z" fill="#101420"/>
+  <!-- drop: circle bowl r30 centered (50,54), tangent shoulders, ~67° tip; glyph 53% of tile, bounding box geometrically centered -->
+  <g transform="translate(23.6,28) scale(0.727)">
+    <path d="M50 0 C54 10 65.6 23.4 74.94 37.34 A30 30 0 1 1 25.06 37.34 C34.4 23.4 46 10 50 0 Z" fill="#7E96FF"/>
+    <!-- divert carve: painted in tile color; mass-centered on the bowl (one unit left of geometric) -->
+    <path d="M36 54 L56 54 M50 43 L62 54 L50 65" fill="none" stroke="#101420" stroke-width="7.5" stroke-linecap="round" stroke-linejoin="round"/>
+  </g>
+</svg>
