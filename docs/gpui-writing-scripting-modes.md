@@ -173,9 +173,11 @@ Each slice is one PR, verified headlessly (§4.2).
      the prose checker cuts them (content minus nested machinery). Untokened
      punctuation like `{` would otherwise have stayed bright. The face is
      the UI font at the editor's size, so rows keep their height and only
-     the wrapping moves. **Not yet:** faint line numbers and no current-line
-     band. Both are painted from the kit's theme-wide editor style, which an
-     editor cannot override today.
+     the wrapping moves. Faint line numbers and no current-line band come
+     from two per-editor options added to the gpui-kit fork
+     (`active_line_highlight`, `line_number_color`; decision log
+     2026-10-03). A convention-claimed cue line stays bright
+     (`prose::read_ranges`).
 4. **The Player beside the manuscript** (W7, S3).
    - Today `play_at` forces Code view (`require_editor_view`) and docks the
      Player as a centre tab (`CodeView::show_player`). In Writing mode it

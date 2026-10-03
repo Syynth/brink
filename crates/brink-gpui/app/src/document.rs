@@ -714,6 +714,17 @@ pub(crate) type ReadCell = Rc<ReadView>;
 /// (W8), but there when looked for — a divert still has to be findable.
 pub(crate) const READ_FADE: f32 = 0.45;
 
+/// What the Read view fades to — the markup's colour, and the line
+/// numbers'.
+pub(crate) fn read_faint(cx: &App) -> gpui::Hsla {
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    fade(
+        brink_gpui_shell::theme::hsla(tokens.fg_muted),
+        brink_gpui_shell::theme::hsla(tokens.editor_bg),
+        READ_FADE,
+    )
+}
+
 /// What a dialect-classified line is painted with. Mirrors the studio's
 /// `editor.css` rules for `.brink-character` / `.brink-parenthetical` —
 /// theme-tunable cue colour and weight (ruling 2026-08-25: Manuscript
@@ -1213,7 +1224,7 @@ impl InputHighlighter for BrinkHighlighter {
             brink_gpui_shell::theme::hsla(tokens.todo_band),
             brink_gpui_shell::theme::hsla(tokens.todo_ink),
         );
-        self.faint = fade(self.cue_style.muted, self.cue_style.bg, READ_FADE);
+        self.faint = read_faint(cx);
 
         let names = brink_ir::semantic_tokens::token_type_names();
         let index = LineIndex::new(&source);

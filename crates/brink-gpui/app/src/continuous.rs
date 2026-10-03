@@ -333,6 +333,10 @@ impl ContinuousView {
         if on {
             self.sync_prose(cx);
         }
+        let faint = on.then(|| crate::document::read_faint(cx));
+        for (editor, _) in self.editors.borrow().values() {
+            editor.update(cx, |state, cx| apply_read_chrome(state, faint, cx));
+        }
         cx.notify();
     }
 
@@ -424,6 +428,9 @@ impl ContinuousView {
                 manuscript_highlighter_factory(weak.clone(), key.clone(), read.clone()),
                 cx,
             );
+            // A section mounted while Read is on starts in its chrome.
+            let faint = read.on.get().then(|| crate::document::read_faint(cx));
+            apply_read_chrome(&mut state, faint, cx);
 
             // The same providers a tab's editor gets — navigation must not
             // depend on which view a file is read in. What differs is the
@@ -621,6 +628,17 @@ impl Render for ContinuousView {
                 )
             })
     }
+}
+
+/// The editor chrome Read changes (W8): line numbers in `faint`, and no
+/// current-line band. `None` puts the theme's back.
+fn apply_read_chrome(
+    state: &mut EditorState,
+    faint: Option<gpui::Hsla>,
+    cx: &mut Context<EditorState>,
+) {
+    state.set_line_number_color(faint, cx);
+    state.set_active_line_highlight(faint.is_none(), cx);
 }
 
 /// The boundary between two files.
