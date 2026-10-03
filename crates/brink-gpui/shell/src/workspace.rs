@@ -1257,12 +1257,16 @@ impl Render for Workspace {
                 this.open_settings(None, window, cx);
             }))
             .child(
+                // No app name: the window and the Dock already say which
+                // app this is. `justify_end` keeps the switcher at the right
+                // edge where it has always sat — with one child,
+                // `justify_between` would slide it left, against the
+                // traffic lights.
                 TitleBar::new().child(
                     h_flex()
                         .flex_1()
                         .items_center()
-                        .justify_between()
-                        .child(gpui_component::label::Label::new("brink"))
+                        .justify_end()
                         .child(switcher),
                 ),
             )
