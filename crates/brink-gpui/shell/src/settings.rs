@@ -472,10 +472,25 @@ pub fn save_to(dir: &Path, settings: &AppSettings) -> std::io::Result<()> {
     std::fs::write(dir.join(SETTINGS_FILE), text)
 }
 
+/// Where the settings global was loaded from, and so where [`update`]
+/// writes it back. Held rather than re-derived on every write so a caller
+/// that chose a different place (the test harness: a temp directory, never
+/// the author's real settings) cannot have its writes land elsewhere.
+struct SettingsLocation(Option<PathBuf>);
+
+impl Global for SettingsLocation {}
+
 /// Load the settings into the global. Before `theme::init`, which reads
 /// them.
 pub fn init(cx: &mut App) {
-    let settings = settings_dir().map_or_else(AppSettings::default, |dir| load_from(&dir));
+    init_at(settings_dir(), cx);
+}
+
+/// [`init`], from `dir` instead of the platform's place. `None` keeps the
+/// defaults and persists nothing.
+pub fn init_at(dir: Option<PathBuf>, cx: &mut App) {
+    let settings = dir.as_deref().map_or_else(AppSettings::default, load_from);
+    cx.set_global(SettingsLocation(dir));
     cx.set_global(settings);
 }
 
@@ -508,7 +523,10 @@ pub fn update(cx: &mut App, f: impl FnOnce(&mut AppSettings)) {
     if next == before {
         return;
     }
-    if let Some(dir) = settings_dir()
+    let dir = cx
+        .try_global::<SettingsLocation>()
+        .and_then(|location| location.0.clone());
+    if let Some(dir) = dir
         && let Err(err) = save_to(&dir, &next)
     {
         eprintln!("settings: could not persist: {err}");

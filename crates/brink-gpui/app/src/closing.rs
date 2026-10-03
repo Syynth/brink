@@ -109,3 +109,159 @@ mod tests {
         assert_eq!(choice(7), Choice::Cancel);
     }
 }
+
+/// The flows end to end, on the real `Studio` (see `crate::harness`).
+#[cfg(test)]
+mod driven {
+    use std::time::Duration;
+
+    use brink_gpui_shell::commands::CloseWindow;
+    use gpui::AnyWindowHandle;
+
+    use crate::Quit;
+    use crate::harness::{Harness, scratch_project};
+
+    const FIXTURE: &str = "tests/tier1-native/conventions-cross-file";
+    const FILE: &str = "story.brink";
+
+    /// Open a scratch copy of the fixture and make `story.brink` dirty
+    /// through the project, as an editor would.
+    fn dirty_window(h: &mut Harness) -> (AnyWindowHandle, std::path::PathBuf) {
+        let root = scratch_project(FIXTURE);
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("the window just opened");
+        h.update(|cx| {
+            let project = studio.read(cx).project.clone();
+            project.update(cx, |project, cx| {
+                let text = format!(
+                    "{}\n// an unsaved line\n",
+                    project.loaded_source(FILE).unwrap_or_default()
+                );
+                assert!(project.edit(FILE, text, None, cx), "the edit took");
+            });
+        });
+        assert!(
+            h.read(|cx| studio.read(cx).project.read(cx).is_dirty(FILE)),
+            "the file is dirty before closing"
+        );
+        (window, root)
+    }
+
+    fn on_disk(root: &std::path::Path) -> String {
+        std::fs::read_to_string(root.join(FILE)).expect("the scratch file exists")
+    }
+
+    #[test]
+    fn a_clean_window_closes_without_asking() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        h.dispatch(window, CloseWindow);
+        assert_eq!(h.prompt(), None);
+        assert!(!h.is_open(window));
+    }
+
+    #[test]
+    fn cancel_keeps_the_window_and_the_edit() {
+        let mut h = Harness::new();
+        let (window, root) = dirty_window(&mut h);
+        let before = on_disk(&root);
+        h.dispatch(window, CloseWindow);
+        let prompt = h.prompt().expect("closing a dirty window asks");
+        assert!(prompt.message.contains(FILE), "{prompt:?}");
+        assert_eq!(prompt.buttons, ["Save", "Don't Save", "Cancel"]);
+        h.answer("Cancel");
+        assert!(h.is_open(window));
+        assert_eq!(on_disk(&root), before, "nothing written");
+        // And a second close asks again rather than going straight through.
+        h.dispatch(window, CloseWindow);
+        assert!(h.prompt().is_some());
+    }
+
+    #[test]
+    fn dont_save_closes_and_leaves_the_disk_alone() {
+        let mut h = Harness::new();
+        let (window, root) = dirty_window(&mut h);
+        let before = on_disk(&root);
+        h.dispatch(window, CloseWindow);
+        h.answer("Don't Save");
+        assert!(!h.is_open(window));
+        assert_eq!(on_disk(&root), before);
+    }
+
+    #[test]
+    fn save_writes_then_closes() {
+        let mut h = Harness::new();
+        let (window, root) = dirty_window(&mut h);
+        h.dispatch(window, CloseWindow);
+        h.answer("Save");
+        assert!(
+            h.settle_until(Duration::from_secs(5), |h| !h.is_open(window)),
+            "the window closes once the save lands"
+        );
+        assert!(
+            on_disk(&root).contains("// an unsaved line"),
+            "the edit was written"
+        );
+    }
+
+    #[test]
+    fn a_save_that_cannot_write_keeps_the_window() {
+        let mut h = Harness::new();
+        let (window, root) = dirty_window(&mut h);
+        let path = root.join(FILE);
+        let mut perms = std::fs::metadata(&path).expect("exists").permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&path, perms).expect("making the file read-only");
+        h.dispatch(window, CloseWindow);
+        h.answer("Save");
+        assert!(h.is_open(window), "a failed save must not close");
+        let studio = h.studio(window).expect("still open");
+        assert!(h.read(|cx| studio.read(cx).project.read(cx).is_dirty(FILE)));
+    }
+
+    #[test]
+    fn quit_asks_each_dirty_window_and_cancel_stops_it() {
+        let mut h = Harness::new();
+        let (first, _) = dirty_window(&mut h);
+        let (second, _) = dirty_window(&mut h);
+        h.dispatch(first, Quit);
+        h.answer("Don't Save");
+        assert!(h.prompt().is_some(), "the second window is asked too");
+        h.answer("Cancel");
+        for window in [first, second] {
+            assert!(h.is_open(window));
+            let studio = h.studio(window).expect("open");
+            assert!(
+                !h.read(|cx| studio.read(cx).close.confirmed),
+                "a cancelled quit confirms nothing"
+            );
+        }
+        // The quit is over, so a second cmd-q asks again from the start.
+        h.dispatch(second, Quit);
+        assert!(h.prompt().is_some());
+    }
+
+    #[test]
+    fn quit_goes_ahead_once_every_window_is_answered() {
+        let mut h = Harness::new();
+        let (first, first_root) = dirty_window(&mut h);
+        let (second, _) = dirty_window(&mut h);
+        h.dispatch(first, Quit);
+        h.answer("Save");
+        assert!(
+            h.settle_until(Duration::from_secs(5), |h| h.prompt().is_some()),
+            "after the first save, the second window is asked"
+        );
+        h.answer("Don't Save");
+        assert!(on_disk(&first_root).contains("// an unsaved line"));
+        for window in [first, second] {
+            let studio = h
+                .studio(window)
+                .expect("the test platform does not really quit");
+            assert!(
+                h.read(|cx| studio.read(cx).close.confirmed),
+                "the quit went ahead"
+            );
+        }
+    }
+}

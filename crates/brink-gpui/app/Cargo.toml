@@ -33,3 +33,17 @@ brink-driver.workspace = true
 brink-project-config.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+
+# The headless harness (`src/harness.rs`, decision log 2026-10-03): the
+# real Studio on gpui's test platform, with real text shaping and the
+# Metal headless renderer for screenshots. Test-only, so none of it ships.
+[dev-dependencies]
+gpui = { workspace = true, features = ["test-support"] }
+gpui-platform = { workspace = true, features = ["test-support"] }
+# Real text shaping that, unlike the macOS text system (reachable only
+# through `MacPlatform`, which refuses any thread but main), runs on a test
+# thread — and on Linux too.
+gpui-wgpu = { version = "0.3.3", package = "gpui-pre-wgpu" }
+# The same 0.25 line gpui renders into, so a screenshot is one `RgbaImage`
+# type; `png` to write it.
+image = { version = "0.25", default-features = false, features = ["png"] }

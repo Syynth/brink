@@ -14,6 +14,8 @@ mod document;
 mod files;
 mod fixes;
 mod graph_layout;
+#[cfg(test)]
+mod harness;
 mod inkt_highlight;
 mod knots;
 mod navigation;
