@@ -2223,6 +2223,50 @@ mod tests {
     }
 
     #[test]
+    fn the_outline_says_what_each_declaration_is_and_a_globals_value() {
+        let source = "VAR gold = 5 // coins\nCONST NAME = \"Ada\"\nLIST mood = happy, (sad)\n=== start ===\n= first\nHi.\n-> DONE\n=== function twice(x) ===\n~ return x * 2\n";
+        let tree = Tree::new(
+            "outline",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, _state) = open_tree_with_config(&tree);
+        let QueryResult::DocumentSymbols(symbols) = crate::query::answer(
+            &mut session,
+            &QueryKind::DocumentSymbols {
+                path: "start.ink".to_owned(),
+            },
+        ) else {
+            unreachable!("asked for document symbols")
+        };
+        let row = |name: &str| {
+            symbols
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| (s.kind, s.is_function, s.value.clone()))
+        };
+        use brink_ir::SymbolKind as K;
+        assert_eq!(
+            row("gold"),
+            Some((K::Variable, false, Some("5".to_owned())))
+        );
+        assert_eq!(
+            row("NAME"),
+            Some((K::Constant, false, Some("\"Ada\"".to_owned())))
+        );
+        assert_eq!(
+            row("mood"),
+            Some((K::List, false, Some("happy, (sad)".to_owned())))
+        );
+        assert_eq!(row("start"), Some((K::Knot, false, None)));
+        assert_eq!(row("twice"), Some((K::Knot, true, None)));
+        let start = symbols.iter().find(|s| s.name == "start").expect("a knot");
+        assert_eq!(start.children[0].kind, K::Stitch);
+    }
+
+    #[test]
     fn a_convention_claimed_line_reads_as_prose() {
         // `VENDOR` is claimed by the `cue` handler: it lowers to a call
         // over exactly its own text, which the checker's cut removes. The
