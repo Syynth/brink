@@ -232,6 +232,12 @@ Each slice is one PR, verified headlessly (§4.2).
      "on the problems" means the counts.
 7. **Scripting's lean status bar** (S1): drop the absolute path and the
    timing cells; make sure the Output log carries the timings.
+   - *Built:* the status bar is `N files`, `N problems` (opens Problems),
+     the session state, then the file and `Ln, Col`; counts of one are
+     singular now. The Output log already logged each notable analysis's
+     time (the first, a moved problem count, a slow one, or every pass
+     under Verbose). Its rows now also carry the session's worst timing
+     when it isn't this one.
 
 ### 4.2 Verification
 

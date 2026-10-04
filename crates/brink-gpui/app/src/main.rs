@@ -2241,16 +2241,16 @@ impl Studio {
     }
 
     fn refresh_status(&mut self, cx: &mut Context<Self>) {
+        // Lean (decision log 2026-10-03, S1): no absolute path — the window
+        // already names the project — and no analysis timings, which are
+        // diagnostics rather than something an author reads while working.
+        // The Output log carries both timings.
         let cells = {
             let project = self.project.read(cx);
-            let (last, worst) = project.timings();
             vec![
-                StatusCell::new(project.root().display().to_string()),
-                StatusCell::new(format!("{} files", project.files().len())),
+                StatusCell::new(counted(project.files().len(), "file")),
                 // "N errors — click → Problems" (spec §4 status bar).
-                StatusCell::new(format!("{} problems", project.problem_count())).opens("problems"),
-                StatusCell::new(format!("analyze {last:.1} ms")),
-                StatusCell::new(format!("worst {worst:.1} ms")),
+                StatusCell::new(counted(project.problem_count(), "problem")).opens("problems"),
             ]
         };
         // The story state (§7.3's left group) — said once here rather than
@@ -2276,6 +2276,15 @@ impl Studio {
         }
         self.workspace
             .update(cx, |workspace, cx| workspace.set_status(cells, cx));
+    }
+}
+
+/// `1 file`, `3 files`.
+fn counted(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
     }
 }
 
@@ -2564,7 +2573,14 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::recent_label;
+    use super::{counted, recent_label};
+
+    #[test]
+    fn a_count_of_one_is_singular() {
+        assert_eq!(counted(1, "file"), "1 file");
+        assert_eq!(counted(0, "problem"), "0 problems");
+        assert_eq!(counted(3, "file"), "3 files");
+    }
 
     #[test]
     fn a_recent_is_labelled_by_its_folder_and_its_parent() {
@@ -2873,6 +2889,17 @@ mod modes_driven {
         // "The lamp gutters." "Run" "You run." "Stalls everywhere."
         let counted = h.settle_until(std::time::Duration::from_secs(10), |h| words(h) == 8);
         assert!(counted, "counted {} words, not 8", words(&mut h));
+    }
+
+    /// The picture: Script mode's lean status bar (S1).
+    #[test]
+    fn the_lean_status_bar_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        h.dispatch(window, ModeScript);
+        let shot = scratch_dir("shot").join("script.png");
+        h.screenshot(window, &shot);
+        eprintln!("script screenshot: {}", shot.display());
     }
 
     /// The picture: the bare page, with its chip.
