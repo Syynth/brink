@@ -223,6 +223,13 @@ Each slice is one PR, verified headlessly (§4.2).
      across launches.
 6. **The bare-page chip** (W9): word count and problem count, bottom-right;
    clicking opens the sidebar on the problems.
+   - *Built:* the chip sits over the manuscript's bottom-right corner (so
+     it stays beside the text when the Player is out) while the sidebar is
+     closed. Words are counted in the Read view's prose ranges, so markup,
+     comments and code don't count; the count is cached per analysis.
+     Clicking opens the sidebar, whose Files column carries each file's
+     problems and the total. The sidebar has no problems *list* yet, so
+     "on the problems" means the counts.
 7. **Scripting's lean status bar** (S1): drop the absolute path and the
    timing cells; make sure the Output log carries the timings.
 

@@ -83,6 +83,9 @@ pub(crate) struct WriteView {
     /// the wrong stitch.
     symbols: BTreeMap<String, Vec<Symbol>>,
     pending: BTreeSet<String>,
+    /// The story's prose word count, as of the last analysis — for the
+    /// bare page's chip (W9). Cached: counting walks every file's prose.
+    words: usize,
     me: WeakEntity<Self>,
     _subscriptions: Vec<Subscription>,
 }
@@ -107,6 +110,7 @@ impl WriteView {
                 ProjectEvent::Analyzed | ProjectEvent::FilesChanged | ProjectEvent::Opened { .. }
             ) {
                 this.symbols.clear();
+                this.words = this.project.read(cx).prose_word_count();
                 if let Some(path) = this.current_file(cx) {
                     this.request_symbols(&path, cx);
                 }
@@ -124,6 +128,7 @@ impl WriteView {
             std_open: false,
             symbols: BTreeMap::new(),
             pending: BTreeSet::new(),
+            words: 0,
             me: cx.weak_entity(),
             _subscriptions: vec![on_caret, on_project],
         }
@@ -165,6 +170,12 @@ impl WriteView {
             self.request_symbols(&path, cx);
         }
         cx.notify();
+    }
+
+    /// The chip's two numbers: prose words, and problems.
+    #[must_use]
+    pub(crate) fn counts(&self, cx: &App) -> (usize, usize) {
+        (self.words, self.project.read(cx).problem_count())
     }
 
     pub(crate) fn toggle_structure(&mut self, cx: &mut Context<Self>) {
@@ -807,6 +818,19 @@ impl WriteView {
     }
 }
 
+/// `1234567` → `1,234,567`.
+fn grouped(n: usize) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, ch) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(ch);
+    }
+    out
+}
+
 /// A click handler, boxed.
 type OnClick = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
 
@@ -815,9 +839,62 @@ fn file_name(path: &str) -> String {
     path.rsplit('/').next().unwrap_or(path).to_owned()
 }
 
+impl WriteView {
+    /// The bare page's chip (W9): word count and problem count, bottom
+    /// right, while the sidebar is closed. Clicking opens the sidebar,
+    /// whose Files column carries each file's problems.
+    fn render_chip(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (words, problems) = self.counts(cx);
+        let theme = cx.theme();
+        let (bg, border, muted, fg, danger) = (
+            theme.secondary,
+            theme.border,
+            theme.muted_foreground,
+            theme.foreground,
+            theme.danger,
+        );
+        h_flex()
+            .id("write-chip")
+            .absolute()
+            .bottom_3()
+            .right_4()
+            .h(px(22.))
+            .px_2()
+            .gap_2()
+            .items_center()
+            .rounded_full()
+            .border_1()
+            .border_color(border)
+            .bg(bg.opacity(0.9))
+            .text_xs()
+            .text_color(muted)
+            .cursor_pointer()
+            .hover(move |s| s.text_color(fg))
+            .child(format!(
+                "{} {}",
+                grouped(words),
+                if words == 1 { "word" } else { "words" }
+            ))
+            .when(problems > 0, |el| {
+                el.child(div().text_color(danger).child(match problems {
+                    1 => "1 problem".to_owned(),
+                    n => format!("{n} problems"),
+                }))
+            })
+            .tooltip(|window, cx| {
+                gpui_component::tooltip::Tooltip::new("Open the sidebar").build(window, cx)
+            })
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.toggle_sidebar(cx);
+            }))
+            .into_any_element()
+    }
+}
+
 impl Render for WriteView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
+        let chip = (!self.sidebar_open).then(|| self.render_chip(cx));
         let theme = cx.theme();
         let (border, surface, muted) = (theme.border, theme.background, theme.muted_foreground);
         let panel = self.player_open.then(|| {
@@ -876,7 +953,12 @@ impl Render for WriteView {
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    .child(self.manuscript.clone()),
+                    // The chip sits over the manuscript's bottom-right
+                    // corner, so it stays beside the text when the Player
+                    // is out.
+                    .relative()
+                    .child(self.manuscript.clone())
+                    .children(chip),
             )
             .children(panel)
     }
@@ -897,6 +979,14 @@ mod tests {
             value: None,
             children,
         }
+    }
+
+    #[test]
+    fn counts_are_grouped_by_thousands() {
+        assert_eq!(grouped(0), "0");
+        assert_eq!(grouped(999), "999");
+        assert_eq!(grouped(1000), "1,000");
+        assert_eq!(grouped(1_234_567), "1,234,567");
     }
 
     #[test]

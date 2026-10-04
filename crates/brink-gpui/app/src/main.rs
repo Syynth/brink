@@ -2862,6 +2862,34 @@ mod modes_driven {
         assert!(h.read(|cx| studio.read(cx).write.read(cx).is_sidebar_open()));
     }
 
+    /// W9: the chip counts the story's prose, not its markup.
+    #[test]
+    fn the_chip_counts_the_prose_words() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let words = |h: &mut Harness| h.read(|cx| studio.read(cx).write.read(cx).counts(cx).0);
+        // "The lamp gutters." "Run" "You run." "Stalls everywhere."
+        let counted = h.settle_until(std::time::Duration::from_secs(10), |h| words(h) == 8);
+        assert!(counted, "counted {} words, not 8", words(&mut h));
+    }
+
+    /// The picture: the bare page, with its chip.
+    #[test]
+    fn the_bare_page_chip_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).write.read(cx).counts(cx).0) > 0
+        });
+        let shot = scratch_dir("shot").join("chip.png");
+        h.screenshot(window, &shot);
+        eprintln!("chip screenshot: {}", shot.display());
+    }
+
     /// The picture: the sidebar open, the caret in a stitch.
     #[test]
     fn the_writing_sidebar_picture() {
