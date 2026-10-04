@@ -581,7 +581,7 @@ impl Studio {
                         label: "Sidebar".into(),
                         icon: gpui_component::IconName::PanelLeft,
                         action: Box::new(ToggleWritingSidebar),
-                        filled: false,
+                        primary: false,
                         leading: true,
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             sidebar
@@ -594,20 +594,22 @@ impl Studio {
                         label: "Read View".into(),
                         icon: gpui_component::IconName::BookOpen,
                         action: Box::new(ToggleReadView),
-                        filled: false,
+                        primary: false,
                         leading: false,
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             reading.upgrade().is_some_and(|m| m.read(cx).is_read())
                         })),
                     },
+                    // The Player's toggle, as the sidebar's is: out, it
+                    // is filled; a second click puts it away. `cmd-r` is
+                    // still Play, which also brings it out.
                     WritingButton {
                         id: "writing-play",
-                        label: "Play".into(),
+                        label: "Player".into(),
                         icon: gpui_component::IconName::Play,
-                        action: Box::new(Play),
-                        filled: true,
+                        action: Box::new(TogglePlayer),
+                        primary: true,
                         leading: false,
-                        // Ringed while the Player is out beside the text.
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             playing
                                 .upgrade()
@@ -2204,6 +2206,11 @@ impl Studio {
             return;
         }
         self.show_player(window, cx);
+        // Brought out with nothing ever run, it runs the story: a Player
+        // that opens onto "Nothing is running" is a second click to make.
+        if self.player.read(cx).state() == crate::player::SessionState::Idle {
+            self.player.update(cx, |player, cx| player.start(None, cx));
+        }
         let handle = self.player.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
@@ -2856,6 +2863,26 @@ mod modes_driven {
         h.dispatch(window, super::TogglePlayer);
         assert!(player_open(&mut h, window));
         assert_eq!(state(&mut h), running);
+    }
+
+    /// The title bar's Player button (TogglePlayer) is a toggle, as the
+    /// sidebar's is: the first press brings the Player out AND runs the
+    /// story when nothing has run; the second puts it away.
+    #[test]
+    fn the_player_button_opens_and_runs_then_dismisses() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::TogglePlayer);
+        assert!(player_open(&mut h, window));
+        let started = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).player.read(cx).state())
+                != crate::player::SessionState::Idle
+        });
+        assert!(started, "opening an idle Player runs the story");
+        h.dispatch(window, super::TogglePlayer);
+        assert!(!player_open(&mut h, window), "a second press puts it away");
     }
 
     /// The picture: Write with the Player out, for checking by eye.
