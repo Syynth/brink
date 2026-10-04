@@ -391,7 +391,9 @@ pub fn tool_window_keystroke(ordinal: usize) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor_view::{ViewCode, ViewContinuous, ViewSingle};
+    // Fixture actions: these tests are about the registry, not any one
+    // command, so they bring their own rather than borrowing the modes'.
+    actions!(fixture, [ViewCode, ViewSingle, ViewContinuous]);
 
     fn registry() -> CommandRegistry {
         let mut r = CommandRegistry::default();

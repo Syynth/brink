@@ -22,7 +22,7 @@ use crate::commands::{
     CloseWindow, CommandRegistry, OpenKeymap, OpenSettings, TogglePalette, ToggleToolWindow,
     Unbound, bind_chord, keymap_bindings, reset, tool_window_keystroke, unbind,
 };
-use crate::editor_view::{EditorRoot, EditorView, ViewCode, ViewContinuous, ViewSingle};
+use crate::editor_view::{EditorRoot, EditorView, ModeScript, ModeWrite};
 use crate::menus::{
     APP_GROUP, APP_NAME, About, HELP_GROUP, MenuPlatform, MenuSpec, Minimize, Zoom,
 };
@@ -150,7 +150,7 @@ impl Tier {
 /// The studio window.
 pub struct Workspace {
     dock_area: Entity<DockArea>,
-    /// The centre's one panel, holding the three views
+    /// The centre's one panel, holding the two modes
     /// (`crate::editor_view`).
     editor_root: Entity<EditorRoot>,
     tools: Vec<Registered>,
@@ -185,14 +185,28 @@ pub struct Workspace {
     /// un-maximizing puts back what was there and not a guess at it.
     /// `None` when not maximized.
     unmaximized: Option<Vec<(&'static str, bool)>>,
-    /// The view the AUTHOR chose, which is not always the one on screen.
+    /// The mode the AUTHOR chose, which is not always the one on screen.
     ///
-    /// The Player, the Story Graph and Compiled Output are Code-view tabs,
+    /// The Player, the Story Graph and Compiled Output are Script-mode tabs,
     /// so asking for any of them takes the manuscript's place. That switch
     /// is the studio's doing, not a preference, and persisting it meant
-    /// pressing `cmd-r` once in Continuous and being in Code the next
-    /// morning. What is remembered is this; what is drawn is the root's.
+    /// pressing `cmd-r` once in Write and being in Script the next morning.
+    /// What is remembered is this; what is drawn is the root's.
     chosen_view: EditorView,
+    /// What Write mode's title bar calls the story — the app says, since
+    /// the shell knows no project.
+    story_title: SharedString,
+    /// Write mode's title-bar buttons, in order: `leading` ones just right
+    /// of the traffic lights, the rest left of the switch. The app owns
+    /// what they do; the shell only draws them.
+    writing_buttons: Vec<WritingButton>,
+    /// The open Writing sidebar's width, or `None` while it is closed. The
+    /// title bar paints that much of its left end as the sidebar, so the
+    /// sidebar reads as running to the top of the window with the traffic
+    /// lights and its toggle in its own header row (W4).
+    writing_sidebar: Option<gpui::Pixels>,
+    /// Where the caret is, after the story's name: `knot › stitch`.
+    writing_crumb: Option<SharedString>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -252,7 +266,11 @@ impl Workspace {
             pre_narrow: None,
             notices_open: false,
             unmaximized: None,
-            chosen_view: EditorView::Code,
+            chosen_view: EditorView::Script,
+            story_title: SharedString::default(),
+            writing_buttons: Vec::new(),
+            writing_sidebar: None,
+            writing_crumb: None,
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -261,21 +279,19 @@ impl Workspace {
         App::on_action(cx, |_: &Unbound, _| {});
         // The shell's own commands. Features add theirs through
         // `register_command`; tool windows get a toggle each on registration.
-        let (code, single, continuous) =
-            (EditorView::Code, EditorView::Single, EditorView::Continuous);
-        this.register_command("View", code.title(), ViewCode, Some(code.keystroke()), cx);
+        let (write, script) = (EditorView::Write, EditorView::Script);
         this.register_command(
             "View",
-            single.title(),
-            ViewSingle,
-            Some(single.keystroke()),
+            write.title(),
+            ModeWrite,
+            Some(write.keystroke()),
             cx,
         );
         this.register_command(
             "View",
-            continuous.title(),
-            ViewContinuous,
-            Some(continuous.keystroke()),
+            script.title(),
+            ModeScript,
+            Some(script.keystroke()),
             cx,
         );
         this.register_command(
@@ -637,6 +653,34 @@ impl Workspace {
         cx.notify();
     }
 
+    /// Name the story in Write mode's title bar.
+    pub fn set_story_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.story_title = title.into();
+        cx.notify();
+    }
+
+    /// Say how wide the Writing sidebar is while open (`None`: closed).
+    pub fn set_writing_sidebar(&mut self, width: Option<gpui::Pixels>, cx: &mut Context<Self>) {
+        if self.writing_sidebar != width {
+            self.writing_sidebar = width;
+            cx.notify();
+        }
+    }
+
+    /// Say where the caret is, for the title bar: `knot › stitch`.
+    pub fn set_writing_crumb(&mut self, crumb: Option<SharedString>, cx: &mut Context<Self>) {
+        if self.writing_crumb != crumb {
+            self.writing_crumb = crumb;
+            cx.notify();
+        }
+    }
+
+    /// Give Write mode's title bar its buttons, left to right.
+    pub fn set_writing_buttons(&mut self, buttons: Vec<WritingButton>, cx: &mut Context<Self>) {
+        self.writing_buttons = buttons;
+        cx.notify();
+    }
+
     #[must_use]
     pub fn editor_view(&self, cx: &App) -> EditorView {
         self.editor_root.read(cx).view()
@@ -701,18 +745,19 @@ impl Workspace {
                     .update(cx, |area, cx| area.toggle_dock(*placement, window, cx));
             }
         }
-        // A chosen default view wins over the remembered one: "always
-        // open in Continuous" is a preference about every launch, and the
-        // last view used is only the memory it replaces.
+        // A chosen default mode wins over the remembered one: "always
+        // open in Write" is a preference about every launch, and the last
+        // mode used is only the memory it replaces. Keys saved before the
+        // two modes still resolve (`EditorView::from_persistence_key`).
         let settings = AppSettings::get(cx);
         let key = settings
             .default_view
             .as_ref()
             .or(layout.editor_view.as_ref());
         if let Some(key) = key
-            && let Some(view) = EditorView::ALL.iter().find(|v| v.persistence_key() == key)
+            && let Some(view) = EditorView::from_persistence_key(key)
         {
-            self.set_editor_view(*view, window, cx);
+            self.set_editor_view(view, window, cx);
         }
         cx.notify();
     }
@@ -747,7 +792,15 @@ impl Workspace {
     /// The rail-button gesture. Tab-level: a closed dock opens showing this
     /// window; an open dock showing another window switches to it; an open
     /// dock already showing it closes.
+    ///
+    /// Write mode draws no docks, so there the gesture can only mean "show
+    /// me": it opens the window in Script, as [`Workspace::open_tool_window`]
+    /// does, rather than closing a dock the author cannot see.
     pub fn toggle_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write {
+            self.open_tool_window(id, window, cx);
+            return;
+        }
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
@@ -771,7 +824,14 @@ impl Workspace {
     /// Show a tool window: open its dock if closed and select its tab. What
     /// a status cell or a command wants — never a toggle, since "show me
     /// the problems" must not close them.
+    ///
+    /// Tool windows live in Script mode's docks, so from Write this goes to
+    /// Script first — as the Player does, without changing the mode the
+    /// author chose (see `chosen_view`).
     pub fn open_tool_window(&mut self, id: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write && self.tools.iter().any(|t| t.spec.id == id) {
+            self.require_editor_view(EditorView::Script, cx);
+        }
         let Some(tool) = self.tools.iter().find(|t| t.spec.id == id) else {
             return;
         };
@@ -845,7 +905,13 @@ impl Workspace {
     /// Restoring puts back exactly the docks that were open, rather than
     /// opening all three: a writer who works with the Binder closed does
     /// not want it back for having read one scene full-width.
+    ///
+    /// Write mode already has the whole window, so there it does nothing:
+    /// closing docks nobody can see would only lose Script's layout.
     pub fn toggle_maximize(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.editor_view(cx) == EditorView::Write {
+            return;
+        }
         match self.unmaximized.take() {
             Some(before) => {
                 for (name, open) in before {
@@ -1200,16 +1266,144 @@ impl Workspace {
         )
     }
 
-    /// The view switcher: three toggles, in the title bar. The studio has no
-    /// dedicated widget for this (its views are palette commands); the native
-    /// app gives them a permanent home, since which view you are in changes
-    /// what the whole centre means.
+    /// Write mode's title bar, left of the switch: the story's name, then
+    /// the app's buttons — Read and Play
+    /// (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar toggle and
+    /// the caret's knot › stitch arrive with their own slice.
+    fn render_writing_title(&self, cx: &mut Context<Self>) -> AnyElement {
+        let muted = cx.theme().muted_foreground;
+        let buttons: Vec<AnyElement> = self
+            .writing_buttons
+            .iter()
+            .filter(|b| !b.leading)
+            .map(|b| self.render_writing_button(b, cx))
+            .collect();
+        let title = match &self.writing_crumb {
+            Some(crumb) => SharedString::from(format!("{} \u{b7} {crumb}", self.story_title)),
+            None => self.story_title.clone(),
+        };
+        h_flex()
+            .flex_1()
+            .min_w_0()
+            .gap_2()
+            .items_center()
+            .child(
+                div()
+                    .flex_1()
+                    .min_w_0()
+                    // Off the sidebar's edge, or the toggle's, by a step.
+                    .pl_2()
+                    .truncate()
+                    .text_sm()
+                    .text_color(muted)
+                    .child(title),
+            )
+            .children(buttons)
+            .into_any_element()
+    }
+
+    /// Write mode's left end of the title bar: the leading buttons (the
+    /// sidebar toggle) just right of the traffic lights. While the sidebar
+    /// is open this strip is exactly its width and wears its colour, so
+    /// the sidebar's header row is the title bar's own left end and the
+    /// toggle never moves under the pointer.
+    fn render_writing_leading(&self, cx: &mut Context<Self>) -> AnyElement {
+        let (sidebar, border) = {
+            let theme = cx.theme();
+            (theme.sidebar, theme.sidebar_border)
+        };
+        let buttons: Vec<AnyElement> = self
+            .writing_buttons
+            .iter()
+            .filter(|b| b.leading)
+            .map(|b| self.render_writing_button(b, cx))
+            .collect();
+        h_flex()
+            .h_full()
+            .flex_none()
+            .gap_1()
+            .items_center()
+            .children(buttons)
+            .when_some(self.writing_sidebar, |el, width| {
+                el.w(width)
+                    .pl(px(TRAFFIC_LIGHTS))
+                    .bg(sidebar)
+                    .border_r_1()
+                    .border_color(border)
+            })
+            .into_any_element()
+    }
+
+    fn render_writing_button(&self, button: &WritingButton, cx: &mut Context<Self>) -> AnyElement {
+        let (muted, primary, on_primary, accent, hover) = {
+            let theme = cx.theme();
+            (
+                theme.muted_foreground,
+                theme.primary,
+                theme.primary_foreground,
+                theme.accent,
+                theme.muted,
+            )
+        };
+        let action = button.action.boxed_clone();
+        let lit = button.lit.as_ref().is_some_and(|lit| lit(cx));
+        let hint = SharedString::from(match self.commands.keystroke_for(action.as_ref()) {
+            Some(key) => format!("{} ({key})", button.label),
+            None => button.label.to_string(),
+        });
+        let glyph = if button.filled {
+            on_primary
+        } else if lit {
+            primary
+        } else {
+            muted
+        };
+        div()
+            .id(button.id)
+            .flex()
+            .items_center()
+            .justify_center()
+            .size(px(SWITCHER_CELL))
+            .rounded_sm()
+            .cursor_pointer()
+            // Play is filled: the one thing on this screen besides the
+            // text. A toggle is lit the way the switch's cell is, so "on"
+            // reads the same everywhere in the bar.
+            .when(button.filled, |el| {
+                el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
+            })
+            // A filled button that is on — Play while the Player is out —
+            // wears a ring, since its fill is already taken.
+            .when(button.filled && lit, |el| {
+                el.border_2().border_color(on_primary.opacity(0.8))
+            })
+            .when(!button.filled && lit, |el| el.bg(accent))
+            .when(!button.filled && !lit, |el| {
+                el.hover(|s| s.bg(hover.opacity(0.6)))
+            })
+            .child(
+                gpui_component::Icon::new(button.icon.clone())
+                    .with_size(px(if button.filled { 12. } else { 14. }))
+                    .text_color(glyph),
+            )
+            .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
+            .on_click(move |_: &ClickEvent, window, cx| {
+                window.dispatch_action(action.boxed_clone(), cx);
+            })
+            .into_any_element()
+    }
+
+    /// The mode switcher: Write and Script, icon-only (decision log
+    /// 2026-10-03), in the title bar. The studio has no dedicated widget for
+    /// this (its views are palette commands); the native app gives the modes
+    /// a permanent home, since which one you are in changes what the whole
+    /// window is for.
     fn view_switcher(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.editor_view(cx);
         // Hand-built rather than `ButtonGroup`, for two reasons found on
         // screen. Its `outline` variant paints every segment in the accent
         // foreground and puts `selected` in the BORDER, so with icons and
-        // no labels all three read as active — the switcher had no visible
+        // no labels every segment read as active — the switcher had no visible
         // state at all. And at the kit's own button metrics the control
         // stood half again as tall as the 30px chrome it sits in.
         //
@@ -1247,7 +1441,7 @@ impl Workspace {
                     .justify_center()
                     .size(px(SWITCHER_CELL))
                     // Hairlines BETWEEN the segments, not around each: one
-                    // control with three cells, rather than three buttons
+                    // control with two cells, rather than two buttons
                     // that happen to touch.
                     .when(ix > 0, |el| el.border_l_1().border_color(border))
                     .when(on, |el| el.bg(accent))
@@ -1266,6 +1460,32 @@ impl Workspace {
             .into_any_element()
     }
 }
+
+/// A button in Write mode's title bar.
+pub struct WritingButton {
+    pub id: &'static str,
+    /// Its name, in the tooltip with the bound key.
+    pub label: SharedString,
+    pub icon: gpui_component::IconName,
+    pub action: Box<dyn Action>,
+    /// Filled with the accent colour — Play.
+    pub filled: bool,
+    /// Whether a toggle is on, drawn lit. `None` for a button with no state.
+    pub lit: Option<IsOn>,
+    /// Drawn just right of the traffic lights (the sidebar toggle) rather
+    /// than with the others, left of the switch.
+    pub leading: bool,
+}
+
+/// What the title bar leaves for the window controls at its left end:
+/// the kit's `TitleBar` padding, which it does not export.
+#[cfg(target_os = "macos")]
+const TRAFFIC_LIGHTS: f32 = 80.;
+#[cfg(not(target_os = "macos"))]
+const TRAFFIC_LIGHTS: f32 = 12.;
+
+/// Asked on every render of the title bar: is this toggle on?
+pub type IsOn = Rc<dyn Fn(&App) -> bool>;
 
 /// The three docks, by the name their shape is persisted under.
 const DOCKS: &[(&str, DockPlacement)] = &[
@@ -1304,8 +1524,16 @@ impl Render for Workspace {
                 });
             }
         };
+        // Write mode has no chrome (decision log 2026-10-03, W1): no rails,
+        // no docks, no status bar. The docks are not CLOSED for it, only
+        // not drawn, so Script comes back exactly as it was left and the
+        // persisted layout never learns Write was there.
+        let writing = self.editor_view(cx) == EditorView::Write;
         let switcher = self.view_switcher(cx);
-        let status = self.render_status(cx);
+        let writing_title = writing.then(|| self.render_writing_title(cx));
+        let writing_leading = writing.then(|| self.render_writing_leading(cx));
+        let sidebar_open = writing && self.writing_sidebar.is_some();
+        let status = (!writing).then(|| self.render_status(cx));
         let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window);
         let settings_window = self.render_settings(window, cx);
@@ -1323,14 +1551,11 @@ impl Render for Workspace {
             // The shell's actions dispatch from wherever focus is; this is
             // an ancestor of everything in the window, so it hears them all.
             .track_focus(&self.focus)
-            .on_action(cx.listener(|this, _: &ViewCode, window, cx| {
-                this.set_editor_view(EditorView::Code, window, cx);
+            .on_action(cx.listener(|this, _: &ModeWrite, window, cx| {
+                this.set_editor_view(EditorView::Write, window, cx);
             }))
-            .on_action(cx.listener(|this, _: &ViewSingle, window, cx| {
-                this.set_editor_view(EditorView::Single, window, cx);
-            }))
-            .on_action(cx.listener(|this, _: &ViewContinuous, window, cx| {
-                this.set_editor_view(EditorView::Continuous, window, cx);
+            .on_action(cx.listener(|this, _: &ModeScript, window, cx| {
+                this.set_editor_view(EditorView::Script, window, cx);
             }))
             .on_action(cx.listener(|this, _: &TogglePalette, window, cx| {
                 this.toggle_palette(window, cx);
@@ -1361,10 +1586,16 @@ impl Render for Workspace {
                     .on_close_window(|_, window, cx| {
                         window.dispatch_action(Box::new(CloseWindow), cx);
                     })
+                    // The open sidebar's strip starts at the window's left
+                    // edge, under the traffic lights, and carries their
+                    // inset itself.
+                    .when(sidebar_open, |bar| bar.pl_0())
+                    .children(writing_leading)
                     .child(
                         h_flex()
                             .flex_1()
                             .items_center()
+                            .gap_2()
                             // No app name (#3626): the window and the Dock
                             // already say which app this is. `justify_end`
                             // keeps the switcher at the right edge — with
@@ -1386,6 +1617,10 @@ impl Render for Workspace {
                             // to respect — aligning to its buttons' right edge
                             // instead put the switcher over the rail rather than
                             // beside it.
+                            //
+                            // Kept in Write mode too, where there is no rail:
+                            // the switch must not move under the pointer
+                            // that just clicked it.
                             .pr(RAIL_WIDTH + px((f32::from(TITLE_BAR_HEIGHT) - SWITCHER_CELL) / 2.))
                             // Off the Mac, the menus live here (`crate::menus`).
                             .children(
@@ -1393,10 +1628,19 @@ impl Render for Workspace {
                                     .clone()
                                     .map(|bar| div().flex_1().min_w_0().h_full().child(bar)),
                             )
+                            .children(writing_title)
                             .child(switcher),
                     ),
             )
-            .child(
+            .child(if writing {
+                // The centre's one panel, drawn bare: no dock area, so no
+                // tab strip over the manuscript either.
+                div()
+                    .flex_1()
+                    .min_h_0()
+                    .child(self.editor_root.clone())
+                    .into_any_element()
+            } else {
                 h_flex()
                     .flex_1()
                     .min_h_0()
@@ -1408,9 +1652,10 @@ impl Render for Workspace {
                             .h_full()
                             .child(self.dock_area.clone()),
                     )
-                    .child(rail(RailEdge::Right, &buttons, click, window, cx)),
-            )
-            .child(status)
+                    .child(rail(RailEdge::Right, &buttons, click, window, cx))
+                    .into_any_element()
+            })
+            .children(status)
             // Above the status bar, as §7.5 places it, and after the docks
             // so it paints over them.
             .children(notices)

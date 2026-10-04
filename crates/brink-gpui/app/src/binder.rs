@@ -168,6 +168,7 @@ struct DraggedRow {
     kind: RowKind,
 }
 
+#[derive(Debug, Clone)]
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
     Open {
@@ -856,8 +857,20 @@ impl Binder {
                     this.pending_symbols.remove(&path);
                     if let Ok(brink_gpui_model::query::QueryResult::DocumentSymbols(found)) = answer
                     {
-                        this.symbols
-                            .insert(path, found.iter().map(convert_symbol).collect());
+                        // Knots (functions among them) and their stitches
+                        // only: the outline also carries `VAR`/`CONST`/`LIST`
+                        // declarations, which drew here as knot rows —
+                        // offering "Play from here" and "Demote" on a
+                        // variable. Writing mode's sidebar shows them as
+                        // what they are.
+                        this.symbols.insert(
+                            path,
+                            found
+                                .iter()
+                                .filter(|s| s.kind == brink_ir::SymbolKind::Knot)
+                                .map(convert_symbol)
+                                .collect(),
+                        );
                         this.rebuild(cx);
                     }
                 });

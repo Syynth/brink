@@ -164,6 +164,22 @@ impl Player {
         }
     }
 
+    /// A cheap fingerprint of where the session is: it changes whenever
+    /// the story could have moved — a start, a line, a choice, a command
+    /// going out or coming back. An observer that queries the worker keys
+    /// on this rather than on every notify, since the Player is also
+    /// notified for reasons that move nothing (a redraw, a setting).
+    #[must_use]
+    pub fn session_key(&self) -> (u64, usize, usize, bool, bool) {
+        (
+            self.generation,
+            self.entries.len(),
+            self.choices.len(),
+            self.busy,
+            self.running,
+        )
+    }
+
     /// Whether the panel currently sits in a dock.
     #[must_use]
     pub fn is_docked(&self) -> bool {

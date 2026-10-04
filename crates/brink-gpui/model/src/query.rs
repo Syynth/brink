@@ -418,16 +418,23 @@ pub enum CompletionKind {
     Builtin,
 }
 
-/// One knot or stitch, for the Binder's structure view.
+/// One declaration in a file's outline — a knot (with its stitches), a
+/// function, or a top-level `VAR` / `CONST` / `LIST` / `STRUCT` /
+/// `EXTERNAL` — for the Binder's structure view and Writing mode's sidebar.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Symbol {
     pub name: String,
+    /// What it declares. A function is a `Knot` with `is_function`.
+    pub kind: SymbolKind,
     /// The name's own range — where "play from here" jumps to.
     pub start: u32,
     /// The whole declaration, header through body.
     pub full_start: u32,
     pub full_end: u32,
     pub is_function: bool,
+    /// A global's initial value as written (`= 5`, `= (a, b)`), trimmed —
+    /// shown faint beside its name. `None` for anything else.
+    pub value: Option<String>,
     pub children: Vec<Symbol>,
 }
 
@@ -1154,14 +1161,21 @@ fn symbols(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<S
     Some(
         brink_ide::document::document_symbols(hir, manifest, source)
             .iter()
-            .map(convert)
+            .map(|symbol| convert(symbol, source))
             .collect(),
     )
 }
 
-fn convert(symbol: &brink_ide::document::DocumentSymbol) -> Symbol {
+fn convert(symbol: &brink_ide::document::DocumentSymbol, source: &str) -> Symbol {
+    let value = matches!(
+        symbol.kind,
+        SymbolKind::Variable | SymbolKind::Constant | SymbolKind::List
+    )
+    .then(|| initial_value(source, symbol.range.end().into()))
+    .flatten();
     Symbol {
         name: symbol.name.clone(),
+        kind: symbol.kind,
         start: symbol.range.start().into(),
         full_start: symbol.full_range.start().into(),
         full_end: symbol.full_range.end().into(),
@@ -1169,8 +1183,26 @@ fn convert(symbol: &brink_ide::document::DocumentSymbol) -> Symbol {
             .detail
             .as_deref()
             .is_some_and(|d| d.contains("function")),
-        children: symbol.children.iter().map(convert).collect(),
+        value,
+        children: symbol
+            .children
+            .iter()
+            .map(|child| convert(child, source))
+            .collect(),
     }
+}
+
+/// What follows a global's name up to the end of its line: `= 5` →
+/// `5`. For display only — the outline shows what the author wrote, not
+/// an evaluated value — so a trailing comment is dropped and nothing is
+/// parsed.
+fn initial_value(source: &str, name_end: usize) -> Option<String> {
+    let rest = source.get(name_end..)?;
+    let line = rest.split('\n').next()?;
+    let line = line.split("//").next()?;
+    let (_, value) = line.split_once('=')?;
+    let value = value.trim().trim_end_matches(';').trim();
+    (!value.is_empty()).then(|| value.to_owned())
 }
 
 #[cfg(test)]

@@ -43,7 +43,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::document::highlighter_factory;
+use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
 use brink_gpui_shell::icons;
 
@@ -142,12 +142,31 @@ pub struct ContinuousView {
     /// mounted yet; the list mounts it on the way there, and the next
     /// render applies the selection.
     pending_reveal: Option<(String, std::ops::Range<usize>)>,
+    /// The Read view (W8): whether it is on, and the prose it keeps — shared
+    /// with every section's highlighter.
+    read: ReadCell,
     /// A handle on this entity for the sections' navigation sink, which
     /// runs from a bare `&mut App`.
     me: WeakEntity<Self>,
     focus: gpui::FocusHandle,
+    /// Where the caret is: the section that last had focus, and the byte
+    /// offset in it. What Writing mode's sidebar calls the current file,
+    /// and what the title bar's knot › stitch is read from.
+    caret: Option<(String, usize)>,
+    /// The focused section's editor, observed for caret moves. Replaced
+    /// whenever another section takes focus.
+    caret_watch: Option<Subscription>,
     _subscriptions: Vec<Subscription>,
 }
+
+/// What the manuscript tells its host.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ManuscriptEvent {
+    /// The caret moved to `offset` in `path` — or into another file.
+    Caret { path: String, offset: usize },
+}
+
+impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
 
 impl ContinuousView {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -157,6 +176,7 @@ impl ContinuousView {
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
                 ProjectEvent::Opened { .. } => this.reload(cx),
+                ProjectEvent::Analyzed if this.read.on.get() => this.sync_prose(cx),
                 ProjectEvent::SourceChanged {
                     path,
                     origin,
@@ -178,8 +198,11 @@ impl ContinuousView {
             mounted: Rc::new(RefCell::new((0, 0.0))),
             measured_line_height: None,
             pending_reveal: None,
+            read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
             focus: cx.focus_handle(),
+            caret: None,
+            caret_watch: None,
             _subscriptions: vec![watch],
         }
     }
@@ -309,6 +332,96 @@ impl ContinuousView {
             state.set_selected_range(span, cx);
             cx.notify();
         });
+        // The caret is where the reveal put it, focused or not: the sidebar
+        // and the title bar's knot › stitch follow from here.
+        self.follow_caret(path, editor, cx);
+        cx.notify();
+    }
+
+    /// The file the author is in: where the caret is, or — before any
+    /// section has had focus — the file at the top of the scroller.
+    #[must_use]
+    pub fn current_file(&self) -> Option<&str> {
+        self.caret
+            .as_ref()
+            .map(|(path, _)| path.as_str())
+            .or_else(|| {
+                self.files
+                    .get(self.list.logical_scroll_top().item_ix)
+                    .map(String::as_str)
+            })
+    }
+
+    /// Where the caret is, if a section has had focus.
+    #[must_use]
+    pub fn caret(&self) -> Option<(&str, usize)> {
+        self.caret.as_ref().map(|(path, at)| (path.as_str(), *at))
+    }
+
+    /// A section took focus: follow its caret from now on. Its editor is
+    /// observed rather than polled, and the event goes out only when the
+    /// caret actually moved — the editor also notifies to blink.
+    fn follow_caret(&mut self, path: String, editor: Entity<EditorState>, cx: &mut Context<Self>) {
+        let offset = editor.read(cx).cursor();
+        self.set_caret(&path, offset, cx);
+        self.caret_watch = Some(cx.observe(&editor, move |this, editor, cx| {
+            let offset = editor.read(cx).cursor();
+            this.set_caret(&path, offset, cx);
+        }));
+    }
+
+    fn set_caret(&mut self, path: &str, offset: usize, cx: &mut Context<Self>) {
+        if self
+            .caret
+            .as_ref()
+            .is_some_and(|(p, o)| p == path && *o == offset)
+        {
+            return;
+        }
+        self.caret = Some((path.to_owned(), offset));
+        cx.emit(ManuscriptEvent::Caret {
+            path: path.to_owned(),
+            offset,
+        });
+    }
+
+    /// Whether the Read view is on.
+    #[must_use]
+    pub fn is_read(&self) -> bool {
+        self.read.on.get()
+    }
+
+    /// Turn the Read view on or off. A repaint, not a rebuild: the
+    /// highlighters read the flag on every paint, and the font is set where
+    /// each section's editor is drawn.
+    pub fn set_read(&mut self, on: bool, cx: &mut Context<Self>) {
+        if self.read.on.replace(on) == on {
+            return;
+        }
+        if on {
+            self.sync_prose(cx);
+        }
+        let faint = on.then(|| crate::document::read_faint(cx));
+        for (editor, _) in self.editors.borrow().values() {
+            editor.update(cx, |state, cx| apply_read_chrome(state, faint, cx));
+        }
+        cx.notify();
+    }
+
+    /// Copy the last analysis's prose into the shared Read state. Only
+    /// while Read is on: off, nothing reads it.
+    fn sync_prose(&mut self, cx: &mut Context<Self>) {
+        let prose = self
+            .project
+            .read(cx)
+            .prose_spans()
+            .iter()
+            .map(|(path, spans)| {
+                let spans = spans.iter().map(|&(a, b)| a as usize..b as usize).collect();
+                (path.clone(), spans)
+            })
+            .collect();
+        *self.read.prose.borrow_mut() = prose;
         cx.notify();
     }
 
@@ -339,6 +452,7 @@ impl ContinuousView {
         project: &Entity<Project>,
         me: &WeakEntity<Self>,
         section_subs: &Rc<RefCell<Vec<Subscription>>>,
+        read: &ReadCell,
         path: &str,
         is_last: bool,
         line_height_override: Option<f32>,
@@ -378,7 +492,13 @@ impl ContinuousView {
                 .folding(false)
                 // See `TRAILING_ROWS`.
                 .scroll_beyond_last_line(Some(trailing));
-            state.set_highlighter_factory(highlighter_factory(weak.clone(), key.clone()), cx);
+            state.set_highlighter_factory(
+                manuscript_highlighter_factory(weak.clone(), key.clone(), read.clone()),
+                cx,
+            );
+            // A section mounted while Read is on starts in its chrome.
+            let faint = read.on.get().then(|| crate::document::read_faint(cx));
+            apply_read_chrome(&mut state, faint, cx);
 
             // The same providers a tab's editor gets — navigation must not
             // depend on which view a file is read in. What differs is the
@@ -400,9 +520,16 @@ impl ContinuousView {
         // edit is pushed explicitly instead.
         let edited_project = project.clone();
         let edited_path = path.to_owned();
+        let following = me.clone();
+        let focused_path = path.to_owned();
         section_subs.borrow_mut().push(cx.subscribe(
             &state,
             move |state, event: &InputEvent, cx| {
+                if matches!(event, InputEvent::Focus) {
+                    let _ = following.update(cx, |this, cx| {
+                        this.follow_caret(focused_path.clone(), state.clone(), cx);
+                    });
+                }
                 if matches!(event, InputEvent::Change) {
                     let text = state.read(cx).value().to_string();
                     let origin = state.entity_id();
@@ -496,6 +623,11 @@ impl Render for ContinuousView {
         let editors = self.editors.clone();
         let section_subs = self.section_subs.clone();
         let mounted = self.mounted.clone();
+        let read = self.read.clone();
+        // The Read view's face: the UI's proportional font, at the editor's
+        // own size — so a row is the same height either way and only the
+        // wrapping moves, which `remeasure_sections` already follows.
+        let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
         let measured = self.measured_line_height;
 
         // The file the top of the scroller is currently inside — `list`
@@ -529,6 +661,7 @@ impl Render for ContinuousView {
                                 &project,
                                 &me,
                                 &section_subs,
+                                &read,
                                 &path,
                                 index + 1 == count,
                                 measured,
@@ -550,6 +683,9 @@ impl Render for ContinuousView {
                                 .bordered(false)
                                 .appearance(false)
                                 .with_size(SECTION_SIZE)
+                                .when_some(read_font.clone(), |editor, font| {
+                                    editor.font_family(font)
+                                })
                                 .h(px(height)),
                         )
                         .into_any_element()
@@ -567,6 +703,17 @@ impl Render for ContinuousView {
                 )
             })
     }
+}
+
+/// The editor chrome Read changes (W8): line numbers in `faint`, and no
+/// current-line band. `None` puts the theme's back.
+fn apply_read_chrome(
+    state: &mut EditorState,
+    faint: Option<gpui::Hsla>,
+    cx: &mut Context<EditorState>,
+) {
+    state.set_line_number_color(faint, cx);
+    state.set_active_line_highlight(faint.is_none(), cx);
 }
 
 /// The boundary between two files.

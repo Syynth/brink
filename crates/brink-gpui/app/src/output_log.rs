@@ -239,13 +239,15 @@ impl Log {
         }
     }
 
-    /// An analysis landed. `errors`/`warnings` are counts within
+    /// An analysis landed, taking `elapsed_ms`; `worst_ms` is the slowest
+    /// this session. `errors`/`warnings` are counts within
     /// `problems`, and they decide the row's colour: a project whose only
     /// problems are Info notes is not a project in trouble, and colouring
     /// its row amber said it was.
     pub fn analyzed(
         &mut self,
         elapsed_ms: f64,
+        worst_ms: f64,
         problems: usize,
         errors: usize,
         warnings: usize,
@@ -263,10 +265,18 @@ impl Log {
             } else {
                 Level::Info
             };
+            // The session's worst rides along when it is not this one:
+            // the status bar used to carry it, and this is its home now
+            // (decision log 2026-10-03, Scripting's lean status bar).
+            let worst = if worst_ms > elapsed_ms + 0.05 {
+                format!(" · worst {worst_ms:.1} ms")
+            } else {
+                String::new()
+            };
             self.push(
                 level,
                 "analysis",
-                format!("{elapsed_ms:.1} ms · {problems} problem(s){slow}"),
+                format!("{elapsed_ms:.1} ms{worst} · {problems} problem(s){slow}"),
             );
         } else if let Some(last) = self
             .rows
@@ -337,7 +347,7 @@ impl OutputLog {
                 }
                 ProjectEvent::Analyzed => {
                     let project = project.read(cx);
-                    let (last, _worst) = project.timings();
+                    let (last, worst) = project.timings();
                     let (mut errors, mut warnings, mut problems) = (0, 0, 0);
                     for (_, diagnostics) in project.all_diagnostics() {
                         for d in diagnostics {
@@ -349,7 +359,7 @@ impl OutputLog {
                             }
                         }
                     }
-                    this.log.analyzed(last, problems, errors, warnings);
+                    this.log.analyzed(last, worst, problems, errors, warnings);
                 }
                 ProjectEvent::Saved => {
                     this.log.push(Level::Info, "project", "saved");
@@ -712,18 +722,41 @@ mod tests {
     }
 
     #[test]
+    fn a_logged_analysis_carries_the_sessions_worst_timing() {
+        let mut log = Log::default();
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        assert!(
+            !log.rows()[0].text.contains("worst"),
+            "this one IS the worst: {}",
+            log.rows()[0].text
+        );
+        log.analyzed(1.5, 40.0, 1, 1, 0);
+        assert!(
+            log.rows()[1].text.contains("worst 40.0 ms"),
+            "{}",
+            log.rows()[1].text
+        );
+    }
+
+    #[test]
     fn the_first_analysis_is_always_logged() {
         let mut log = Log::default();
-        assert!(log.analyzed(1.0, 0, 0, 0), "the first analysis is news");
+        assert!(
+            log.analyzed(1.0, 1.0, 0, 0, 0),
+            "the first analysis is news"
+        );
         assert_eq!(log.rows().len(), 1);
     }
 
     #[test]
     fn a_quiet_analysis_folds_into_the_last_row() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0, 0, 0);
-        assert!(!log.analyzed(1.0, 0, 0, 0), "nothing moved, so no new row");
-        assert!(!log.analyzed(2.0, 0, 0, 0));
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        assert!(
+            !log.analyzed(1.0, 1.0, 0, 0, 0),
+            "nothing moved, so no new row"
+        );
+        assert!(!log.analyzed(2.0, 2.0, 0, 0, 0));
         assert_eq!(log.rows().len(), 1, "still one analysis row");
         assert_eq!(log.rows()[0].also, 2, "and it counts the quiet ones");
     }
@@ -731,8 +764,8 @@ mod tests {
     #[test]
     fn a_moved_problem_count_earns_a_row() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0, 0, 0);
-        assert!(log.analyzed(1.0, 3, 0, 1), "0 -> 3 problems is news");
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        assert!(log.analyzed(1.0, 1.0, 3, 0, 1), "0 -> 3 problems is news");
         assert_eq!(log.rows().len(), 2);
         assert_eq!(log.rows()[1].level, Level::Warning);
     }
@@ -740,8 +773,11 @@ mod tests {
     #[test]
     fn a_slow_analysis_earns_a_row_even_when_nothing_moved() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0, 0, 0);
-        assert!(log.analyzed(SLOW_MS, 0, 0, 0), "slow is worth saying");
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        assert!(
+            log.analyzed(SLOW_MS, SLOW_MS, 0, 0, 0),
+            "slow is worth saying"
+        );
         assert!(
             log.rows()[1].text.contains("(slow)"),
             "and it says why: {}",
@@ -755,8 +791,8 @@ mod tests {
             verbose: true,
             ..Log::default()
         };
-        log.analyzed(1.0, 0, 0, 0);
-        assert!(log.analyzed(1.0, 0, 0, 0));
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        assert!(log.analyzed(1.0, 1.0, 0, 0, 0));
         assert_eq!(log.rows().len(), 2);
     }
 
@@ -764,9 +800,9 @@ mod tests {
     fn info_only_problems_do_not_colour_the_row_as_trouble() {
         let mut log = Log::default();
         // Six Info notes and nothing else: not a project in trouble.
-        log.analyzed(1.0, 6, 0, 0);
+        log.analyzed(1.0, 1.0, 6, 0, 0);
         assert_eq!(log.rows()[0].level, Level::Info);
-        log.analyzed(1.0, 7, 1, 0);
+        log.analyzed(1.0, 1.0, 7, 1, 0);
         assert_eq!(log.rows()[1].level, Level::Error, "an error is trouble");
     }
 
@@ -856,8 +892,8 @@ mod tests {
     #[test]
     fn a_folded_tail_is_copied_with_its_count() {
         let mut log = Log::default();
-        log.analyzed(1.0, 0, 0, 0);
-        log.analyzed(1.0, 0, 0, 0);
+        log.analyzed(1.0, 1.0, 0, 0, 0);
+        log.analyzed(1.0, 1.0, 0, 0, 0);
         assert!(
             transcript(&log, &[true; 3]).contains("(+1 more)"),
             "the fold is part of what the row says"
@@ -867,10 +903,10 @@ mod tests {
     #[test]
     fn clearing_does_not_re_log_an_unchanged_count_as_news() {
         let mut log = Log::default();
-        log.analyzed(1.0, 2, 0, 0);
+        log.analyzed(1.0, 1.0, 2, 0, 0);
         log.clear();
         assert!(
-            !log.analyzed(1.0, 2, 0, 0),
+            !log.analyzed(1.0, 1.0, 2, 0, 0),
             "the count did not move, so it is not news again"
         );
     }

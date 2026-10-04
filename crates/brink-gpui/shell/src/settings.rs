@@ -76,9 +76,10 @@ pub struct AppSettings {
     /// the sibling of `format_on_save`, and applied before it, so what
     /// the formatter lays out is what the fixes wrote.
     pub fix_on_save: bool,
-    /// The view the studio opens in, by `EditorView::persistence_key`.
-    /// `None` restores the last one used, which is the default and what
-    /// the app did before there was a choice.
+    /// The mode the studio opens in, by `EditorView::persistence_key`
+    /// (read through `EditorView::from_persistence_key`, so the old view
+    /// keys still resolve). `None` restores the last one used, which is the
+    /// default and what the app did before there was a choice.
     pub default_view: Option<String>,
     /// While a story plays, reveal each line's source in the editor.
     ///

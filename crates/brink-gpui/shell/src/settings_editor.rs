@@ -1,11 +1,11 @@
-//! Settings ▸ Editor (App scope): which view the studio opens in, and
+//! Settings ▸ Editor (App scope): which mode the studio opens in, and
 //! what happens to a file on the way to disk.
 //!
 //! The web studio's `EditorViewSection` + `EditorSection`. The parts of
 //! its Editor section that are about type and gutters live in Appearance
 //! here (they landed with the theme picker, beside the font sizes they
 //! belong with) — this section is the two that were missing: the default
-//! view, and fix-on-save beside the format-on-save already there.
+//! mode, and fix-on-save beside the format-on-save already there.
 
 use gpui::prelude::*;
 use gpui::{App, ClickEvent, Context, IntoElement, Render, Window, div};
@@ -26,7 +26,7 @@ impl EditorSection {
         Self
     }
 
-    /// One choice in the default-view row: the three views, plus the
+    /// One choice in the default-mode row: the two modes, plus the
     /// "restore the last one" that is the default.
     fn choice(
         id: &'static str,
@@ -52,26 +52,25 @@ impl Render for EditorSection {
         let settings = AppSettings::get(cx);
         let current = settings.default_view.clone();
         let restore = current.is_none();
-        let hint = match &current {
-            None => "The studio opens in whichever view you left it in.".to_owned(),
-            Some(key) => format!(
-                "The studio always opens in {}.",
-                EditorView::ALL
-                    .iter()
-                    .find(|v| v.persistence_key() == key)
-                    .map_or("that view", |v| v.title())
-            ),
+        // A key saved before the two modes (`code`, `single`, `continuous`)
+        // still names one, so the right choice stays lit.
+        let chosen = current
+            .as_deref()
+            .and_then(EditorView::from_persistence_key);
+        let hint = match (&current, chosen) {
+            (None, _) => "The studio opens in whichever mode you left it in.".to_owned(),
+            (Some(_), Some(view)) => format!("The studio always opens in {} mode.", view.title()),
+            (Some(_), None) => "The studio always opens in that mode.".to_owned(),
         };
         let mut views = Vec::new();
         for view in EditorView::ALL {
             let key = view.persistence_key();
-            let on = current.as_deref() == Some(key);
+            let on = chosen == Some(view);
             views.push(
                 Self::choice(
                     match view {
-                        EditorView::Code => "default-view-code",
-                        EditorView::Single => "default-view-single",
-                        EditorView::Continuous => "default-view-continuous",
+                        EditorView::Write => "default-view-write",
+                        EditorView::Script => "default-view-script",
                     },
                     view.title(),
                     on,
@@ -83,10 +82,10 @@ impl Render for EditorSection {
         }
         v_flex()
             .w_full()
-            .child(setting_group("View", cx))
+            .child(setting_group("Mode", cx))
             .child(setting_row(
                 "Open in",
-                "Which of the three views a new window starts in.",
+                "Which mode a new window starts in.",
                 h_flex()
                     .gap_1()
                     .child(Self::choice(

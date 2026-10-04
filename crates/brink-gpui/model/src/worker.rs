@@ -185,6 +185,11 @@ pub struct Analyzed {
     /// costs nothing: the classification only exists where a dialect
     /// registered one.
     pub cues: BTreeMap<String, Vec<CueLine>>,
+    /// Each file's prose as Writing mode's Read view reads it, as byte
+    /// ranges — what it keeps at full strength (`crate::prose::read_ranges`:
+    /// the prose checker's cut, plus convention-claimed lines). Every file
+    /// the author owns, std excluded; a file with no prose is absent.
+    pub prose: BTreeMap<String, Vec<(u32, u32)>>,
     /// `[project] drafts` resolved against the compile closure.
     pub drafts: Vec<String>,
     /// The compile closure — the files the story actually reaches. A file
@@ -833,6 +838,25 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         }
     }
 
+    // Prose ranges. The projection is salsa-memoized per segment, so an
+    // unchanged file costs a lookup and an interval walk.
+    let mut prose: BTreeMap<String, Vec<(u32, u32)>> = BTreeMap::new();
+    for id in session.db().file_ids().collect::<Vec<_>>() {
+        if session.is_mounted_std(id) {
+            continue;
+        }
+        let (Some(path), Some(projection)) = (
+            session.db().file_path(id).map(str::to_owned),
+            session.projection(id),
+        ) else {
+            continue;
+        };
+        let ranges = crate::prose::read_ranges(&projection.spans);
+        if !ranges.is_empty() {
+            prose.insert(path, ranges);
+        }
+    }
+
     let types = session.type_policy();
     let lints = session.lint_policy().clone();
     let mut diagnostics: BTreeMap<String, Vec<Diagnostic>> = BTreeMap::new();
@@ -894,6 +918,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         diagnostics,
         kinds,
         cues,
+        prose,
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
@@ -2159,6 +2184,120 @@ mod tests {
             !opened.files.iter().any(|f| f == "dialect.json"),
             "an artifact is not a source"
         );
+    }
+
+    #[test]
+    fn analysis_ships_each_files_prose_and_not_its_machinery() {
+        // The Read view keeps exactly these at full strength, so the
+        // markup must fall OUTSIDE them: the knot header, the divert, the
+        // choice bullet and the interpolation inside a line of prose.
+        let source = "=== start ===\nYou have {gold} coins.\n* [Run] Away you go.\n-> DONE\n";
+        let tree = Tree::new(
+            "prose",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &state, 1);
+        let ranges = analyzed.prose.get("start.ink").expect("the file has prose");
+        let prose: Vec<&str> = ranges
+            .iter()
+            .map(|&(a, b)| &source[a as usize..b as usize])
+            .collect();
+        let joined = prose.concat();
+        for word in ["You have", "coins.", "Run", "Away you go."] {
+            assert!(joined.contains(word), "{word:?} is prose: {prose:?}");
+        }
+        for machinery in ["===", "{gold}", "gold", "->", "DONE", "*"] {
+            assert!(
+                !prose.iter().any(|p| p.contains(machinery)),
+                "{machinery:?} is not prose: {prose:?}"
+            );
+        }
+        assert!(
+            !analyzed.prose.contains_key("brink.toml"),
+            "the config has no prose"
+        );
+    }
+
+    #[test]
+    fn the_outline_says_what_each_declaration_is_and_a_globals_value() {
+        let source = "VAR gold = 5 // coins\nCONST NAME = \"Ada\"\nLIST mood = happy, (sad)\n=== start ===\n= first\nHi.\n-> DONE\n=== function twice(x) ===\n~ return x * 2\n";
+        let tree = Tree::new(
+            "outline",
+            &[
+                ("brink.toml", "[project]\nentry = \"start.ink\"\n"),
+                ("start.ink", source),
+            ],
+        );
+        let (mut session, _opened, _state) = open_tree_with_config(&tree);
+        let QueryResult::DocumentSymbols(symbols) = crate::query::answer(
+            &mut session,
+            &QueryKind::DocumentSymbols {
+                path: "start.ink".to_owned(),
+            },
+        ) else {
+            unreachable!("asked for document symbols")
+        };
+        let row = |name: &str| {
+            symbols
+                .iter()
+                .find(|s| s.name == name)
+                .map(|s| (s.kind, s.is_function, s.value.clone()))
+        };
+        use brink_ir::SymbolKind as K;
+        assert_eq!(
+            row("gold"),
+            Some((K::Variable, false, Some("5".to_owned())))
+        );
+        assert_eq!(
+            row("NAME"),
+            Some((K::Constant, false, Some("\"Ada\"".to_owned())))
+        );
+        assert_eq!(
+            row("mood"),
+            Some((K::List, false, Some("happy, (sad)".to_owned())))
+        );
+        assert_eq!(row("start"), Some((K::Knot, false, None)));
+        assert_eq!(row("twice"), Some((K::Knot, true, None)));
+        let start = symbols.iter().find(|s| s.name == "start").expect("a knot");
+        assert_eq!(start.children[0].kind, K::Stitch);
+    }
+
+    #[test]
+    fn a_convention_claimed_line_reads_as_prose() {
+        // `VENDOR` is claimed by the `cue` handler: it lowers to a call
+        // over exactly its own text, which the checker's cut removes. The
+        // Read view keeps it — a character's name is read.
+        let story = "flow main() {\n  VENDOR\n  You shouldn't be here after dark.\n  -> END\n}\n";
+        let tree = Tree::new(
+            "claimed",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"story.brink\"\nconventions = \"conventions.brink\"\n",
+                ),
+                (
+                    "conventions.brink",
+                    "@[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", order = 10)]\nfn cue(name: string) {\n  return \"-- \" + name + \" enters --\";\n}\n",
+                ),
+                ("story.brink", story),
+            ],
+        );
+        let (mut session, _opened, state) = open_tree_with_config(&tree);
+        let analyzed = analyze(&mut session, &state, 1);
+        let prose: Vec<&str> = analyzed.prose["story.brink"]
+            .iter()
+            .map(|&(a, b)| &story[a as usize..b as usize])
+            .collect();
+        assert!(prose.contains(&"VENDOR"), "the cue is read: {prose:?}");
+        assert!(
+            prose.contains(&"You shouldn't be here after dark."),
+            "{prose:?}"
+        );
+        assert!(!prose.iter().any(|p| p.contains("main")), "{prose:?}");
     }
 
     #[test]

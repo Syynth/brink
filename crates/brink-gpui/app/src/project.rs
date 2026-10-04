@@ -75,6 +75,18 @@ pub struct SourceDelta {
     pub inserted: String,
 }
 
+/// The words in `source`'s `spans` (byte ranges). A span the text has
+/// moved out from under — an edit since the analysis — is skipped rather
+/// than sliced mid-character.
+#[must_use]
+pub fn count_words(source: &str, spans: &[(u32, u32)]) -> usize {
+    spans
+        .iter()
+        .filter_map(|&(a, b)| source.get(a as usize..b as usize))
+        .map(|text| text.split_whitespace().count())
+        .sum()
+}
+
 /// The smallest single replacement turning `old` into `new`, or `None`
 /// when they are equal. Common head and tail are trimmed bytewise and then
 /// widened to char boundaries, so a change inside a multi-byte character
@@ -146,6 +158,9 @@ pub struct Project {
     /// the highlighter paints a cue, a parenthetical and a dialogue run
     /// from. Empty for a project with no `[dialogue]` dialect.
     cues: BTreeMap<String, Vec<CueLine>>,
+    /// Each file's prose as byte ranges, from the last analysis — what
+    /// Writing mode's Read view keeps at full strength.
+    prose_spans: BTreeMap<String, Vec<(u32, u32)>>,
     /// Prose lints per OPEN file, reported by the document that computed
     /// them. Kept apart from `diagnostics`, which is the analysis's:
     /// merging them would double-mark the editor (which lays its own) and
@@ -292,6 +307,7 @@ impl Project {
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
             cues: BTreeMap::new(),
+            prose_spans: BTreeMap::new(),
             prose: BTreeMap::new(),
             conflicted: BTreeMap::new(),
             file_ops: Vec::new(),
@@ -334,6 +350,7 @@ impl Project {
                     self.diagnostics.clear();
                     self.kinds.clear();
                     self.cues.clear();
+                    self.prose_spans.clear();
                     self.prose.clear();
                     self.conflicted.clear();
                     self.drafts.clear();
@@ -351,6 +368,7 @@ impl Project {
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;
                 self.cues = analyzed.cues;
+                self.prose_spans = analyzed.prose;
                 self.drafts = analyzed.drafts.into_iter().collect();
                 self.draft_globs = analyzed.draft_globs;
                 self.drafts_known = analyzed.drafts_known;
@@ -1131,6 +1149,25 @@ impl Project {
         self.cues.get(path).map_or(&[], Vec::as_slice)
     }
 
+    /// How many words of prose the story holds — the prose the Read view
+    /// keeps, so markup, comments and code are not counted. As of the last
+    /// analysis; a pass over every file's prose, so callers cache it.
+    #[must_use]
+    pub fn prose_word_count(&self) -> usize {
+        self.prose_spans
+            .iter()
+            .filter_map(|(path, spans)| Some(count_words(self.sources.get(path)?, spans)))
+            .sum()
+    }
+
+    /// Every file's prose, as byte ranges by path. One analysis stale at
+    /// most, like [`Project::cues_for`]: a line typed a keystroke ago reads
+    /// as markup until the next pass lands.
+    #[must_use]
+    pub fn prose_spans(&self) -> &BTreeMap<String, Vec<(u32, u32)>> {
+        &self.prose_spans
+    }
+
     #[must_use]
     pub fn timings(&self) -> (f64, f64) {
         (self.last_analyze_ms, self.worst_analyze_ms)
@@ -1143,6 +1180,16 @@ mod tests {
 
     fn delta(old: &str, new: &str) -> SourceDelta {
         diff(old, new).expect("texts differ")
+    }
+
+    #[test]
+    fn words_are_counted_in_the_prose_and_a_moved_span_is_skipped() {
+        let source = "=== start ===\nThe lamp  gutters.\n* [Run] away\n";
+        let lamp = source.find("The").expect("prose") as u32;
+        let end = lamp + source[lamp as usize..].find('\n').expect("line end") as u32;
+        let run = source.find("Run").expect("choice") as u32;
+        let spans = [(lamp, end), (run, run + 3), (500, 510)];
+        assert_eq!(count_words(source, &spans), 4, "three words, then `Run`");
     }
 
     #[test]
