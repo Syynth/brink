@@ -456,6 +456,19 @@ pub fn setting_stepper(
     on_change: impl Fn(f32, &mut Window, &mut App) + Clone + 'static,
     cx: &App,
 ) -> AnyElement {
+    setting_stepper_by(id, value, 1., format!("{value:.0}{suffix}"), on_change, cx)
+}
+
+/// The same, moving by `step` and showing `label` — for a value whose
+/// unit is coarse, or that has a word for one of its values.
+pub fn setting_stepper_by(
+    id: &'static str,
+    value: f32,
+    step: f32,
+    label: String,
+    on_change: impl Fn(f32, &mut Window, &mut App) + Clone + 'static,
+    cx: &App,
+) -> AnyElement {
     let fg = cx.theme().foreground;
     let dec = on_change.clone();
     h_flex()
@@ -466,7 +479,7 @@ pub fn setting_stepper(
                 .outline()
                 .xsmall()
                 .label("\u{2212}")
-                .on_click(move |_, window, cx| dec(value - 1., window, cx)),
+                .on_click(move |_, window, cx| dec(value - step, window, cx)),
         )
         .child(
             div()
@@ -474,14 +487,14 @@ pub fn setting_stepper(
                 .text_center()
                 .text_sm()
                 .text_color(fg)
-                .child(format!("{value:.0}{suffix}")),
+                .child(label),
         )
         .child(
             Button::new(SharedString::from(format!("{id}-inc")))
                 .outline()
                 .xsmall()
                 .label("+")
-                .on_click(move |_, window, cx| on_change(value + 1., window, cx)),
+                .on_click(move |_, window, cx| on_change(value + step, window, cx)),
         )
         .into_any_element()
 }

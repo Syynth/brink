@@ -3083,6 +3083,70 @@ mod modes_driven {
         );
     }
 
+    /// Write mode's panes take a drag, within their range, and keep it:
+    /// a drop saves every width with the layout, and an unrelated layout
+    /// save (a mode switch) carries them through.
+    #[test]
+    fn write_panes_resize_clamp_and_are_saved() {
+        use crate::write_view::Pane;
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let write = h.read(|cx| studio.read(cx).write.clone());
+        h.update(|cx| {
+            write.update(cx, |w, cx| {
+                w.drag_pane(Pane::Files, 300., 1200., cx);
+                w.drag_pane(Pane::Player, 1200. - 50., 1200., cx);
+            });
+        });
+        let (files, player, strip) = h.read(|cx| {
+            let w = write.read(cx);
+            (
+                w.width_of(Pane::Files),
+                w.width_of(Pane::Player),
+                w.sidebar_strip().map(|s| s.width),
+            )
+        });
+        assert_eq!(files, 300.);
+        assert_eq!(player, 280., "a drag past the Player's minimum stops there");
+        assert_eq!(strip, Some(gpui::px(300.)), "the title bar's strip follows");
+
+        h.update(|cx| write.update(cx, |w, cx| w.save_panes(cx)));
+        h.dispatch(window, ModeScript);
+        let saved = h.read(|cx| {
+            brink_gpui_shell::settings::AppSettings::get(cx)
+                .layout
+                .panes
+                .get("write.files")
+                .copied()
+        });
+        assert_eq!(
+            saved,
+            Some(300.),
+            "saved, and carried through a mode switch"
+        );
+    }
+
+    /// The picture: the manuscript's centred column, at the default width,
+    /// between the sidebar and the Player.
+    #[test]
+    fn the_manuscript_column_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        h.dispatch(window, ModeWrite);
+        let shot = scratch_dir("shot").join("column.png");
+        h.screenshot(window, &shot);
+        eprintln!("column screenshot: {}", shot.display());
+        h.dispatch(window, super::ToggleWritingSidebar);
+        h.dispatch(window, super::ToggleStructureColumn);
+        h.dispatch(window, super::TogglePlayer);
+        let shot = scratch_dir("shot").join("column-panes.png");
+        h.screenshot(window, &shot);
+        eprintln!("column screenshot: {}", shot.display());
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {

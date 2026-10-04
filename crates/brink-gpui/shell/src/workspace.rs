@@ -752,6 +752,9 @@ impl Workspace {
             scroll: saved.scroll,
             open_files: saved.open_files,
             active_file: saved.active_file,
+            // The app's panes (Write mode's sidebar columns, its Player):
+            // theirs to size, so carried through like the scrolls.
+            panes: saved.panes,
         }
     }
 
