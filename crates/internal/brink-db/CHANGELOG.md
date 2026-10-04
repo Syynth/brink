@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18](https://github.com/Syynth/brink/compare/brink-db-v0.0.17...brink-db-v0.0.18) - 2026-10-04
+
+### Fixed
+
+- *(deps)* upgrade salsa 0.27.2 → 0.28.5 (RUSTSEC-2026-0308) ([#3622](https://github.com/Syynth/brink/pull/3622))
+
+### Other
+
+- bump the pinned toolchain to Rust 1.99.0 ([#3620](https://github.com/Syynth/brink/pull/3620))
+
 ## [0.0.17](https://github.com/Syynth/brink/compare/brink-db-v0.0.16...brink-db-v0.0.17) - 2026-09-12
 
 ### Added

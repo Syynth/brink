@@ -325,7 +325,7 @@ dependencies = [
 
 [[package]]
 name = "brink-project-config"
-version = "0.0.17"
+version = "0.0.18"
 dependencies = [
  "brink-source-tree",
  "serde",
@@ -336,7 +336,7 @@ dependencies = [
 
 [[package]]
 name = "brink-source-tree"
-version = "0.0.17"
+version = "0.0.18"
 
 [[package]]
 name = "brotli"

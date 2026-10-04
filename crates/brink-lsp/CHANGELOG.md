@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.0.18](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.17...brink-lsp-v0.0.18) - 2026-10-04
+
+### Other
+
+- update Cargo.lock dependencies
+
 ## [0.0.17](https://github.com/Syynth/brink/compare/brink-lsp-v0.0.16...brink-lsp-v0.0.17) - 2026-09-12
 
 ### Added
