@@ -135,6 +135,21 @@ impl Harness {
         self.app().update(f)
     }
 
+    /// Run `f` inside `window` — for what needs the window itself (focus,
+    /// whether something is focused). Settles after.
+    pub fn app_window<R>(
+        &mut self,
+        window: AnyWindowHandle,
+        f: impl FnOnce(&mut Window, &mut App) -> R,
+    ) -> R {
+        let r = self
+            .app()
+            .update_window(window, |_, window, cx| f(window, cx))
+            .expect("a window that is open");
+        self.settle();
+        r
+    }
+
     /// Change something on the app, then settle.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> R {
         let r = self.app().update(f);

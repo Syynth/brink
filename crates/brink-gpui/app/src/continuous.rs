@@ -137,6 +137,10 @@ pub struct ContinuousView {
     /// only a first guess: the first laid-out section reports the true value
     /// through `EditorState::line_height()` and every section is re-measured.
     measured_line_height: Option<f32>,
+    /// The row height the sections reported BEFORE a theme change, while
+    /// they have not yet laid out at the new size: not to be adopted as
+    /// the new one (`restyle`).
+    stale_line_height: Option<f32>,
     /// A `(path, span)` to select once that file's section exists. Set by
     /// [`ContinuousView::reveal_span`] when the section has not been
     /// mounted yet; the list mounts it on the way there, and the next
@@ -186,8 +190,8 @@ impl ContinuousView {
             },
         );
         // A theme or font-size change re-sizes every row and recolours the
-        // band, so the sections are rebuilt.
-        cx.observe_global::<gpui_component::Theme>(|this, cx| this.reload(cx))
+        // band — in place (`restyle`), never by rebuilding the sections.
+        cx.observe_global::<gpui_component::Theme>(|this, cx| this.restyle(cx))
             .detach();
         Self {
             list: ListState::new(files.len(), ListAlignment::Top, px(600.)),
@@ -197,6 +201,7 @@ impl ContinuousView {
             section_subs: Rc::new(RefCell::new(Vec::new())),
             mounted: Rc::new(RefCell::new((0, 0.0))),
             measured_line_height: None,
+            stale_line_height: None,
             pending_reveal: None,
             read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
@@ -214,7 +219,37 @@ impl ContinuousView {
         self.editors.borrow_mut().clear();
         self.section_subs.borrow_mut().clear();
         self.measured_line_height = None;
+        self.stale_line_height = None;
         self.list = ListState::new(self.files.len(), ListAlignment::Top, px(600.));
+        cx.notify();
+    }
+
+    /// A theme or font-size change, applied to the sections that exist.
+    ///
+    /// It used to be a [`ContinuousView::reload`]: every section's editor
+    /// thrown away and rebuilt. That took the caret and the focus of the one
+    /// being typed in with it — ⌘= unfocused the text — and the scroll
+    /// position too. Now the highlighters are reinstalled (they snapshot
+    /// the theme's colours) and the row height is re-measured, so nothing
+    /// the author is holding moves.
+    fn restyle(&mut self, cx: &mut Context<Self>) {
+        let project = self.project.downgrade();
+        let mut stale = None;
+        for (path, (editor, _)) in self.editors.borrow().iter() {
+            let factory = manuscript_highlighter_factory(
+                project.clone(),
+                SharedString::from(path.clone()),
+                self.read.clone(),
+            );
+            editor.update(cx, |state, cx| {
+                stale = stale.or_else(|| state.line_height().map(f32::from));
+                state.set_highlighter_factory(factory, cx);
+            });
+        }
+        // Until the sections lay out at the new size they still report the
+        // old row height; the guess from the theme stands in meanwhile.
+        self.stale_line_height = stale;
+        self.measured_line_height = None;
         cx.notify();
     }
 
@@ -336,6 +371,40 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// `path`'s section's focus handle — where a click puts the keyboard.
+    #[cfg(test)]
+    pub fn section_focus(&self, path: &str, cx: &App) -> Option<gpui::FocusHandle> {
+        let (editor, _) = self.editors.borrow().get(path).cloned()?;
+        Some(editor.read(cx).focus_handle(cx))
+    }
+
+    /// `path`'s section as the tests see it: its editor, whether that has
+    /// the keyboard, the height it was given, and the height its rows need.
+    #[cfg(test)]
+    pub fn probe_section(
+        &self,
+        path: &str,
+        window: &Window,
+        cx: &App,
+    ) -> Option<(gpui::EntityId, bool, f32, f32)> {
+        let (editor, height) = self.editors.borrow().get(path).cloned()?;
+        let state = editor.read(cx);
+        let rows = state.wrap_row_count().max(1) as f32;
+        let line = f32::from(state.line_height()?);
+        let focused = state.focus_handle(cx).is_focused(window);
+        let trailing = if self.files.last().is_some_and(|f| f == path) {
+            TRAILING_ROWS as f32
+        } else {
+            0.
+        };
+        Some((
+            editor.entity_id(),
+            focused,
+            height,
+            (rows + trailing) * line,
+        ))
     }
 
     /// Whether the manuscript holds `path` — the story's own files; not
@@ -565,6 +634,16 @@ impl ContinuousView {
         else {
             return;
         };
+        // The first frame after a theme change still reads the height from
+        // before it: the sections have not drawn at the new size yet. Skip
+        // that one frame, once — `take`, so a theme that leaves the height
+        // unchanged adopts it next frame rather than waiting forever.
+        if let Some(stale) = self.stale_line_height.take()
+            && (stale - real).abs() < 0.01
+        {
+            cx.notify();
+            return;
+        }
         self.measured_line_height = Some(real);
         self.remeasure_sections(cx);
         self.list.remeasure();
