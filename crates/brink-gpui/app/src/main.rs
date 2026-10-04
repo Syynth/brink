@@ -3045,6 +3045,44 @@ mod modes_driven {
         assert_eq!(size(&mut h), (start, start), "⌘0 puts it back");
     }
 
+    /// ⌘= while typing in the manuscript keeps the keyboard where it was:
+    /// the section's editor is the same one, still focused, and its height
+    /// follows the new row height. (It used to rebuild every section,
+    /// which took the focus — and the caret — with it.)
+    #[test]
+    fn zooming_keeps_the_manuscripts_focus_and_remeasures() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let probe = |h: &mut Harness| {
+            h.app_window(window, |window, cx| {
+                let manuscript = studio.read(cx).manuscript.clone();
+                manuscript.read(cx).probe_section("story.ink", window, cx)
+            })
+        };
+        let handle = h.read(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            manuscript.read(cx).section_focus("story.ink", cx)
+        });
+        assert!(handle.is_some(), "the section is mounted");
+        let handle = handle.expect("just asserted above");
+        h.app_window(window, |window, cx| window.focus(&handle, cx));
+        h.settle();
+        let (before, has_focus, _, _) = probe(&mut h).expect("a laid-out section");
+        assert!(has_focus);
+
+        h.press(window, "cmd-=");
+        h.press(window, "cmd-=");
+        let (after, has_focus, height, needs) = probe(&mut h).expect("still there");
+        assert_eq!(after, before, "the same editor, not a rebuilt one");
+        assert!(has_focus, "and the keyboard is still in it");
+        assert!(
+            (height - needs).abs() < 0.5,
+            "the section follows the new row height: given {height}, needs {needs}"
+        );
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {
