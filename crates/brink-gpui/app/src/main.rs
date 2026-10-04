@@ -3009,6 +3009,42 @@ mod modes_driven {
         eprintln!("script screenshot: {}", shot.display());
     }
 
+    /// ⌘= / ⌘- / ⌘0 size the editor's text — the setting, and what every
+    /// editor reads (the theme's mono size) — through the real keymap.
+    #[test]
+    fn the_zoom_keys_size_the_editor_text() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        h.dispatch(window, ModeWrite);
+        let size = |h: &mut Harness| {
+            h.read(|cx| {
+                use gpui_component::ActiveTheme as _;
+                (
+                    brink_gpui_shell::settings::AppSettings::get(cx).editor_font_size,
+                    f32::from(cx.theme().mono_font_size),
+                )
+            })
+        };
+        let start = size(&mut h).0;
+        assert_eq!(start, brink_gpui_shell::settings::DEFAULT_EDITOR_FONT_SIZE);
+
+        h.press(window, "cmd-=");
+        assert_eq!(size(&mut h), (start + 1., start + 1.), "⌘= grows it");
+        h.press(window, "cmd--");
+        h.press(window, "cmd--");
+        assert_eq!(size(&mut h), (start - 1., start - 1.), "⌘- shrinks it");
+        for _ in 0..40 {
+            h.press(window, "cmd--");
+        }
+        assert_eq!(
+            size(&mut h).0,
+            brink_gpui_shell::settings::MIN_EDITOR_FONT_SIZE,
+            "and stops at the floor"
+        );
+        h.press(window, "cmd-0");
+        assert_eq!(size(&mut h), (start, start), "⌘0 puts it back");
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {
