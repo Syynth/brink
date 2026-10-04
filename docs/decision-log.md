@@ -5726,3 +5726,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Writing mode's Files column reuses the Binder: a second, files-only instance with all of the Binder's file interactions (folders, drag to reorder or move, multi-select, New/Rename/Delete, row menus, the keyboard), its own expansion and selection, and the structure-column toggle in its header. This narrows W11 ("its own component, separate from the Binder") to the structure column. The structure column is off until the author turns it on. The sidebar slides in and out, and the title bar's strip slides with it.
 - **WHY:** The maintainer's direction on first use: a file list that behaves differently from the Binder is a second file tree to learn and maintain. The sidebar slides because W4 ruled it does, and the first build didn't. Files are what a writer reaches for first, so Structure waits until it's asked for.
+
+## The editor font size stays in Settings ▸ Appearance
+- **WHEN:** 2026-10-04
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** The editor font size remains a row in Settings ▸ Appearance, beside the theme and the app font size. It is not moved to, or duplicated in, Settings ▸ Editor. ⌘= / ⌘- / ⌘0 (bindable) change it, and a Settings search for "zoom" finds it.
+- **WHY:** Type sizes belong with the theme. The shortcuts and the search are enough to reach it without a second home.
