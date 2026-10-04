@@ -257,6 +257,14 @@ impl Harness {
         self.app().run_until_parked();
     }
 
+    /// Move the clock on by `by`, then settle. The harness runs on
+    /// simulated time: a `timer` — a slide's finish, a debounce — fires
+    /// only when the test says that much time has passed.
+    pub fn advance(&mut self, by: Duration) {
+        self.app().advance_clock(by);
+        self.settle();
+    }
+
     /// Settle until `done` holds, or `within` passes. Answers whether it
     /// held — a test asserts on that, so a slow machine fails loudly rather
     /// than reading a half-finished state.

@@ -17,7 +17,6 @@
 //! same flows.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::time::Duration;
 
 use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
 use brink_ir::SymbolKind;
@@ -35,7 +34,7 @@ use gpui_component::{
     v_flex,
 };
 
-use crate::binder::BinderEvent;
+use crate::binder::{Binder, BinderEvent};
 use crate::continuous::{ContinuousView, ManuscriptEvent};
 use crate::player::Player;
 use crate::project::{Project, ProjectEvent};
@@ -44,11 +43,13 @@ use brink_gpui_shell::icons;
 /// The Player panel's width once it has slid in.
 pub(crate) const PLAYER_WIDTH: f32 = 400.;
 
-/// How long the Player's slide takes.
-const SLIDE: Duration = Duration::from_millis(160);
+/// How long a slide takes — the Player's and the sidebar's, and the
+/// title bar's strip above the sidebar, which must move with it.
+use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
 
-/// The sidebar's two columns.
-const FILES_WIDTH: f32 = 200.;
+/// The sidebar's two columns. Files is a Binder, whose header carries more
+/// tools than a plain list's would, hence the wider of the two.
+const FILES_WIDTH: f32 = 240.;
 const STRUCTURE_WIDTH: f32 = 240.;
 
 /// A sidebar row's height, and its header's.
@@ -58,11 +59,17 @@ const HEADER_HEIGHT: f32 = 30.;
 /// What Write mode asks of the studio.
 #[derive(Debug, Clone)]
 pub(crate) enum WriteEvent {
-    /// A structural or file operation, as the Binder would ask for it.
+    /// A structural operation, as the Binder would ask for it.
     Outline(BinderEvent),
-    /// Open a file the manuscript does not hold (a `std` library file) —
-    /// which only Script mode can show.
-    OpenInScript { path: String },
+}
+
+/// Where the sidebar is: out, sliding away, or gone.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Sidebar {
+    Closed,
+    Open,
+    /// Still drawn while it slides out; `Closed` once the slide is over.
+    Closing,
 }
 
 pub(crate) struct WriteView {
@@ -73,11 +80,16 @@ pub(crate) struct WriteView {
     /// Bumped on every opening, so the slide's animation id is new and it
     /// plays again rather than resuming at its end.
     openings: usize,
-    sidebar_open: bool,
-    /// The structure column (W5) — its toggle is in the Files header.
+    sidebar: Sidebar,
+    /// Bumped per slide, in or out, so each animates from its start.
+    slide: usize,
+    /// Column 1: a files-only Binder — every file interaction the Binder
+    /// has, with its own expansion and selection. Its events are the
+    /// studio's to handle, as the Binder's are.
+    files: Entity<Binder>,
+    /// The structure column (W5) — its toggle is in the Files header. Off
+    /// until asked for: the files are what a writer reaches for first.
     structure_open: bool,
-    /// The `std` library folder, expanded.
-    std_open: bool,
     /// Each file's outline, as last answered. Cleared on every analysis:
     /// an edit moves offsets, and a stale outline would put the caret in
     /// the wrong stitch.
@@ -97,6 +109,7 @@ impl WriteView {
         project: Entity<Project>,
         manuscript: Entity<ContinuousView>,
         player: Entity<Player>,
+        files: Entity<Binder>,
         cx: &mut Context<Self>,
     ) -> Self {
         let on_caret = cx.subscribe(&manuscript, |this, _, event: &ManuscriptEvent, cx| {
@@ -123,9 +136,10 @@ impl WriteView {
             player,
             player_open: false,
             openings: 0,
-            sidebar_open: false,
-            structure_open: true,
-            std_open: false,
+            sidebar: Sidebar::Closed,
+            slide: 0,
+            files,
+            structure_open: false,
             symbols: BTreeMap::new(),
             pending: BTreeSet::new(),
             words: 0,
@@ -157,17 +171,35 @@ impl WriteView {
         }
     }
 
+    /// Out, or on its way out — not while sliding away.
     #[must_use]
     pub(crate) fn is_sidebar_open(&self) -> bool {
-        self.sidebar_open
+        self.sidebar == Sidebar::Open
     }
 
+    /// Slide the sidebar out, or away.
     pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
-        self.sidebar_open = !self.sidebar_open;
-        if self.sidebar_open
-            && let Some(path) = self.current_file(cx)
-        {
-            self.request_symbols(&path, cx);
+        self.slide += 1;
+        if self.sidebar == Sidebar::Open {
+            // Drawn until the slide is over, then gone. A toggle back in
+            // meanwhile bumps `slide`, and this finish is then stale.
+            self.sidebar = Sidebar::Closing;
+            let slide = self.slide;
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(SLIDE).await;
+                let _ = this.update(cx, |this, cx| {
+                    if this.slide == slide && this.sidebar == Sidebar::Closing {
+                        this.sidebar = Sidebar::Closed;
+                        cx.notify();
+                    }
+                });
+            })
+            .detach();
+        } else {
+            self.sidebar = Sidebar::Open;
+            if let Some(path) = self.current_file(cx) {
+                self.request_symbols(&path, cx);
+            }
         }
         cx.notify();
     }
@@ -178,21 +210,51 @@ impl WriteView {
         (self.words, self.project.read(cx).problem_count())
     }
 
+    #[must_use]
+    pub(crate) fn is_structure_open(&self) -> bool {
+        self.structure_open
+    }
+
     pub(crate) fn toggle_structure(&mut self, cx: &mut Context<Self>) {
         self.structure_open = !self.structure_open;
+        if self.structure_open
+            && let Some(path) = self.current_file(cx)
+        {
+            self.request_symbols(&path, cx);
+        }
+        // The toggle is drawn in the Binder's header.
+        self.files.update(cx, |_, cx| cx.notify());
         cx.notify();
     }
 
-    /// The open sidebar's width, which the title bar paints to match.
+    /// The Files column's Binder.
+    #[cfg(test)]
+    pub(crate) fn files(&self) -> &Entity<Binder> {
+        &self.files
+    }
+
+    /// The sidebar's full width.
+    fn sidebar_width(&self) -> Pixels {
+        px(FILES_WIDTH
+            + if self.structure_open {
+                STRUCTURE_WIDTH
+            } else {
+                0.
+            })
+    }
+
+    /// What the title bar's strip should do: slide with the sidebar.
     #[must_use]
-    pub(crate) fn sidebar_width(&self) -> Option<Pixels> {
-        self.sidebar_open.then(|| {
-            px(FILES_WIDTH
-                + if self.structure_open {
-                    STRUCTURE_WIDTH
-                } else {
-                    0.
-                })
+    pub(crate) fn sidebar_strip(&self) -> Option<SidebarStrip> {
+        let opening = match self.sidebar {
+            Sidebar::Closed => return None,
+            Sidebar::Open => true,
+            Sidebar::Closing => false,
+        };
+        Some(SidebarStrip {
+            width: self.sidebar_width(),
+            opening,
+            slide: self.slide,
         })
     }
 
@@ -237,10 +299,6 @@ impl WriteView {
         .detach();
     }
 
-    fn reveal_file(&mut self, path: &str, cx: &mut Context<Self>) {
-        self.manuscript.update(cx, |m, cx| m.reveal(path, cx));
-    }
-
     pub(crate) fn reveal_at(&mut self, path: &str, offset: usize, cx: &mut Context<Self>) {
         self.manuscript
             .update(cx, |m, cx| m.reveal_span(path, offset..offset, cx));
@@ -270,208 +328,33 @@ impl Focusable for WriteView {
 impl WriteView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.current_file(cx);
+        let border = cx.theme().sidebar_border;
+        let width = f32::from(self.sidebar_width());
+        let opening = self.sidebar == Sidebar::Open;
         h_flex()
             .h_full()
             .flex_none()
-            .child(self.render_files(current.as_deref(), cx))
+            .overflow_hidden()
+            .child(
+                div()
+                    .w(px(FILES_WIDTH))
+                    .h_full()
+                    .flex_none()
+                    .border_r_1()
+                    .border_color(border)
+                    .child(self.files.clone()),
+            )
             .when(self.structure_open, |el| {
                 el.child(self.render_structure(current.as_deref(), cx))
             })
-            .into_any_element()
-    }
-
-    /// Column 1: the project's files.
-    fn render_files(&self, current: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
-        let theme = cx.theme();
-        let (sidebar, border, muted, fg, accent, danger) = (
-            theme.sidebar,
-            theme.sidebar_border,
-            theme.muted_foreground,
-            theme.foreground,
-            theme.accent,
-            theme.danger,
-        );
-        let project = self.project.read(cx);
-        let entry = project.entry().map(str::to_owned);
-        let files: Vec<(String, usize)> = project
-            .files()
-            .iter()
-            .map(|f| (f.clone(), project.diagnostics_for(f).len()))
-            .collect();
-        let library: Vec<String> = project
-            .library()
-            .iter()
-            .map(|(p, _)| (*p).to_owned())
-            .collect();
-        let problems = project.problem_count();
-
-        let mut rows: Vec<AnyElement> = Vec::new();
-        // The entry first, then the rest in binder order.
-        let mut ordered: Vec<&(String, usize)> = files.iter().collect();
-        ordered.sort_by_key(|(f, _)| Some(f) != entry.as_ref());
-        for (path, count) in ordered {
-            let is_entry = Some(path) == entry.as_ref();
-            let here = Some(path.as_str()) == current;
-            let name = file_name(path);
-            let me = path.clone();
-            rows.push(
-                h_flex()
-                    .id(SharedString::from(format!("write-file-{path}")))
-                    .h(px(ROW_HEIGHT))
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .when(here, |el| el.bg(accent))
-                    .hover(|s| s.bg(accent.opacity(0.6)))
-                    .child(icons::icon(icons::BrinkIcon::Drop, px(12.), muted))
-                    .child(
-                        div()
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .text_sm()
-                            .text_color(fg)
-                            .when(is_entry, |el| el.font_weight(gpui::FontWeight::SEMIBOLD))
-                            .child(name),
-                    )
-                    .when(*count > 0, |el| {
-                        el.child(div().text_xs().text_color(danger).child(count.to_string()))
-                    })
-                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                        this.reveal_file(&me, cx);
-                    }))
-                    .into_any_element(),
-            );
-        }
-        if !library.is_empty() {
-            let open = self.std_open;
-            rows.push(
-                h_flex()
-                    .id("write-std")
-                    .h(px(ROW_HEIGHT))
-                    .px_3()
-                    .gap_2()
-                    .items_center()
-                    .rounded_sm()
-                    .cursor_pointer()
-                    .hover(|s| s.bg(accent.opacity(0.6)))
-                    .child(
-                        gpui_component::Icon::new(if open {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::FolderClosed
-                        })
-                        .with_size(px(12.))
-                        .text_color(muted),
-                    )
-                    .child(div().text_sm().text_color(muted).child("std"))
-                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                        this.std_open = !this.std_open;
-                        cx.notify();
-                    }))
-                    .into_any_element(),
-            );
-            if open {
-                for path in library {
-                    let me = self.me.clone();
-                    let name = file_name(&path);
-                    rows.push(
-                        h_flex()
-                            .id(SharedString::from(format!("write-lib-{path}")))
-                            .h(px(ROW_HEIGHT))
-                            .pl_8()
-                            .pr_3()
-                            .items_center()
-                            .rounded_sm()
-                            .cursor_pointer()
-                            .hover(|s| s.bg(accent.opacity(0.6)))
-                            .child(div().truncate().text_sm().text_color(muted).child(name))
-                            .on_click(move |_: &ClickEvent, _, cx| {
-                                let path = path.clone();
-                                let _ = me.update(cx, |_, cx| {
-                                    cx.emit(WriteEvent::OpenInScript { path });
-                                });
-                            })
-                            .into_any_element(),
-                    );
-                }
-            }
-        }
-
-        let structure_open = self.structure_open;
-        v_flex()
-            .w(px(FILES_WIDTH))
-            .h_full()
-            .flex_none()
-            .bg(sidebar)
-            .border_r_1()
-            .border_color(border)
-            .child(
-                h_flex()
-                    .h(px(HEADER_HEIGHT))
-                    .flex_none()
-                    .pl_3()
-                    .pr_1()
-                    .items_center()
-                    .child(div().flex_1().text_xs().text_color(muted).child("FILES"))
-                    .child(
-                        Button::new("write-new-file")
-                            .ghost()
-                            .xsmall()
-                            .icon(IconName::Plus)
-                            .tooltip("New File\u{2026}")
-                            .on_click(cx.listener(|_, _: &ClickEvent, _, cx| {
-                                cx.emit(WriteEvent::Outline(BinderEvent::NewFile {
-                                    folder: String::new(),
-                                }));
-                            })),
-                    )
-                    // W5: the second column's toggle lives in the first
-                    // column's own header.
-                    .child(
-                        Button::new("write-structure-toggle")
-                            .ghost()
-                            .xsmall()
-                            .icon(if structure_open {
-                                IconName::PanelRightClose
-                            } else {
-                                IconName::PanelRightOpen
-                            })
-                            .tooltip(if structure_open {
-                                "Hide the file's structure"
-                            } else {
-                                "Show the file's structure"
-                            })
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.toggle_structure(cx);
-                            })),
-                    ),
-            )
-            .child(
-                v_flex()
-                    .id("write-files")
-                    .flex_1()
-                    .min_h_0()
-                    .overflow_y_scroll()
-                    .px_1()
-                    .children(rows),
-            )
-            .child(
-                h_flex()
-                    .h(px(ROW_HEIGHT))
-                    .flex_none()
-                    .px_3()
-                    .items_center()
-                    .border_t_1()
-                    .border_color(border)
-                    .text_xs()
-                    .text_color(if problems > 0 { danger } else { muted })
-                    .child(match problems {
-                        1 => "1 problem".to_owned(),
-                        n => format!("{n} problems"),
-                    }),
+            // The slide: the width runs from nothing to full (or back), so
+            // the manuscript is pushed, not covered; the columns keep their
+            // own widths and are clipped meanwhile. The title bar's strip
+            // runs the same animation (`SidebarStrip`).
+            .with_animation(
+                SharedString::from(format!("write-sidebar-{}", self.slide)),
+                Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
+                move |el, delta| el.w(px(width * if opening { delta } else { 1. - delta })),
             )
             .into_any_element()
     }
@@ -893,8 +776,8 @@ impl WriteView {
 
 impl Render for WriteView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let sidebar = self.sidebar_open.then(|| self.render_sidebar(cx));
-        let chip = (!self.sidebar_open).then(|| self.render_chip(cx));
+        let sidebar = (self.sidebar != Sidebar::Closed).then(|| self.render_sidebar(cx));
+        let chip = (self.sidebar == Sidebar::Closed).then(|| self.render_chip(cx));
         let theme = cx.theme();
         let (border, surface, muted) = (theme.border, theme.background, theme.muted_foreground);
         let panel = self.player_open.then(|| {

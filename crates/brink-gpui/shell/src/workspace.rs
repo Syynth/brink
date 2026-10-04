@@ -9,8 +9,9 @@ use std::rc::Rc;
 
 use gpui::prelude::*;
 use gpui::{
-    Action, AnyElement, AnyView, App, ClickEvent, Entity, FocusHandle, IntoElement, Render,
-    SharedString, Subscription, Window, anchored, deferred, div, point, px,
+    Action, Animation, AnimationExt as _, AnyElement, AnyView, App, ClickEvent, Entity,
+    FocusHandle, IntoElement, Render, SharedString, Subscription, Window, anchored, deferred, div,
+    point, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{DockArea, DockPlacement, DockSkin, PanelId, panel_handle};
@@ -200,11 +201,12 @@ pub struct Workspace {
     /// of the traffic lights, the rest left of the switch. The app owns
     /// what they do; the shell only draws them.
     writing_buttons: Vec<WritingButton>,
-    /// The open Writing sidebar's width, or `None` while it is closed. The
-    /// title bar paints that much of its left end as the sidebar, so the
-    /// sidebar reads as running to the top of the window with the traffic
-    /// lights and its toggle in its own header row (W4).
-    writing_sidebar: Option<gpui::Pixels>,
+    /// The Writing sidebar while it is open or sliding, or `None` while
+    /// it is closed. The title bar paints its left end as the sidebar, so
+    /// the sidebar reads as running to the top of the window with the
+    /// traffic lights and its toggle in its own header row (W4) — and it
+    /// slides with the sidebar, so the two never part mid-slide.
+    writing_sidebar: Option<SidebarStrip>,
     /// Where the caret is, after the story's name: `knot › stitch`.
     writing_crumb: Option<SharedString>,
     /// The window's fallback focus: where keys land before anything has
@@ -659,10 +661,10 @@ impl Workspace {
         cx.notify();
     }
 
-    /// Say how wide the Writing sidebar is while open (`None`: closed).
-    pub fn set_writing_sidebar(&mut self, width: Option<gpui::Pixels>, cx: &mut Context<Self>) {
-        if self.writing_sidebar != width {
-            self.writing_sidebar = width;
+    /// Say what the Writing sidebar is doing (`None`: closed).
+    pub fn set_writing_sidebar(&mut self, strip: Option<SidebarStrip>, cx: &mut Context<Self>) {
+        if self.writing_sidebar != strip {
+            self.writing_sidebar = strip;
             cx.notify();
         }
     }
@@ -1303,10 +1305,14 @@ impl Workspace {
     }
 
     /// Write mode's left end of the title bar: the leading buttons (the
-    /// sidebar toggle) just right of the traffic lights. While the sidebar
-    /// is open this strip is exactly its width and wears its colour, so
-    /// the sidebar's header row is the title bar's own left end and the
-    /// toggle never moves under the pointer.
+    /// sidebar toggle) just right of the traffic lights.
+    ///
+    /// The strip carries the traffic lights' inset itself, open or closed,
+    /// so the toggle never moves under the pointer. While the sidebar is
+    /// out, a backdrop in the sidebar's colour slides with it — the same
+    /// width, timing and easing as the sidebar's own body — and the strip
+    /// widens with it, carrying the title along, so the sidebar's header
+    /// row IS the title bar's left end and the two never part.
     fn render_writing_leading(&self, cx: &mut Context<Self>) -> AnyElement {
         let (sidebar, border) = {
             let theme = cx.theme();
@@ -1318,19 +1324,42 @@ impl Workspace {
             .filter(|b| b.leading)
             .map(|b| self.render_writing_button(b, cx))
             .collect();
-        h_flex()
+        let count = buttons.len() as f32;
+        let closed = TRAFFIC_LIGHTS + count * SWITCHER_CELL + (count - 1.).max(0.) * 4.;
+        let strip = h_flex()
+            .relative()
             .h_full()
             .flex_none()
+            .pl(px(TRAFFIC_LIGHTS))
             .gap_1()
-            .items_center()
+            .items_center();
+        let Some(slide) = self.writing_sidebar else {
+            return strip.w(px(closed)).children(buttons).into_any_element();
+        };
+        let open = f32::from(slide.width);
+        // 0 → 1 while opening, 1 → 0 while closing.
+        let at = move |delta: f32| if slide.opening { delta } else { 1. - delta };
+        let backdrop = div()
+            .absolute()
+            .left_0()
+            .top_0()
+            .h_full()
+            .bg(sidebar)
+            .border_r_1()
+            .border_color(border)
+            .with_animation(
+                SharedString::from(format!("writing-strip-backdrop-{}", slide.slide)),
+                Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
+                move |el, delta| el.w(px(open * at(delta))),
+            );
+        strip
+            .child(backdrop)
             .children(buttons)
-            .when_some(self.writing_sidebar, |el, width| {
-                el.w(width)
-                    .pl(px(TRAFFIC_LIGHTS))
-                    .bg(sidebar)
-                    .border_r_1()
-                    .border_color(border)
-            })
+            .with_animation(
+                SharedString::from(format!("writing-strip-{}", slide.slide)),
+                Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
+                move |el, delta| el.w(px(closed + (open - closed).max(0.) * at(delta))),
+            )
             .into_any_element()
     }
 
@@ -1477,6 +1506,23 @@ pub struct WritingButton {
     pub leading: bool,
 }
 
+/// How long the Writing sidebar and the Player take to slide. One value,
+/// so the sidebar's body and the title bar's strip above it move together.
+pub const SLIDE: std::time::Duration = std::time::Duration::from_millis(160);
+
+/// The Writing sidebar as the title bar draws it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SidebarStrip {
+    /// The sidebar's full width.
+    pub width: gpui::Pixels,
+    /// Sliding in, or out. Once a slide out has finished the app says
+    /// `None` instead.
+    pub opening: bool,
+    /// Bumped per slide, so each one animates from its start rather than
+    /// resuming where the last ended.
+    pub slide: usize,
+}
+
 /// What the title bar leaves for the window controls at its left end:
 /// the kit's `TitleBar` padding, which it does not export.
 #[cfg(target_os = "macos")]
@@ -1532,7 +1578,6 @@ impl Render for Workspace {
         let switcher = self.view_switcher(cx);
         let writing_title = writing.then(|| self.render_writing_title(cx));
         let writing_leading = writing.then(|| self.render_writing_leading(cx));
-        let sidebar_open = writing && self.writing_sidebar.is_some();
         let status = (!writing).then(|| self.render_status(cx));
         let notices = self.render_notices(cx);
         let overlay = self.render_overlay(window);
@@ -1586,10 +1631,10 @@ impl Render for Workspace {
                     .on_close_window(|_, window, cx| {
                         window.dispatch_action(Box::new(CloseWindow), cx);
                     })
-                    // The open sidebar's strip starts at the window's left
-                    // edge, under the traffic lights, and carries their
-                    // inset itself.
-                    .when(sidebar_open, |bar| bar.pl_0())
+                    // Write mode's strip starts at the window's left edge,
+                    // under the traffic lights, and carries their inset
+                    // itself — open or closed, so nothing jumps between.
+                    .when(writing, |bar| bar.pl_0())
                     .children(writing_leading)
                     .child(
                         h_flex()
