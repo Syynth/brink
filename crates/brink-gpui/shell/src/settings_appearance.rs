@@ -28,6 +28,21 @@ use crate::settings::{
     MAX_EDITOR_FONT_SIZE, MIN_APP_FONT_SIZE, MIN_EDITOR_FONT_SIZE,
 };
 use crate::settings_modal::{setting_group, setting_row, setting_stepper};
+
+gpui::actions!(
+    appearance,
+    [
+        /// One pixel larger: the text you write, every editor at once.
+        IncreaseEditorFontSize,
+        /// One pixel smaller.
+        DecreaseEditorFontSize,
+        /// Back to the default size.
+        ResetEditorFontSize,
+    ]
+);
+
+/// What one press of increase or decrease moves the editor's size by.
+pub const EDITOR_FONT_STEP: f32 = 1.;
 use crate::theme::{self, StudioTheme, hsla};
 
 pub struct AppearanceSection;
@@ -141,6 +156,13 @@ pub fn set_editor_font_size(size: f32, window: &mut Window, cx: &mut App) {
     if let Err(err) = theme::apply(&theme::current(cx), Some(window), cx) {
         eprintln!("editor font size: {err:#}");
     }
+}
+
+/// Move the editor's text size by `by` from where it is — the keyboard's
+/// zoom. Clamped like the setting it changes, and saved like it.
+pub fn step_editor_font_size(by: f32, window: &mut Window, cx: &mut App) {
+    let size = AppSettings::get(cx).editor_font_size + by;
+    set_editor_font_size(size, window, cx);
 }
 
 /// Set the app's UI size: persist, then scale every window's rem.

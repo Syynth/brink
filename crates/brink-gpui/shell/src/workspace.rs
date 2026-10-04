@@ -36,7 +36,10 @@ use crate::rail::{RAIL_WIDTH, RailButton, rail};
 const SWITCHER_CELL: f32 = 22.;
 use crate::region::RailEdge;
 use crate::settings::{self, AppSettings};
-use crate::settings_appearance::AppearanceSection;
+use crate::settings_appearance::{
+    AppearanceSection, DecreaseEditorFontSize, EDITOR_FONT_STEP, IncreaseEditorFontSize,
+    ResetEditorFontSize, set_editor_font_size, step_editor_font_size,
+};
 use crate::settings_editor::EditorSection;
 use crate::settings_keymap::KeymapSection;
 use crate::settings_modal::{
@@ -311,6 +314,33 @@ impl Workspace {
             cx,
         );
         this.register_command(HELP_GROUP, "Keyboard Shortcuts", OpenKeymap, None, cx);
+        // The editor's text size from the keyboard, as every editor does it.
+        // The same setting as Settings ▸ Appearance ▸ Editor font size.
+        this.register_command(
+            "View",
+            "Increase Editor Font Size",
+            IncreaseEditorFontSize,
+            Some("cmd-="),
+            cx,
+        );
+        this.register_command(
+            "View",
+            "Decrease Editor Font Size",
+            DecreaseEditorFontSize,
+            Some("cmd--"),
+            cx,
+        );
+        this.register_command(
+            "View",
+            "Reset Editor Font Size",
+            ResetEditorFontSize,
+            Some("cmd-0"),
+            cx,
+        );
+        // `⌘+` as typed with shift, where a layout gives `+` its own
+        // shifted key. An alias only: the registry holds one chord per
+        // command, so rebinding Increase leaves this in place.
+        cx.bind_keys([gpui::KeyBinding::new("cmd-+", IncreaseEditorFontSize, None)]);
         // One command per theme — the studio's `theme.select.<id>`.
         for theme in theme::builtin() {
             this.register_command(
@@ -333,7 +363,8 @@ impl Workspace {
                 Scope::App,
                 "Appearance",
                 &[
-                    "theme", "colour", "color", "font", "size", "gutter", "inlay", "format", "save",
+                    "theme", "colour", "color", "font", "size", "zoom", "gutter", "inlay",
+                    "format", "save",
                 ],
             ),
             appearance,
@@ -1614,6 +1645,15 @@ impl Render for Workspace {
             }))
             .on_action(cx.listener(|this, _: &OpenSettings, window, cx| {
                 this.open_settings(None, window, cx);
+            }))
+            .on_action(cx.listener(|_, _: &IncreaseEditorFontSize, window, cx| {
+                step_editor_font_size(EDITOR_FONT_STEP, window, cx);
+            }))
+            .on_action(cx.listener(|_, _: &DecreaseEditorFontSize, window, cx| {
+                step_editor_font_size(-EDITOR_FONT_STEP, window, cx);
+            }))
+            .on_action(cx.listener(|_, _: &ResetEditorFontSize, window, cx| {
+                set_editor_font_size(crate::settings::DEFAULT_EDITOR_FONT_SIZE, window, cx);
             }))
             .on_action(cx.listener(|this, _: &OpenKeymap, window, cx| {
                 this.open_settings(Some("keymap"), window, cx);
