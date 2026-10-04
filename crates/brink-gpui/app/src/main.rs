@@ -246,14 +246,52 @@ impl Studio {
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
+        // Write mode's Files column: a second Binder, files only, with its
+        // own expansion and selection — every file interaction the Binder
+        // has, rather than a list that behaves differently.
+        let write_files = cx.new(|cx| Binder::new(project.clone(), window, cx).files_only("FILES"));
         let write = cx.new(|cx| {
             crate::write_view::WriteView::new(
                 project.clone(),
                 manuscript.clone(),
                 player.clone(),
+                write_files.clone(),
                 cx,
             )
         });
+        // W5: the structure column's toggle lives in the Files header.
+        {
+            use gpui_component::{Sizable as _, button::ButtonVariants as _};
+            let write = write.downgrade();
+            write_files.update(cx, |files, cx| {
+                files.set_header_accessory(
+                    std::rc::Rc::new(move |_, cx| {
+                        let open = write
+                            .upgrade()
+                            .is_some_and(|w| w.read(cx).is_structure_open());
+                        let write = write.clone();
+                        gpui_component::button::Button::new("write-structure-toggle")
+                            .ghost()
+                            .xsmall()
+                            .icon(if open {
+                                gpui_component::IconName::PanelRightClose
+                            } else {
+                                gpui_component::IconName::PanelRightOpen
+                            })
+                            .tooltip(if open {
+                                "Hide the file's structure"
+                            } else {
+                                "Show the file's structure"
+                            })
+                            .on_click(move |_, _, cx| {
+                                let _ = write.update(cx, |w, cx| w.toggle_structure(cx));
+                            })
+                            .into_any_element()
+                    }),
+                    cx,
+                );
+            });
+        }
         let general = cx.new(|cx| GeneralSection::new(project.clone(), window, cx));
         let formatting = cx.new(|cx| FormattingSection::new(project.clone(), cx));
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
@@ -986,12 +1024,12 @@ impl Studio {
         // caret's knot › stitch. All three move without a title-bar event
         // of their own, so the bar is told whenever the view changes.
         let on_write = cx.observe(&write, |this, write, cx| {
-            let (width, crumb) = {
+            let (strip, crumb) = {
                 let write = write.read(cx);
-                (write.sidebar_width(), write.crumb(cx))
+                (write.sidebar_strip(), write.crumb(cx))
             };
             this.workspace.update(cx, |workspace, cx| {
-                workspace.set_writing_sidebar(width, cx);
+                workspace.set_writing_sidebar(strip, cx);
                 workspace.set_writing_crumb(crumb, cx);
                 cx.notify();
             });
@@ -1003,12 +1041,34 @@ impl Studio {
                 crate::write_view::WriteEvent::Outline(event) => {
                     this.on_outline(event, window, cx);
                 }
-                crate::write_view::WriteEvent::OpenInScript { path } => {
+            },
+        );
+        // The Files column's own events. Everything but Open is what the
+        // Binder asks for anywhere; Open is Write mode's: a file the
+        // manuscript holds is revealed in it, and anything else (`std`,
+        // `brink.toml`) can only be shown by Script mode, so it goes there.
+        let on_write_files = cx.subscribe_in(
+            &write_files,
+            window,
+            |this, files, event: &BinderEvent, window, cx| {
+                let BinderEvent::Open { path, offset } = event else {
+                    this.on_outline(event, window, cx);
+                    return;
+                };
+                if this.manuscript.read(cx).holds(path) {
+                    this.manuscript.update(cx, |m, cx| match offset {
+                        Some(at) => m.reveal_span(path, *at..*at, cx),
+                        None => m.reveal(path, cx),
+                    });
+                } else {
                     this.workspace.update(cx, |workspace, cx| {
                         workspace.require_editor_view(EditorView::Script, cx);
                     });
-                    this.open(path, None, window, cx);
+                    this.open(path, offset.map(|o| o..o), window, cx);
                 }
+                // A click keeps the keyboard in the tree, as the Binder's do.
+                let handle = files.read(cx).focus_handle(cx);
+                window.focus(&handle, cx);
             },
         );
 
@@ -1029,6 +1089,7 @@ impl Studio {
             _subscriptions: vec![
                 on_write,
                 on_write_event,
+                on_write_files,
                 on_project,
                 on_binder,
                 on_player,
@@ -2853,17 +2914,63 @@ mod modes_driven {
         assert!(found, "the outline never arrived");
         assert_eq!(crumb(&mut h).as_deref(), Some("start \u{203a} second"));
 
-        // The structure column's toggle and the sidebar's own.
+        // The structure column starts off, and its toggle widens the
+        // sidebar — and the title bar's strip, which is told the width.
+        let width = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .write
+                    .read(cx)
+                    .sidebar_strip()
+                    .map(|s| s.width)
+            })
+        };
+        assert_eq!(width(&mut h), Some(gpui::px(240.)), "Files alone, at first");
         h.dispatch(window, super::ToggleStructureColumn);
-        let narrow = h.read(|cx| studio.read(cx).write.read(cx).sidebar_width());
         assert_eq!(
-            narrow,
-            Some(gpui::px(200.)),
-            "only the Files column is left"
+            width(&mut h),
+            Some(gpui::px(480.)),
+            "and Structure beside it"
         );
+
+        // Closing slides it away: sliding OUT, then gone.
         h.dispatch(window, super::ToggleWritingSidebar);
-        let closed = h.read(|cx| studio.read(cx).write.read(cx).sidebar_width());
-        assert_eq!(closed, None);
+        let sliding = h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip());
+        assert!(
+            sliding.is_none() || sliding.is_some_and(|s| !s.opening),
+            "a closing sidebar slides out: {sliding:?}"
+        );
+        h.advance(brink_gpui_shell::workspace::SLIDE);
+        let gone = h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip());
+        assert_eq!(
+            gone, None,
+            "the slide out finishes, and the sidebar is gone"
+        );
+    }
+
+    /// The Files column is a Binder: a story file opens in the manuscript,
+    /// anything else — here `brink.toml` — in Script, which can show it.
+    #[test]
+    fn the_files_column_opens_story_files_in_write_and_the_rest_in_script() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let emit = |h: &mut Harness, path: &str| {
+            let path = path.to_owned();
+            h.update(|cx| {
+                let files = studio.read(cx).write.read(cx).files().clone();
+                files.update(cx, |_, cx| {
+                    cx.emit(crate::binder::BinderEvent::Open { path, offset: None });
+                });
+            });
+        };
+        emit(&mut h, "story.ink");
+        assert_eq!(mode(&mut h, window), EditorView::Write);
+        emit(&mut h, "brink.toml");
+        assert_eq!(mode(&mut h, window), EditorView::Script);
     }
 
     /// From Script, the sidebar's gesture goes to Write with it open.
@@ -2925,6 +3032,7 @@ mod modes_driven {
         let studio = h.studio(window).expect("open");
         h.dispatch(window, ModeWrite);
         h.dispatch(window, super::ToggleWritingSidebar);
+        h.dispatch(window, super::ToggleStructureColumn);
         let second = OUTLINE_STORY.find("= second").expect("the stitch") + 2;
         h.update(|cx| {
             let write = studio.read(cx).write.clone();

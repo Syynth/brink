@@ -5718,3 +5718,11 @@
 - **SCOPE:** moderate
 - **WHAT:** When the kit's editor cannot express a ruled presentation for one editor (here: Read view's faint line numbers and no current-line band, which the kit applies theme-wide), add a per-editor option to the gpui-kit fork and bump brink to it. Do not hide the feature or work around the kit.
 - **WHY:** The design was ruled to match what the real editor can draw. When the editor can't draw it yet, the fix belongs in the editor, where every later surface gets it too, and not in a brink-side substitute that departs from the design.
+
+## Writing sidebar: the Files column is the Binder; Structure starts off; the sidebar slides
+- **WHEN:** 2026-10-03
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Writing mode's Files column reuses the Binder: a second, files-only instance with all of the Binder's file interactions (folders, drag to reorder or move, multi-select, New/Rename/Delete, row menus, the keyboard), its own expansion and selection, and the structure-column toggle in its header. This narrows W11 ("its own component, separate from the Binder") to the structure column. The structure column is off until the author turns it on. The sidebar slides in and out, and the title bar's strip slides with it.
+- **WHY:** The maintainer's direction on first use: a file list that behaves differently from the Binder is a second file tree to learn and maintain. The sidebar slides because W4 ruled it does, and the first build didn't. Files are what a writer reaches for first, so Structure waits until it's asked for.

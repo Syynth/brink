@@ -498,8 +498,20 @@ pub struct Binder {
     focus: FocusHandle,
     /// The dock tab this panel sits in, for the rail to select.
     tab: brink_gpui_shell::tool_window::TabSlot,
+    /// Files only: no Files/Structure switch, and `mode` stays `Files`.
+    /// Writing mode's sidebar is one of these, beside its own structure
+    /// column (`crate::write_view`).
+    files_only: bool,
+    /// The header's label.
+    title: SharedString,
+    /// The host's own control at the header's end — Writing mode's
+    /// structure-column toggle (W5).
+    accessory: Option<HeaderAccessory>,
     _subs: Vec<gpui::Subscription>,
 }
+
+/// Draws the host's control at the end of a Binder's header.
+pub type HeaderAccessory = std::rc::Rc<dyn Fn(&mut Window, &mut App) -> AnyElement>;
 
 impl Binder {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
@@ -561,10 +573,31 @@ impl Binder {
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             tab: brink_gpui_shell::tool_window::TabSlot::default(),
+            files_only: false,
+            title: "BINDER".into(),
+            accessory: None,
             _subs: vec![sub, watch],
         };
         this.rebuild(cx);
         this
+    }
+
+    /// A Binder that shows files only, under `title` — every file
+    /// interaction the Binder has (folders, drag to reorder or move,
+    /// multi-select, New/Rename/Delete, the row menus, the keyboard), and
+    /// no Files/Structure switch.
+    #[must_use]
+    pub fn files_only(mut self, title: impl Into<SharedString>) -> Self {
+        self.files_only = true;
+        self.mode = Mode::Files;
+        self.title = title.into();
+        self
+    }
+
+    /// Put the host's control at the end of the header.
+    pub fn set_header_accessory(&mut self, accessory: HeaderAccessory, cx: &mut Context<Self>) {
+        self.accessory = Some(accessory);
+        cx.notify();
     }
 
     /// Rebuild the flat row list. Called on every input that can change it —
@@ -1467,7 +1500,7 @@ impl Binder {
             .into_any_element()
     }
 
-    fn render_header(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_header(&self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         // Copied out of the theme before the chain: `Self::tool` takes
         // `&mut cx`, and a live `&Theme` read between two of them keeps an
         // immutable borrow across it.
@@ -1485,7 +1518,13 @@ impl Binder {
             .items_center()
             .border_b_1()
             .border_color(border)
-            .child(div().flex_1().text_xs().text_color(muted).child("BINDER"))
+            .child(
+                div()
+                    .flex_1()
+                    .text_xs()
+                    .text_color(muted)
+                    .child(self.title.clone()),
+            )
             .child(Self::tool(
                 "new-file",
                 icons::BrinkIcon::Add,
@@ -1505,32 +1544,34 @@ impl Binder {
             // One border around the pair is what says "pick one" — the
             // active state itself was never the problem here, `tool`
             // already tints and fills it.
-            .child(
-                h_flex()
-                    .rounded_sm()
-                    .border_1()
-                    .border_color(border)
-                    .child(Self::tool(
-                        "mode-files",
-                        icons::BrinkIcon::Doc,
-                        mode == Mode::Files,
-                        cx,
-                        |this, _, cx| {
-                            this.mode = Mode::Files;
-                            this.rebuild(cx);
-                        },
-                    ))
-                    .child(Self::tool(
-                        "mode-structure",
-                        icons::BrinkIcon::Knot,
-                        mode == Mode::Structure,
-                        cx,
-                        |this, _, cx| {
-                            this.mode = Mode::Structure;
-                            this.rebuild(cx);
-                        },
-                    )),
-            )
+            .when(!self.files_only, |el| {
+                el.child(
+                    h_flex()
+                        .rounded_sm()
+                        .border_1()
+                        .border_color(border)
+                        .child(Self::tool(
+                            "mode-files",
+                            icons::BrinkIcon::Doc,
+                            mode == Mode::Files,
+                            cx,
+                            |this, _, cx| {
+                                this.mode = Mode::Files;
+                                this.rebuild(cx);
+                            },
+                        ))
+                        .child(Self::tool(
+                            "mode-structure",
+                            icons::BrinkIcon::Knot,
+                            mode == Mode::Structure,
+                            cx,
+                            |this, _, cx| {
+                                this.mode = Mode::Structure;
+                                this.rebuild(cx);
+                            },
+                        )),
+                )
+            })
             .child(Self::tool(
                 "collapse-all",
                 icons::BrinkIcon::CollapseAll,
@@ -1570,6 +1611,7 @@ impl Binder {
                     cx.notify();
                 },
             ))
+            .children(self.accessory.as_ref().map(|draw| draw(window, cx)))
             .into_any_element()
     }
 }
@@ -1649,9 +1691,9 @@ impl Focusable for Binder {
 }
 
 impl Render for Binder {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let count = self.rows.len();
-        let header = self.render_header(cx);
+        let header = self.render_header(window, cx);
         let theme = cx.theme();
         let (sidebar, border, muted) = (theme.sidebar, theme.border, theme.muted_foreground);
         v_flex()

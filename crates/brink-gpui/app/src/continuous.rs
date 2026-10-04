@@ -338,6 +338,13 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// Whether the manuscript holds `path` — the story's own files; not
+    /// `std`, not `brink.toml`.
+    #[must_use]
+    pub fn holds(&self, path: &str) -> bool {
+        self.files.iter().any(|f| f == path)
+    }
+
     /// The file the author is in: where the caret is, or — before any
     /// section has had focus — the file at the top of the scroller.
     #[must_use]

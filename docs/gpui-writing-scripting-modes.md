@@ -205,9 +205,11 @@ Each slice is one PR, verified headlessly (§4.2).
    - *Built:* `Symbol` carries `kind` and a global's value as written, and
      the Binder now shows knots, functions and stitches only. Sidebar
      columns (`app/src/write_view.rs`):
-     - **Files (200px):** the entry first and bold, with problem counts;
-       a collapsible `std` folder whose files open in Script, since the
-       manuscript doesn't hold them; `N problems` at the foot.
+     - **Files (240px):** a second, files-only Binder (decision log
+       2026-10-03, "the Files column is the Binder"). It has every Binder
+       file interaction, its own expansion and selection, and the
+       structure toggle in its header. A story file opens in the
+       manuscript; anything else (`std`, `brink.toml`) opens in Script.
      - **Structure (240px):** Knots with a `+`, Functions, Globals with
        their values faint. Hover shows `+` (new stitch) on knots and `⋯`
        on every row (Go to, Play from here, New Stitch, Promote/Demote).
@@ -217,9 +219,11 @@ Each slice is one PR, verified headlessly (§4.2).
      while open, with the toggle (`ToggleWritingSidebar`) right of the
      traffic lights, and shows `story · knot › stitch`.
      `ToggleStructureColumn` is the second column's toggle, mirrored by a
-     button in the Files header. **Not yet:** a `+` for Functions and
-     Globals (no creation flow exists to reuse), back/forward and search in
-     the bar, a slide animation for the sidebar, and remembering it open
+     button in the Files header. Structure starts off. The sidebar
+     slides in and out (`SLIDE`, shared with the Player), and the title
+     bar's strip runs the same animation (`SidebarStrip`). **Not yet:** a
+     `+` for Functions and Globals (no creation flow exists to reuse),
+     back/forward and search in the bar, and remembering the sidebar open
      across launches.
 6. **The bare-page chip** (W9): word count and problem count, bottom-right;
    clicking opens the sidebar on the problems.
