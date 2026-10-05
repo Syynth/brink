@@ -848,7 +848,9 @@ impl Render for ContinuousView {
                     }
                     v_flex()
                         .w_full()
-                        .child(heading(&path, column, cx))
+                        // Only a boundary between two files gets a top edge:
+                        // the first heading sits under the title bar's own.
+                        .child(heading(&path, column, index > 0, cx))
                         .child(
                             // The column: centred in the room there is,
                             // never wider than the window allows.
@@ -876,7 +878,8 @@ impl Render for ContinuousView {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .child(heading(&path, column, cx)),
+                        // Pinned under the title bar, whose edge is its top.
+                        .child(heading(&path, column, false, cx)),
                 )
             })
             .children(self.signature.render(cx))
@@ -1039,8 +1042,9 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
 /// GPUI has no `position: sticky`, so the manuscript draws this twice:
 /// inline at each boundary, and again as an overlay pinned to the top of the
 /// scroller showing whichever file is currently under it — which is what
-/// makes the heading read as sticky.
-fn heading(path: &str, column: Option<gpui::Pixels>, cx: &App) -> impl IntoElement {
+/// makes the heading read as sticky. `top_edge` is off where something
+/// above already draws the line, so it never doubles to 2px.
+fn heading(path: &str, column: Option<gpui::Pixels>, top_edge: bool, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
     // The band runs the full width; its label sits over the column, so a
     // file's name lines up with its text.
@@ -1049,7 +1053,7 @@ fn heading(path: &str, column: Option<gpui::Pixels>, cx: &App) -> impl IntoEleme
         .h(px(HEADING_HEIGHT))
         .justify_center()
         .bg(theme.sidebar)
-        .border_t_1()
+        .when(top_edge, |el| el.border_t_1())
         .border_b_1()
         .border_color(theme.border)
         .child(
