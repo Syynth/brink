@@ -619,7 +619,7 @@ impl Document {
     }
 }
 
-fn to_lsp_diagnostic(
+pub(crate) fn to_lsp_diagnostic(
     d: &brink_gpui_model::worker::Diagnostic,
     index: &LineIndex,
 ) -> lsp::Diagnostic {

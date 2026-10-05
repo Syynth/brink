@@ -3346,6 +3346,71 @@ mod modes_driven {
         eprintln!("hover screenshot: {}", shot.display());
     }
 
+    /// Write mode draws the same squiggles as Script: a bad reference is
+    /// marked where it is, not only counted. (The manuscript's sections
+    /// never received the analysis's diagnostics at all.)
+    #[test]
+    fn write_mode_squiggles_a_bad_reference() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("bad");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nYou have {nonexistent} coins.\n-> DONE\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let squiggles = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+                    .and_then(|e| {
+                        e.read(cx).diagnostics().map(|set| {
+                            set.iter()
+                                .map(|d| d.message.to_string())
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let marked = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            squiggles(h).iter().any(|m| m.contains("nonexistent"))
+        });
+        assert!(marked, "the section is marked: {:?}", squiggles(&mut h));
+
+        // And a new one, typed in the manuscript, after the next analysis.
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                let end = state.value().len();
+                state.set_selected_range(end..end, cx);
+                state.replace("{missing_too}\n", window, cx);
+            });
+        });
+        let both = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            squiggles(h).iter().any(|m| m.contains("missing_too"))
+        });
+        assert!(both, "a typed one is marked too: {:?}", squiggles(&mut h));
+        let shot = scratch_dir("shot").join("write-squiggles.png");
+        h.screenshot(window, &shot);
+        eprintln!("squiggles screenshot: {}", shot.display());
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {

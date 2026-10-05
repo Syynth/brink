@@ -180,7 +180,12 @@ impl ContinuousView {
             window,
             |this, _, event: &ProjectEvent, window, cx| match event {
                 ProjectEvent::Opened { .. } => this.reload(cx),
-                ProjectEvent::Analyzed if this.read.on.get() => this.sync_prose(cx),
+                ProjectEvent::Analyzed => {
+                    this.refresh_diagnostics(cx);
+                    if this.read.on.get() {
+                        this.sync_prose(cx);
+                    }
+                }
                 ProjectEvent::SourceChanged {
                     path,
                     origin,
@@ -474,6 +479,22 @@ impl ContinuousView {
         });
     }
 
+    /// Put the last analysis's problems on every section that exists —
+    /// the squiggles Script mode's tabs already draw. The Write view never
+    /// had them: a bad reference raised the problem count and nothing in
+    /// the text said where.
+    fn refresh_diagnostics(&mut self, cx: &mut Context<Self>) {
+        let sections: Vec<(String, Entity<EditorState>)> = self
+            .editors
+            .borrow()
+            .iter()
+            .map(|(path, (editor, _))| (path.clone(), editor.clone()))
+            .collect();
+        for (path, editor) in sections {
+            apply_diagnostics(&self.project, &path, &editor, cx);
+        }
+    }
+
     /// Whether the Read view is on.
     #[must_use]
     pub fn is_read(&self) -> bool {
@@ -628,6 +649,10 @@ impl ContinuousView {
                 }
             },
         ));
+
+        // A section built after the analysis landed starts with its
+        // problems; later analyses reach it through `refresh_diagnostics`.
+        apply_diagnostics(project, path, &state, cx);
 
         (state, height)
     }
@@ -809,6 +834,36 @@ impl Render for ContinuousView {
                 )
             })
     }
+}
+
+/// Give `editor` the problems the last analysis found in `path`, replacing
+/// what it had — as a Script tab does (`Document::refresh`). A TODO note's
+/// band is its presentation, so it gets no squiggle here either.
+fn apply_diagnostics(
+    project: &Entity<Project>,
+    path: &str,
+    editor: &Entity<EditorState>,
+    cx: &mut App,
+) {
+    let (rope, source) = {
+        let state = editor.read(cx);
+        (state.text().clone(), state.value().to_string())
+    };
+    let index = brink_ir::LineIndex::new(&source);
+    let diagnostics: Vec<lsp_types::Diagnostic> = project
+        .read(cx)
+        .diagnostics_for(path)
+        .iter()
+        .filter(|d| d.code != crate::todos::TODO_CODE)
+        .map(|d| crate::document::to_lsp_diagnostic(d, &index))
+        .collect();
+    editor.update(cx, |state, cx| {
+        if let Some(set) = state.diagnostics_mut() {
+            set.reset(&rope);
+            set.extend(diagnostics);
+        }
+        cx.notify();
+    });
 }
 
 /// The editor chrome Read changes (W8): line numbers in `faint`, and no
