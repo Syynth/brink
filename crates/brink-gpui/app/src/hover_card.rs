@@ -102,6 +102,54 @@ pub(crate) fn apply_fix(
     });
 }
 
+/// What a running story holds, for a hover to show (`runtime_note`).
+/// Empty unless a story is live and in sync; `locals` only while the
+/// debugger has it paused (the innermost frame's).
+#[derive(Default, Clone)]
+pub(crate) struct RuntimeValues {
+    pub globals: Vec<(String, String)>,
+    pub locals: Vec<(String, String)>,
+}
+
+impl Global for RuntimeValues {}
+
+/// The State panel's say on what the story holds now.
+pub(crate) fn publish_runtime(values: RuntimeValues, cx: &mut App) {
+    cx.set_global(values);
+}
+
+/// What a hover over `name` adds while a story runs — the web's
+/// `runtimeValueNote`: a paused frame's local first (it shadows the
+/// global), then the global; `None` when neither holds it.
+pub(crate) fn runtime_note(name: &str, cx: &App) -> Option<String> {
+    let values = cx.try_global::<RuntimeValues>()?;
+    if let Some((_, value)) = values.locals.iter().find(|(n, _)| n == name) {
+        return Some(format!("`{name} = {value}` \u{2014} local, runtime"));
+    }
+    let (_, value) = values.globals.iter().find(|(n, _)| n == name)?;
+    Some(format!("`{name} = {value}` \u{2014} global, runtime"))
+}
+
+/// The identifier spanning byte `offset` in `text`, and where it is — the
+/// web's `identifierAt`. Never a number.
+pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Range<usize>)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let offset = offset.min(text.len());
+    let start = text[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| word(*c))
+        .last()
+        .map_or(offset, |(i, _)| i);
+    let end = text[offset..]
+        .char_indices()
+        .find(|(_, c)| !word(*c))
+        .map_or(text.len(), |(i, _)| offset + i);
+    let name = &text[start..end];
+    (!name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()))
+        .then(|| (name.to_owned(), start..end))
+}
+
 /// The targets of the hover most recently answered, beside its content.
 #[derive(Default)]
 struct HoverLinks {
@@ -644,6 +692,19 @@ impl FirstLine for gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_identifier_under_the_pointer_is_found_as_the_web_finds_it() {
+        let text = "~ gold = gold + 1";
+        assert_eq!(identifier_at(text, 4), Some(("gold".to_owned(), 2..6)));
+        assert_eq!(
+            identifier_at(text, 6),
+            Some(("gold".to_owned(), 2..6)),
+            "at its end"
+        );
+        assert_eq!(identifier_at(text, 16), None, "a number is no identifier");
+        assert_eq!(identifier_at(text, 1), None, "nor is a space");
+    }
 
     #[test]
     fn a_lints_fixes_survive_the_trip_through_a_squiggle() {

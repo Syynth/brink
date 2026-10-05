@@ -35,7 +35,7 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
-use crate::player::Player;
+use crate::player::{Player, SessionState};
 use crate::project::Project;
 use brink_gpui_shell::tool_window::{TabSlot, ToolWindow};
 use gpui::WeakEntity;
@@ -91,6 +91,10 @@ impl StateView {
         // while the Player was on screen. So only a session that moved is
         // asked about.
         let watch = cx.observe(&player, |this: &mut Self, player, cx| {
+            // A notify is cheap to answer here: what a hover may say about
+            // a variable follows the session's freshness, which moves
+            // without the session key moving (an edit makes it stale).
+            this.publish_values(cx);
             let key = player.read(cx).session_key();
             if this.seen != Some(key) {
                 this.seen = Some(key);
@@ -139,12 +143,38 @@ impl StateView {
                 }
                 this.busy = false;
                 this.state = outcome.ok().and_then(|o| o.state);
+                this.publish_values(cx);
                 this.relayout(cx);
                 cx.notify();
             });
         })
         .detach();
         cx.notify();
+    }
+
+    /// Tell the hover card what a variable holds right now — the web's
+    /// `runtimeValueNote` policy: nothing unless a story is live and in
+    /// sync with the sources; the innermost frame's locals while paused;
+    /// the globals.
+    fn publish_values(&self, cx: &mut Context<Self>) {
+        let player = self.player.read(cx);
+        let live = matches!(
+            player.state(),
+            SessionState::Running | SessionState::AwaitingChoice | SessionState::Working
+        ) && !player.is_stale();
+        let paused = player.is_paused();
+        let values = match self.state.as_ref().filter(|s| live && s.faulted.is_none()) {
+            Some(state) => crate::hover_card::RuntimeValues {
+                globals: state.globals.clone(),
+                locals: if paused {
+                    state.locals.first().cloned().unwrap_or_default()
+                } else {
+                    Vec::new()
+                },
+            },
+            None => crate::hover_card::RuntimeValues::default(),
+        };
+        crate::hover_card::publish_runtime(values, cx);
     }
 
     fn toggle(&mut self, key: &str, cx: &mut Context<Self>) {

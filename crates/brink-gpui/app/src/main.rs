@@ -3601,6 +3601,72 @@ mod modes_driven {
         );
     }
 
+    /// While a story runs, a hover over a variable can say what it holds
+    /// — and stops saying so once the sources move under the session.
+    #[test]
+    fn a_running_storys_values_reach_the_hover_until_it_goes_stale() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        let note = |h: &mut Harness| h.read(|cx| crate::hover_card::runtime_note("gold", cx));
+        let live = h.settle_until(std::time::Duration::from_secs(10), |h| note(h).is_some());
+        assert!(live, "the global's value is published while the story runs");
+        assert_eq!(
+            note(&mut h).as_deref(),
+            Some("`gold = 5` \u{2014} global, runtime")
+        );
+        assert_eq!(
+            h.read(|cx| crate::hover_card::runtime_note("nobody", cx)),
+            None,
+            "a name the story doesn't hold says nothing"
+        );
+
+        // An edit leaves the session on an older program: no value then.
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                let end = state.value().len();
+                state.set_selected_range(end..end, cx);
+                state.replace("// edited\n", window, cx);
+            });
+        });
+        let quiet = h.settle_until(std::time::Duration::from_secs(10), |h| note(h).is_none());
+        assert!(
+            quiet,
+            "a stale session's values aren't offered as the truth"
+        );
+    }
+
+    /// Paused, a frame's local shadows the global of the same name.
+    #[test]
+    fn a_paused_frames_local_shadows_the_global() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            crate::hover_card::publish_runtime(
+                crate::hover_card::RuntimeValues {
+                    globals: vec![("x".to_owned(), "1".to_owned())],
+                    locals: vec![("x".to_owned(), "2".to_owned())],
+                },
+                cx,
+            );
+        });
+        assert_eq!(
+            h.read(|cx| crate::hover_card::runtime_note("x", cx))
+                .as_deref(),
+            Some("`x = 2` \u{2014} local, runtime")
+        );
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {

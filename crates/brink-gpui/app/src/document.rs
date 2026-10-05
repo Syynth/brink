@@ -1506,19 +1506,45 @@ impl HoverProvider for BrinkHover {
         // targets travel beside the markdown (`hover_card::remember`), and
         // recording them needs the app.
         cx.spawn(async move |cx| {
-            let QueryResult::Hover(Some(info)) = query.await? else {
-                return Ok(None);
+            let info = match query.await? {
+                QueryResult::Hover(info) => info,
+                _ => None,
             };
             let index = LineIndex::new(&source);
-            let markdown = info.markdown;
-            let links = info.links;
+            // While a story runs, the variable's value right now — appended
+            // to the hover, or alone when the word has none (the web's
+            // `augmentHoverWithRuntimeValue`).
+            let word = crate::hover_card::identifier_at(&source, offset);
+            let note = cx.update(|cx| {
+                word.as_ref()
+                    .and_then(|(name, _)| crate::hover_card::runtime_note(name, cx))
+            });
+            let (markdown, links, range) = match (info, note) {
+                (Some(info), note) => {
+                    let markdown = match note {
+                        Some(note) => format!("{}\n\n{note}", info.markdown),
+                        None => info.markdown,
+                    };
+                    (markdown, info.links, info.range)
+                }
+                (None, Some(note)) => {
+                    let range = word.map(|(_, r)| {
+                        (
+                            u32::try_from(r.start).unwrap_or(u32::MAX),
+                            u32::try_from(r.end).unwrap_or(u32::MAX),
+                        )
+                    });
+                    (note, Vec::new(), range)
+                }
+                (None, None) => return Ok(None),
+            };
             cx.update(|cx| crate::hover_card::remember(&markdown, links, cx));
             Ok(Some(lsp::Hover {
                 contents: lsp::HoverContents::Markup(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
                     value: markdown,
                 }),
-                range: info.range.map(|(start, end)| lsp::Range {
+                range: range.map(|(start, end)| lsp::Range {
                     start: position(&index, start),
                     end: position(&index, end),
                 }),
