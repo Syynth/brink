@@ -3174,6 +3174,50 @@ mod modes_driven {
         eprintln!("column screenshot: {}", shot.display());
     }
 
+    /// A hover pop-up must not take room from the text. The kit mounted
+    /// its floating pop-ups as children of the editor's flex row, so each
+    /// one added a gap and narrowed the column; lines near the edge
+    /// re-wrapped whenever a hover appeared.
+    #[test]
+    fn a_hover_popup_does_not_narrow_the_editor() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h.read(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            manuscript.read(cx).section_editor("story.ink")
+        });
+        assert!(editor.is_some(), "the section is mounted");
+        let editor = editor.expect("just asserted above");
+        let width =
+            |h: &mut Harness| h.read(|cx| f32::from(editor.read(cx).input_bounds().size.width));
+        let before = width(&mut h);
+        assert!(before > 0., "laid out");
+        h.update(|cx| {
+            editor.update(cx, |state, cx| {
+                state.present_hover(
+                    0..3,
+                    lsp_types::Hover {
+                        contents: lsp_types::HoverContents::Scalar(
+                            lsp_types::MarkedString::String("**VAR** gold".to_owned()),
+                        ),
+                        range: None,
+                    },
+                    cx,
+                );
+            });
+        });
+        h.settle();
+        let with_hover = width(&mut h);
+        assert_eq!(
+            with_hover,
+            before,
+            "the pop-up took {} px from the text",
+            before - with_hover
+        );
+    }
+
     /// The picture: the bare page, with its chip.
     #[test]
     fn the_bare_page_chip_picture() {

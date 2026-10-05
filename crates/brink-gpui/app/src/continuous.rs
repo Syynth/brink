@@ -377,6 +377,15 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// `path`'s section's editor.
+    #[cfg(test)]
+    pub fn section_editor(&self, path: &str) -> Option<Entity<EditorState>> {
+        self.editors
+            .borrow()
+            .get(path)
+            .map(|(editor, _)| editor.clone())
+    }
+
     /// `path`'s section's focus handle — where a click puts the keyboard.
     #[cfg(test)]
     pub fn section_focus(&self, path: &str, cx: &App) -> Option<gpui::FocusHandle> {
