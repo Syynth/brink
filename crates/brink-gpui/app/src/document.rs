@@ -634,6 +634,9 @@ pub(crate) fn prose_diagnostics(
             severity: Some(lsp::DiagnosticSeverity::HINT),
             code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
             message: lint.message.clone(),
+            // The fixes ride in `data`, where the hover card reads them
+            // back (`hover_card::prose_fixes`).
+            data: (!lint.fixes.is_empty()).then(|| crate::hover_card::fixes_to_data(&lint.fixes)),
             ..Default::default()
         })
         .collect()

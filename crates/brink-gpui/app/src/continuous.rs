@@ -193,7 +193,16 @@ impl ContinuousView {
                     path,
                     origin,
                     delta,
-                } => this.on_source_changed(path, *origin, delta, window, cx),
+                } => {
+                    // The config holds the prose dictionary and dialect: a
+                    // change there (an "Add to dictionary") moves every
+                    // file's lints, though no file's text moved. The next
+                    // analysis checks them all again.
+                    if this.project.read(cx).is_config(path) {
+                        this.prose.0.borrow_mut().clear();
+                    }
+                    this.on_source_changed(path, *origin, delta, window, cx);
+                }
                 _ => {}
             },
         );

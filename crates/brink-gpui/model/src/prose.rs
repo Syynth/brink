@@ -36,7 +36,24 @@ pub struct ProseLint {
     /// by kind without this module inventing a taxonomy.
     pub kind: String,
     pub message: String,
+    /// The checker's ready-to-apply fixes, best first: at most
+    /// [`MAX_FIXES`], replacements and removals only, as the web studio
+    /// offers them. An "insert after" is dropped rather than shown as a
+    /// replacement, which would delete the word it was meant to follow.
+    pub fixes: Vec<ProseFix>,
 }
+
+/// One quick fix for a prose lint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProseFix {
+    /// Swap the lint's span for this text.
+    Replace(String),
+    /// Delete the lint's span.
+    Remove,
+}
+
+/// How many fixes a lint offers, as the web studio caps them.
+pub const MAX_FIXES: usize = 3;
 
 /// The prose ranges of `source`, as BYTE ranges: content spans, minus
 /// every non-content span nested inside them.
@@ -206,6 +223,16 @@ pub fn check(
                 end: units.to_byte(lint.end as u32),
                 kind: lint.kind,
                 message: lint.message,
+                fixes: lint
+                    .suggestions
+                    .into_iter()
+                    .filter_map(|s| match s.kind {
+                        "replace" => Some(ProseFix::Replace(s.text)),
+                        "remove" => Some(ProseFix::Remove),
+                        _ => None,
+                    })
+                    .take(MAX_FIXES)
+                    .collect(),
             })
             .collect(),
     )

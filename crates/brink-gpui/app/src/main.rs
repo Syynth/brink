@@ -2190,6 +2190,25 @@ impl Studio {
         self.open(&target.path, Some(span), window, cx);
     }
 
+    /// The spelling card's "Add to dictionary": the word goes into
+    /// `[prose] dictionary` in `brink.toml`, as Settings ▸ Prose adds one.
+    /// A project with no `brink.toml` has nowhere to keep it, so nothing
+    /// happens — the web's behaviour.
+    fn add_to_dictionary(
+        &mut self,
+        action: &crate::hover_card::AddToDictionary,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let word = action.word.trim().to_owned();
+        if word.is_empty() {
+            return;
+        }
+        crate::settings_config::edit_config(&self.project, cx, |doc| {
+            doc.add_to_string_array("prose", "dictionary", &word)
+        });
+    }
+
     /// The sidebar is Write mode's (W4); from Script the gesture can only
     /// mean "show me it".
     fn toggle_writing_sidebar(
@@ -2540,6 +2559,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_player))
             .on_action(cx.listener(Self::go_to_hover_target))
+            .on_action(cx.listener(Self::add_to_dictionary))
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
@@ -3435,6 +3455,150 @@ mod modes_driven {
         let shot = scratch_dir("shot").join("write-squiggles.png");
         h.screenshot(window, &shot);
         eprintln!("squiggles screenshot: {}", shot.display());
+    }
+
+    /// Put the pointer over `needle` in the Write view's `path` section,
+    /// as a mouse would — the editor works out where the text is drawn.
+    fn hover_text(h: &mut Harness, window: AnyWindowHandle, path: &str, needle: &str) {
+        let studio = h.studio(window).expect("open");
+        let editor = h
+            .read(|cx| studio.read(cx).manuscript.read(cx).section_editor(path))
+            .expect("mounted");
+        let at = h.read(|cx| {
+            let state = editor.read(cx);
+            let start = state.value().find(needle).expect("the text is there");
+            state.range_to_bounds(&(start..start + needle.len()))
+        });
+        let bounds = at.expect("the text is on screen");
+        let centre = bounds.center();
+        h.hover(window, f32::from(centre.x), f32::from(centre.y));
+        h.advance(std::time::Duration::from_millis(400));
+    }
+
+    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a noir themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
+
+    fn linted_project() -> std::path::PathBuf {
+        let dir = scratch_dir("linted");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(dir.join("story.ink"), LINTED).expect("story");
+        dir
+    }
+
+    /// The hover card lists every problem under the pointer, the way the
+    /// web does: label, message, code — and for a misspelling, its fixes
+    /// and "Add to dictionary", which writes `brink.toml`.
+    #[test]
+    fn the_hover_card_lists_problems_and_adds_to_the_dictionary() {
+        let mut h = Harness::new();
+        let window = h.open(&linted_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let prose_ready = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                editor
+                    .read(cx)
+                    .diagnostics()
+                    .is_some_and(|set| set.iter().any(|d| d.message.contains("noir")))
+            })
+        });
+        assert!(prose_ready, "the misspelling is linted");
+
+        hover_text(&mut h, window, "story.ink", "noir");
+        let under = h.read(|cx| {
+            editor
+                .read(cx)
+                .pointer_diagnostics()
+                .iter()
+                .map(|d| d.message.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            under.iter().any(|m| m.contains("noir")),
+            "the card has the lint under the pointer: {under:?}"
+        );
+        let shot = scratch_dir("shot").join("card-spelling.png");
+        h.screenshot(window, &shot);
+        eprintln!("card screenshot: {}", shot.display());
+
+        hover_text(&mut h, window, "story.ink", "nonexistent");
+        let shot = scratch_dir("shot").join("card-error.png");
+        h.screenshot(window, &shot);
+        eprintln!("card screenshot: {}", shot.display());
+
+        h.dispatch(
+            window,
+            crate::hover_card::AddToDictionary {
+                word: "noir".to_owned(),
+            },
+        );
+        let config = h.read(|cx| {
+            let project = studio.read(cx).project.read(cx);
+            project
+                .config_path()
+                .and_then(|p| project.loaded_source(p))
+                .map(str::to_owned)
+        });
+        assert!(
+            config
+                .as_deref()
+                .is_some_and(|c| c.contains("dictionary") && c.contains("noir")),
+            "the word is in brink.toml: {config:?}"
+        );
+        let gone = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                editor
+                    .read(cx)
+                    .diagnostics()
+                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("noir")))
+            })
+        });
+        assert!(gone, "and once it is a word, the lint is gone");
+    }
+
+    /// A prose fix from the card replaces the misspelled word, as an edit.
+    #[test]
+    fn a_prose_fix_replaces_the_word() {
+        let mut h = Harness::new();
+        let window = h.open(&linted_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let start = LINTED.find("noir").expect("the word");
+        h.app_window(window, |window, cx| {
+            crate::hover_card::apply_fix(&editor, start..start + 4, "nor", window, cx);
+        });
+        let text = h.read(|cx| editor.read(cx).value().to_string());
+        assert!(text.contains("It's a nor themed card."), "{text}");
+        let saved_in_project = h.read(|cx| {
+            studio
+                .read(cx)
+                .project
+                .read(cx)
+                .loaded_source("story.ink")
+                .is_some_and(|s| s.contains("a nor themed"))
+        });
+        assert!(
+            saved_in_project,
+            "the edit reached the project like any keystroke"
+        );
     }
 
     /// The picture: the bare page, with its chip.
