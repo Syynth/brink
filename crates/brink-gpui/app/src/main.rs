@@ -16,6 +16,7 @@ mod fixes;
 mod graph_layout;
 #[cfg(test)]
 mod harness;
+mod hover_card;
 mod inkt_highlight;
 mod knots;
 mod landing;
@@ -581,7 +582,7 @@ impl Studio {
                         label: "Sidebar".into(),
                         icon: gpui_component::IconName::PanelLeft,
                         action: Box::new(ToggleWritingSidebar),
-                        filled: false,
+                        primary: false,
                         leading: true,
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             sidebar
@@ -594,20 +595,22 @@ impl Studio {
                         label: "Read View".into(),
                         icon: gpui_component::IconName::BookOpen,
                         action: Box::new(ToggleReadView),
-                        filled: false,
+                        primary: false,
                         leading: false,
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             reading.upgrade().is_some_and(|m| m.read(cx).is_read())
                         })),
                     },
+                    // The Player's toggle, as the sidebar's is: out, it
+                    // is filled; a second click puts it away. `cmd-r` is
+                    // still Play, which also brings it out.
                     WritingButton {
                         id: "writing-play",
-                        label: "Play".into(),
+                        label: "Player".into(),
                         icon: gpui_component::IconName::Play,
-                        action: Box::new(Play),
-                        filled: true,
+                        action: Box::new(TogglePlayer),
+                        primary: true,
                         leading: false,
-                        // Ringed while the Player is out beside the text.
                         lit: Some(std::rc::Rc::new(move |cx: &App| {
                             playing
                                 .upgrade()
@@ -2162,6 +2165,31 @@ impl Studio {
         self.play_at(None, window, cx);
     }
 
+    /// A hover card's "Defined in" link. Where it goes is the mode's
+    /// business: the manuscript holds every story file in Write; Script
+    /// opens a tab — and anything the manuscript does not hold (`std`)
+    /// can only be shown there.
+    fn go_to_hover_target(
+        &mut self,
+        target: &crate::hover_card::GoToHoverTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let span = target.start..target.end;
+        let writing = self.workspace.read(cx).editor_view(cx) == EditorView::Write;
+        if writing && self.manuscript.read(cx).holds(&target.path) {
+            self.manuscript
+                .update(cx, |m, cx| m.reveal_span(&target.path, span, cx));
+            return;
+        }
+        if writing {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.require_editor_view(EditorView::Script, cx);
+            });
+        }
+        self.open(&target.path, Some(span), window, cx);
+    }
+
     /// The sidebar is Write mode's (W4); from Script the gesture can only
     /// mean "show me it".
     fn toggle_writing_sidebar(
@@ -2204,6 +2232,11 @@ impl Studio {
             return;
         }
         self.show_player(window, cx);
+        // Brought out with nothing ever run, it runs the story: a Player
+        // that opens onto "Nothing is running" is a second click to make.
+        if self.player.read(cx).state() == crate::player::SessionState::Idle {
+            self.player.update(cx, |player, cx| player.start(None, cx));
+        }
         let handle = self.player.read(cx).focus_handle(cx);
         window.focus(&handle, cx);
     }
@@ -2506,6 +2539,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::make_choice_body))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_player))
+            .on_action(cx.listener(Self::go_to_hover_target))
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
@@ -2606,6 +2640,8 @@ fn main() {
     });
     app.run(move |cx| {
         gpui_component::init(cx);
+        // The editor's hover card, drawn as the web studio draws it.
+        hover_card::install(cx);
         // Hide and the platform's own chords — before any window, since
         // the menu bar is the application's.
         brink_gpui_shell::menus::init(cx);
@@ -2858,6 +2894,26 @@ mod modes_driven {
         assert_eq!(state(&mut h), running);
     }
 
+    /// The title bar's Player button (TogglePlayer) is a toggle, as the
+    /// sidebar's is: the first press brings the Player out AND runs the
+    /// story when nothing has run; the second puts it away.
+    #[test]
+    fn the_player_button_opens_and_runs_then_dismisses() {
+        let mut h = Harness::new();
+        let window = h.open(&scratch_project(FIXTURE));
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::TogglePlayer);
+        assert!(player_open(&mut h, window));
+        let started = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| studio.read(cx).player.read(cx).state())
+                != crate::player::SessionState::Idle
+        });
+        assert!(started, "opening an idle Player runs the story");
+        h.dispatch(window, super::TogglePlayer);
+        assert!(!player_open(&mut h, window), "a second press puts it away");
+    }
+
     /// The picture: Write with the Player out, for checking by eye.
     #[test]
     fn the_player_beside_the_text_picture() {
@@ -3081,6 +3137,213 @@ mod modes_driven {
             (height - needs).abs() < 0.5,
             "the section follows the new row height: given {height}, needs {needs}"
         );
+    }
+
+    /// Write mode's panes take a drag, within their range, and keep it:
+    /// a drop saves every width with the layout, and an unrelated layout
+    /// save (a mode switch) carries them through.
+    #[test]
+    fn write_panes_resize_clamp_and_are_saved() {
+        use crate::write_view::Pane;
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        let write = h.read(|cx| studio.read(cx).write.clone());
+        h.update(|cx| {
+            write.update(cx, |w, cx| {
+                w.drag_pane(Pane::Files, 300., 1200., cx);
+                w.drag_pane(Pane::Player, 1200. - 50., 1200., cx);
+            });
+        });
+        let (files, player, strip) = h.read(|cx| {
+            let w = write.read(cx);
+            (
+                w.width_of(Pane::Files),
+                w.width_of(Pane::Player),
+                w.sidebar_strip().map(|s| s.width),
+            )
+        });
+        assert_eq!(files, 300.);
+        assert_eq!(player, 280., "a drag past the Player's minimum stops there");
+        assert_eq!(strip, Some(gpui::px(300.)), "the title bar's strip follows");
+
+        h.update(|cx| write.update(cx, |w, cx| w.save_panes(cx)));
+        h.dispatch(window, ModeScript);
+        let saved = h.read(|cx| {
+            brink_gpui_shell::settings::AppSettings::get(cx)
+                .layout
+                .panes
+                .get("write.files")
+                .copied()
+        });
+        assert_eq!(
+            saved,
+            Some(300.),
+            "saved, and carried through a mode switch"
+        );
+    }
+
+    /// The picture: the manuscript's centred column, at the default width,
+    /// between the sidebar and the Player.
+    #[test]
+    fn the_manuscript_column_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        h.dispatch(window, ModeWrite);
+        let shot = scratch_dir("shot").join("column.png");
+        h.screenshot(window, &shot);
+        eprintln!("column screenshot: {}", shot.display());
+        h.dispatch(window, super::ToggleWritingSidebar);
+        h.dispatch(window, super::ToggleStructureColumn);
+        h.dispatch(window, super::TogglePlayer);
+        let shot = scratch_dir("shot").join("column-panes.png");
+        h.screenshot(window, &shot);
+        eprintln!("column screenshot: {}", shot.display());
+    }
+
+    /// A hover pop-up must not take room from the text. The kit mounted
+    /// its floating pop-ups as children of the editor's flex row, so each
+    /// one added a gap and narrowed the column; lines near the edge
+    /// re-wrapped whenever a hover appeared.
+    #[test]
+    fn a_hover_popup_does_not_narrow_the_editor() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h.read(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            manuscript.read(cx).section_editor("story.ink")
+        });
+        assert!(editor.is_some(), "the section is mounted");
+        let editor = editor.expect("just asserted above");
+        let width =
+            |h: &mut Harness| h.read(|cx| f32::from(editor.read(cx).input_bounds().size.width));
+        let before = width(&mut h);
+        assert!(before > 0., "laid out");
+        h.update(|cx| {
+            editor.update(cx, |state, cx| {
+                state.present_hover(
+                    0..3,
+                    lsp_types::Hover {
+                        contents: lsp_types::HoverContents::Scalar(
+                            lsp_types::MarkedString::String("**VAR** gold".to_owned()),
+                        ),
+                        range: None,
+                    },
+                    cx,
+                );
+            });
+        });
+        h.settle();
+        let with_hover = width(&mut h);
+        assert_eq!(
+            with_hover,
+            before,
+            "the pop-up took {} px from the text",
+            before - with_hover
+        );
+    }
+
+    /// The hover card's "Defined in" link goes where the mode keeps the
+    /// file: a story file in place in the manuscript; anything the
+    /// manuscript doesn't hold, in Script.
+    #[test]
+    fn a_hover_link_goes_to_its_target_by_mode() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let second = OUTLINE_STORY.find("= second").expect("the stitch") + 2;
+        h.dispatch(
+            window,
+            crate::hover_card::GoToHoverTarget {
+                path: "story.ink".to_owned(),
+                start: second,
+                end: second + 6,
+            },
+        );
+        assert_eq!(
+            mode(&mut h, window),
+            EditorView::Write,
+            "a story file stays in Write"
+        );
+        let caret = h.read(|cx| {
+            studio
+                .read(cx)
+                .manuscript
+                .read(cx)
+                .caret()
+                .map(|(p, o)| (p.to_owned(), o))
+        });
+        assert_eq!(
+            caret,
+            Some(("story.ink".to_owned(), second + 6)),
+            "revealed in place"
+        );
+
+        h.dispatch(
+            window,
+            crate::hover_card::GoToHoverTarget {
+                path: "brink.toml".to_owned(),
+                start: 0,
+                end: 0,
+            },
+        );
+        assert_eq!(
+            mode(&mut h, window),
+            EditorView::Script,
+            "the rest opens in Script"
+        );
+    }
+
+    /// The picture: a hover card, as `brink_ide` writes one.
+    #[test]
+    fn the_hover_card_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let content = "**label** `clue_case_file.case_file_open`\n\n*Defined in* [`clues/clue_case_file.ink`](#0)".to_owned();
+        h.update(|cx| {
+            crate::hover_card::remember(
+                &content,
+                vec![Some(brink_gpui_model::query::HoverTarget {
+                    path: "story.ink".to_owned(),
+                    start: 0,
+                    end: 3,
+                })],
+                cx,
+            );
+            editor.update(cx, |state, cx| {
+                state.present_hover(
+                    4..8,
+                    lsp_types::Hover {
+                        contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                            kind: lsp_types::MarkupKind::Markdown,
+                            value: content.clone(),
+                        }),
+                        range: None,
+                    },
+                    cx,
+                );
+            });
+        });
+        h.settle();
+        let shot = scratch_dir("shot").join("hover-card.png");
+        h.screenshot(window, &shot);
+        eprintln!("hover screenshot: {}", shot.display());
     }
 
     /// The picture: the bare page, with its chip.

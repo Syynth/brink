@@ -24,10 +24,11 @@ use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::settings::{
-    self, AppSettings, DEFAULT_APP_FONT_SIZE, DEFAULT_EDITOR_FONT_SIZE, MAX_APP_FONT_SIZE,
-    MAX_EDITOR_FONT_SIZE, MIN_APP_FONT_SIZE, MIN_EDITOR_FONT_SIZE,
+    self, AppSettings, DEFAULT_APP_FONT_SIZE, DEFAULT_EDITOR_FONT_SIZE, DEFAULT_MANUSCRIPT_WIDTH,
+    MAX_APP_FONT_SIZE, MAX_EDITOR_FONT_SIZE, MAX_MANUSCRIPT_WIDTH, MIN_APP_FONT_SIZE,
+    MIN_EDITOR_FONT_SIZE, MIN_MANUSCRIPT_WIDTH,
 };
-use crate::settings_modal::{setting_group, setting_row, setting_stepper};
+use crate::settings_modal::{setting_group, setting_row, setting_stepper, setting_stepper_by};
 
 gpui::actions!(
     appearance,
@@ -165,6 +166,24 @@ pub fn step_editor_font_size(by: f32, window: &mut Window, cx: &mut App) {
     set_editor_font_size(size, window, cx);
 }
 
+/// Step the manuscript width from `current` to `next`. Stepping up from
+/// full width lands on the minimum, and down off the minimum on full
+/// width — the stepper's two ends of one range.
+pub fn set_manuscript_width(current: f32, next: f32, cx: &mut App) {
+    let next = stepped_manuscript_width(current, next);
+    settings::update(cx, |s| s.manuscript_width = next);
+}
+
+/// Where a step from `current` toward `next` lands.
+#[must_use]
+pub fn stepped_manuscript_width(current: f32, next: f32) -> f32 {
+    if current <= 0. && next > current {
+        MIN_MANUSCRIPT_WIDTH
+    } else {
+        settings::clamp_manuscript_width(next)
+    }
+}
+
 /// Set the app's UI size: persist, then scale every window's rem.
 pub fn set_app_font_size(size: f32, cx: &mut App) {
     let size = settings::clamp_font_size(
@@ -255,6 +274,28 @@ impl Render for AppearanceSection {
                 cx,
             ))
             .child(setting_row(
+                "Manuscript width",
+                format!(
+                    "Write mode's text column, in characters of the editor font, centred. {MIN_MANUSCRIPT_WIDTH:.0}–{MAX_MANUSCRIPT_WIDTH:.0}, default {DEFAULT_MANUSCRIPT_WIDTH:.0}; below {MIN_MANUSCRIPT_WIDTH:.0} is full width."
+                ),
+                {
+                    let current = settings.manuscript_width;
+                    setting_stepper_by(
+                        "manuscript-width",
+                        current,
+                        5.,
+                        if current > 0. {
+                            format!("{current:.0} ch")
+                        } else {
+                            "full".to_owned()
+                        },
+                        move |next, _, cx| set_manuscript_width(current, next, cx),
+                        cx,
+                    )
+                },
+                cx,
+            ))
+            .child(setting_row(
                 "App font size",
                 format!(
                     "{MIN_APP_FONT_SIZE:.0}–{MAX_APP_FONT_SIZE:.0} px, default {DEFAULT_APP_FONT_SIZE:.0}. Sizes the studio's own chrome."
@@ -268,5 +309,35 @@ impl Render for AppearanceSection {
                 ),
                 cx,
             ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_width_stepper_runs_from_full_width_through_the_range() {
+        assert_eq!(
+            stepped_manuscript_width(0., 5.),
+            MIN_MANUSCRIPT_WIDTH,
+            "up from full width lands on the minimum"
+        );
+        assert_eq!(
+            stepped_manuscript_width(MIN_MANUSCRIPT_WIDTH, MIN_MANUSCRIPT_WIDTH - 5.),
+            0.,
+            "down off the minimum is full width"
+        );
+        assert_eq!(
+            stepped_manuscript_width(0., -5.),
+            0.,
+            "and stays there going down"
+        );
+        assert_eq!(
+            stepped_manuscript_width(MAX_MANUSCRIPT_WIDTH, MAX_MANUSCRIPT_WIDTH + 5.),
+            MAX_MANUSCRIPT_WIDTH,
+            "the top holds"
+        );
+        assert_eq!(stepped_manuscript_width(80., 85.), 85.);
     }
 }

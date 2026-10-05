@@ -23,6 +23,11 @@ use serde_json::{Value, json};
 /// (`packages/ink-editor/src/theme.ts`): below 8 the gutter collides with
 /// itself; above 32 a line stops fitting a pane.
 pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 14.;
+/// Write mode's manuscript column, in characters of the editor's font: the
+/// default, and the range. `0` is full width (no column).
+pub const DEFAULT_MANUSCRIPT_WIDTH: f32 = 80.;
+pub const MIN_MANUSCRIPT_WIDTH: f32 = 40.;
+pub const MAX_MANUSCRIPT_WIDTH: f32 = 200.;
 pub const MIN_EDITOR_FONT_SIZE: f32 = 8.;
 pub const MAX_EDITOR_FONT_SIZE: f32 = 32.;
 
@@ -40,6 +45,19 @@ pub fn clamp_font_size(value: f32, default: f32, min: f32, max: f32) -> f32 {
         value.round().clamp(min, max)
     } else {
         default
+    }
+}
+
+/// A manuscript width as stored: `0` (full width), or within the range —
+/// anything under the minimum is full width, the stepper's way down.
+#[must_use]
+pub fn clamp_manuscript_width(value: f32) -> f32 {
+    if !value.is_finite() {
+        DEFAULT_MANUSCRIPT_WIDTH
+    } else if value < MIN_MANUSCRIPT_WIDTH {
+        0.
+    } else {
+        value.round().min(MAX_MANUSCRIPT_WIDTH)
     }
 }
 
@@ -92,6 +110,10 @@ pub struct AppSettings {
     /// The Player's prose size in logical pixels; `0` follows the app
     /// type scale. Sizes the reading surface only, never the chrome.
     pub player_font_size: f32,
+    /// Write mode's manuscript column width in characters, centred in the
+    /// room beside the sidebar and the Player. `0` is full width. In
+    /// characters so it follows the editor's font size.
+    pub manuscript_width: f32,
     /// Projects opened before, most recent first — the roots the File
     /// menu offers to reopen. Absolute paths, since a recent is only
     /// meaningful as a place on this machine.
@@ -134,6 +156,10 @@ pub struct Layout {
     pub open_files: Vec<String>,
     /// Which of them was showing.
     pub active_file: Option<String>,
+    /// Panes the author has sized by hand, by name (`write.files`,
+    /// `write.structure`, `write.player`), in logical pixels. A pane not
+    /// here takes its own default.
+    pub panes: BTreeMap<String, f32>,
 }
 
 /// What the app knows about the open documents when a layout is saved.
@@ -178,6 +204,7 @@ impl Layout {
             "scroll": Value::Object(scroll),
             "open_files": self.open_files,
             "active_file": self.active_file,
+            "panes": self.panes,
         })
     }
 
@@ -242,6 +269,23 @@ impl Layout {
             .and_then(Value::as_str)
             .filter(|p| !p.is_empty())
             .map(str::to_owned);
+        // A pane width is only meaningful as a positive, finite number of
+        // pixels; anything else takes the pane's own default.
+        let panes = value
+            .get("panes")
+            .and_then(Value::as_object)
+            .map(|map| {
+                map.iter()
+                    .filter_map(|(k, v)| {
+                        let w = v
+                            .as_f64()
+                            .map(|n| n as f32)
+                            .filter(|n| n.is_finite() && *n > 0.)?;
+                        Some((k.clone(), w))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         Self {
             docks,
             editor_view,
@@ -249,6 +293,7 @@ impl Layout {
             scroll,
             open_files,
             active_file,
+            panes,
         }
     }
 }
@@ -270,6 +315,7 @@ impl Default for AppSettings {
             default_view: None,
             follow_in_editor: true,
             player_font_size: 0.,
+            manuscript_width: DEFAULT_MANUSCRIPT_WIDTH,
             recents: Vec::new(),
             reopen_last: false,
         }
@@ -328,6 +374,7 @@ impl AppSettings {
             "default_view": self.default_view.clone(),
             "follow_in_editor": self.follow_in_editor,
             "player_font_size": self.player_font_size,
+            "manuscript_width": self.manuscript_width,
             "recents": self.recents.clone(),
             "reopen_last": self.reopen_last,
         })
@@ -416,6 +463,9 @@ impl AppSettings {
                 ),
                 None => defaults.player_font_size,
             },
+            manuscript_width: clamp_manuscript_width(
+                num("manuscript_width").unwrap_or(defaults.manuscript_width),
+            ),
             recents: value
                 .get("recents")
                 .and_then(Value::as_array)
@@ -612,9 +662,11 @@ mod tests {
             default_view: Some("continuous".to_owned()),
             follow_in_editor: false,
             player_font_size: 20.,
+            manuscript_width: 72.,
             recents: vec!["/home/me/harbour/story.ink".to_owned()],
             reopen_last: true,
         };
+        s.layout.panes.insert("write.files".to_owned(), 312.);
         s.keymap
             .insert("File: Save".to_owned(), Some("cmd-shift-s".to_owned()));
         s.keymap.insert("View: Toggle Binder".to_owned(), None);

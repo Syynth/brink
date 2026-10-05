@@ -193,6 +193,10 @@ impl ContinuousView {
         // band — in place (`restyle`), never by rebuilding the sections.
         cx.observe_global::<gpui_component::Theme>(|this, cx| this.restyle(cx))
             .detach();
+        // The column's width is a setting; a change re-lays the sections,
+        // and `remeasure_sections` follows their new wrapped heights.
+        cx.observe_global::<brink_gpui_shell::settings::AppSettings>(|_, cx| cx.notify())
+            .detach();
         Self {
             list: ListState::new(files.len(), ListAlignment::Top, px(600.)),
             project,
@@ -371,6 +375,15 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// `path`'s section's editor.
+    #[cfg(test)]
+    pub fn section_editor(&self, path: &str) -> Option<Entity<EditorState>> {
+        self.editors
+            .borrow()
+            .get(path)
+            .map(|(editor, _)| editor.clone())
     }
 
     /// `path`'s section's focus handle — where a click puts the keyboard.
@@ -696,7 +709,7 @@ impl gpui::Focusable for ContinuousView {
 }
 
 impl Render for ContinuousView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -715,6 +728,7 @@ impl Render for ContinuousView {
         // wrapping moves, which `remeasure_sections` already follows.
         let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
         let measured = self.measured_line_height;
+        let column = column_width(window, cx);
 
         // The file the top of the scroller is currently inside — `list`
         // reports its topmost visible item, which is exactly that.
@@ -763,16 +777,22 @@ impl Render for ContinuousView {
                     }
                     v_flex()
                         .w_full()
-                        .child(heading(&path, cx))
+                        .child(heading(&path, column, cx))
                         .child(
-                            Editor::new(&editor)
-                                .bordered(false)
-                                .appearance(false)
-                                .with_size(SECTION_SIZE)
-                                .when_some(read_font.clone(), |editor, font| {
-                                    editor.font_family(font)
-                                })
-                                .h(px(height)),
+                            // The column: centred in the room there is,
+                            // never wider than the window allows.
+                            h_flex().w_full().justify_center().child(
+                                Editor::new(&editor)
+                                    .bordered(false)
+                                    .appearance(false)
+                                    .with_size(SECTION_SIZE)
+                                    .when_some(read_font.clone(), |editor, font| {
+                                        editor.font_family(font)
+                                    })
+                                    .when_some(column, |editor, width| editor.w(width).max_w_full())
+                                    .when(column.is_none(), |editor| editor.w_full())
+                                    .h(px(height)),
+                            ),
                         )
                         .into_any_element()
                 })
@@ -785,7 +805,7 @@ impl Render for ContinuousView {
                         .top_0()
                         .left_0()
                         .right_0()
-                        .child(heading(&path, cx)),
+                        .child(heading(&path, column, cx)),
                 )
             })
     }
@@ -802,33 +822,66 @@ fn apply_read_chrome(
     state.set_active_line_highlight(faint.is_none(), cx);
 }
 
+/// The manuscript column's width (Settings ▸ Appearance ▸ Manuscript
+/// width), or `None` for full width.
+///
+/// In characters of the editor's MONOSPACE face, the CSS `ch` — so it
+/// follows ⌘= / ⌘-, and stays put when Read swaps in the proportional face
+/// (which then fits more words in the same column). The gutter's digits
+/// and its margin come on top, so the setting counts text, not chrome.
+fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
+    let chars = brink_gpui_shell::settings::AppSettings::get(cx).manuscript_width;
+    if chars <= 0. {
+        return None;
+    }
+    let theme = cx.theme();
+    let font = gpui::font(theme.mono_font_family.clone());
+    let text = window.text_system();
+    let ch = text
+        .ch_advance(text.resolve_font(&font), theme.mono_font_size)
+        .map_or(f32::from(theme.mono_font_size) * 0.6, f32::from);
+    // The gutter: its digits, one column of spacing, and the margins the
+    // kit sets either side of the text.
+    let gutter = (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch + 24.;
+    Some(px(chars * ch + gutter))
+}
+
 /// The boundary between two files.
 ///
 /// GPUI has no `position: sticky`, so the manuscript draws this twice:
 /// inline at each boundary, and again as an overlay pinned to the top of the
 /// scroller showing whichever file is currently under it — which is what
 /// makes the heading read as sticky.
-fn heading(path: &str, cx: &App) -> impl IntoElement {
+fn heading(path: &str, column: Option<gpui::Pixels>, cx: &App) -> impl IntoElement {
     let theme = cx.theme();
+    // The band runs the full width; its label sits over the column, so a
+    // file's name lines up with its text.
     h_flex()
         .w_full()
         .h(px(HEADING_HEIGHT))
-        .px_4()
-        .gap_2()
-        .items_center()
+        .justify_center()
         .bg(theme.sidebar)
         .border_t_1()
         .border_b_1()
         .border_color(theme.border)
-        .child(icons::icon(
-            icons::BrinkIcon::Drop,
-            px(12.),
-            theme.muted_foreground,
-        ))
         .child(
-            div()
-                .text_xs()
-                .text_color(theme.foreground)
-                .child(path.to_owned()),
+            h_flex()
+                .when_some(column, |el, width| el.w(width).max_w_full())
+                .when(column.is_none(), |el| el.w_full())
+                .h_full()
+                .px_4()
+                .gap_2()
+                .items_center()
+                .child(icons::icon(
+                    icons::BrinkIcon::Drop,
+                    px(12.),
+                    theme.muted_foreground,
+                ))
+                .child(
+                    div()
+                        .text_xs()
+                        .text_color(theme.foreground)
+                        .child(path.to_owned()),
+                ),
         )
 }

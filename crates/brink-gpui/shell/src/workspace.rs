@@ -752,6 +752,9 @@ impl Workspace {
             scroll: saved.scroll,
             open_files: saved.open_files,
             active_file: saved.active_file,
+            // The app's panes (Write mode's sidebar columns, its Player):
+            // theirs to size, so carried through like the scrolls.
+            panes: saved.panes,
         }
     }
 
@@ -1411,12 +1414,10 @@ impl Workspace {
             Some(key) => format!("{} ({key})", button.label),
             None => button.label.to_string(),
         });
-        let glyph = if button.filled {
-            on_primary
-        } else if lit {
-            primary
-        } else {
-            muted
+        let glyph = match (lit, button.primary) {
+            (true, true) => on_primary,
+            (true, false) => primary,
+            (false, _) => muted,
         };
         div()
             .id(button.id)
@@ -1426,24 +1427,17 @@ impl Workspace {
             .size(px(SWITCHER_CELL))
             .rounded_sm()
             .cursor_pointer()
-            // Play is filled: the one thing on this screen besides the
-            // text. A toggle is lit the way the switch's cell is, so "on"
-            // reads the same everywhere in the bar.
-            .when(button.filled, |el| {
+            // Every button here is a toggle, and "on" is a fill: the
+            // accent, as the switch's cell is, or the primary colour for
+            // the one that matters most (the Player). Off is a bare glyph.
+            .when(lit && button.primary, |el| {
                 el.bg(primary).hover(|s| s.bg(primary.opacity(0.85)))
             })
-            // A filled button that is on — Play while the Player is out —
-            // wears a ring, since its fill is already taken.
-            .when(button.filled && lit, |el| {
-                el.border_2().border_color(on_primary.opacity(0.8))
-            })
-            .when(!button.filled && lit, |el| el.bg(accent))
-            .when(!button.filled && !lit, |el| {
-                el.hover(|s| s.bg(hover.opacity(0.6)))
-            })
+            .when(lit && !button.primary, |el| el.bg(accent))
+            .when(!lit, |el| el.hover(|s| s.bg(hover.opacity(0.6))))
             .child(
                 gpui_component::Icon::new(button.icon.clone())
-                    .with_size(px(if button.filled { 12. } else { 14. }))
+                    .with_size(px(14.))
                     .text_color(glyph),
             )
             .tooltip(move |window, cx| Tooltip::new(hint.clone()).build(window, cx))
@@ -1528,8 +1522,9 @@ pub struct WritingButton {
     pub label: SharedString,
     pub icon: gpui_component::IconName,
     pub action: Box<dyn Action>,
-    /// Filled with the accent colour — Play.
-    pub filled: bool,
+    /// While on, filled with the primary colour rather than the accent —
+    /// the Player's toggle.
+    pub primary: bool,
     /// Whether a toggle is on, drawn lit. `None` for a button with no state.
     pub lit: Option<IsOn>,
     /// Drawn just right of the traffic lights (the sidebar toggle) rather

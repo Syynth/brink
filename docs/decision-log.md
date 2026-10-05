@@ -5734,3 +5734,12 @@
 - **SCOPE:** minor/local
 - **WHAT:** The editor font size remains a row in Settings ▸ Appearance, beside the theme and the app font size. It is not moved to, or duplicated in, Settings ▸ Editor. ⌘= / ⌘- / ⌘0 (bindable) change it, and a Settings search for "zoom" finds it.
 - **WHY:** Type sizes belong with the theme. The shortcuts and the search are enough to reach it without a second home.
+
+## Write mode: a centred manuscript column, and resizable panes that are remembered
+- **WHEN:** 2026-10-04
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **STATUS:** tentative
+- **WHAT:** Write mode's manuscript gets a max width again: a centred column sized by a "Manuscript width" setting in characters (Settings ▸ Appearance; default 80, range 40–200, below 40 = full width). It's measured in the editor's monospace `ch`, so it follows ⌘=/⌘- and stays put when Read switches face. This supersedes W3's "left-aligned and stretches" for now. The Files column, the structure column and the Player can be dragged to new widths, within a range, and the widths are saved with the window layout.
+- **WHY:** The maintainer wants to try the column again after using the full-width manuscript ("i think i do want try re-adding"), so this is tentative. Characters, centring and a full-width escape were chosen over pixels or a fixed width so the column scales with the type and can be turned off. Panes are resizable like every other pane in the app, and the sizes are remembered like the Script docks' sizes are.

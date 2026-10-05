@@ -40,17 +40,67 @@ use crate::player::Player;
 use crate::project::{Project, ProjectEvent};
 use brink_gpui_shell::icons;
 
-/// The Player panel's width once it has slid in.
-pub(crate) const PLAYER_WIDTH: f32 = 400.;
+/// Each pane's width until the author drags it, and the range a drag may
+/// take it to. Saved as `write.<pane>` in the window layout.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Pane {
+    Files,
+    Structure,
+    Player,
+}
+
+impl Pane {
+    fn key(self) -> &'static str {
+        match self {
+            Pane::Files => "write.files",
+            Pane::Structure => "write.structure",
+            Pane::Player => "write.player",
+        }
+    }
+
+    fn default_width(self) -> f32 {
+        match self {
+            // Files is a Binder, whose header carries more tools than a
+            // plain list's would.
+            Pane::Files | Pane::Structure => 240.,
+            Pane::Player => 400.,
+        }
+    }
+
+    fn range(self) -> (f32, f32) {
+        match self {
+            Pane::Files | Pane::Structure => (160., 480.),
+            Pane::Player => (280., 720.),
+        }
+    }
+
+    fn clamp(self, width: f32) -> f32 {
+        let (lo, hi) = self.range();
+        width.clamp(lo, hi)
+    }
+}
+
+/// A pane edge being dragged. The drag carries which pane; the view's own
+/// `on_drag_move` turns the pointer into its width.
+#[derive(Clone, Copy, Debug)]
+struct PaneDrag(Pane);
+
+/// What a pane drag shows under the pointer: nothing — the pane itself
+/// moving is the feedback.
+struct NoGhost;
+
+impl Render for NoGhost {
+    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+        div()
+    }
+}
 
 /// How long a slide takes — the Player's and the sidebar's, and the
 /// title bar's strip above the sidebar, which must move with it.
 use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
 
-/// The sidebar's two columns. Files is a Binder, whose header carries more
-/// tools than a plain list's would, hence the wider of the two.
-const FILES_WIDTH: f32 = 240.;
-const STRUCTURE_WIDTH: f32 = 240.;
+/// How wide a pane's grab strip is, inside its edge.
+const GRIP: f32 = 5.;
 
 /// A sidebar row's height, and its header's.
 const ROW_HEIGHT: f32 = 24.;
@@ -90,6 +140,10 @@ pub(crate) struct WriteView {
     /// The structure column (W5) — its toggle is in the Files header. Off
     /// until asked for: the files are what a writer reaches for first.
     structure_open: bool,
+    /// Each pane's width: dragged, saved, or its default.
+    files_width: f32,
+    structure_width: f32,
+    player_width: f32,
     /// Each file's outline, as last answered. Cleared on every analysis:
     /// an edit moves offsets, and a stale outline would put the caret in
     /// the wrong stitch.
@@ -140,6 +194,9 @@ impl WriteView {
             slide: 0,
             files,
             structure_open: false,
+            files_width: saved_width(Pane::Files, cx),
+            structure_width: saved_width(Pane::Structure, cx),
+            player_width: saved_width(Pane::Player, cx),
             symbols: BTreeMap::new(),
             pending: BTreeSet::new(),
             words: 0,
@@ -235,12 +292,69 @@ impl WriteView {
 
     /// The sidebar's full width.
     fn sidebar_width(&self) -> Pixels {
-        px(FILES_WIDTH
+        px(self.files_width
             + if self.structure_open {
-                STRUCTURE_WIDTH
+                self.structure_width
             } else {
                 0.
             })
+    }
+
+    pub(crate) fn width_of(&self, pane: Pane) -> f32 {
+        match pane {
+            Pane::Files => self.files_width,
+            Pane::Structure => self.structure_width,
+            Pane::Player => self.player_width,
+        }
+    }
+
+    /// Follow a pane edge being dragged to `x`, in the view's own
+    /// coordinates (`width`: the view's).
+    pub(crate) fn drag_pane(&mut self, pane: Pane, x: f32, width: f32, cx: &mut Context<Self>) {
+        let next = pane.clamp(match pane {
+            Pane::Files => x,
+            Pane::Structure => x - self.files_width,
+            Pane::Player => width - x,
+        });
+        let slot = match pane {
+            Pane::Files => &mut self.files_width,
+            Pane::Structure => &mut self.structure_width,
+            Pane::Player => &mut self.player_width,
+        };
+        if (*slot - next).abs() > 0.5 {
+            *slot = next;
+            cx.notify();
+        }
+    }
+
+    /// Save every pane's width with the window layout — on a drop, not per
+    /// move, so a drag writes the settings once.
+    pub(crate) fn save_panes(&self, cx: &mut App) {
+        let widths = [Pane::Files, Pane::Structure, Pane::Player].map(|p| (p, self.width_of(p)));
+        brink_gpui_shell::settings::update(cx, |s| {
+            for (pane, width) in widths {
+                s.layout.panes.insert(pane.key().to_owned(), width);
+            }
+        });
+    }
+
+    /// The grab strip along a pane's edge.
+    fn grip(&self, pane: Pane, on_left: bool, cx: &mut Context<Self>) -> AnyElement {
+        let accent = cx.theme().accent;
+        div()
+            .id(SharedString::from(format!("grip-{}", pane.key())))
+            .absolute()
+            .top_0()
+            .bottom_0()
+            .when(on_left, |el| el.left_0())
+            .when(!on_left, |el| el.right_0())
+            .w(px(GRIP))
+            .cursor_col_resize()
+            .hover(|s| s.bg(accent.opacity(0.6)))
+            .on_drag(PaneDrag(pane), |_, _, _, cx| {
+                gpui::AppContext::new(cx, |_| NoGhost)
+            })
+            .into_any_element()
     }
 
     /// What the title bar's strip should do: slide with the sidebar.
@@ -305,6 +419,15 @@ impl WriteView {
     }
 }
 
+/// A pane's width as the layout saved it, or its default.
+fn saved_width(pane: Pane, cx: &App) -> f32 {
+    brink_gpui_shell::settings::AppSettings::get(cx)
+        .layout
+        .panes
+        .get(pane.key())
+        .map_or(pane.default_width(), |w| pane.clamp(*w))
+}
+
 /// The knot (functions are knots) whose ownership range holds `offset`,
 /// and the stitch in it that does.
 fn at_caret(symbols: &[Symbol], offset: usize) -> Option<(&Symbol, Option<&Symbol>)> {
@@ -337,12 +460,14 @@ impl WriteView {
             .overflow_hidden()
             .child(
                 div()
-                    .w(px(FILES_WIDTH))
+                    .relative()
+                    .w(px(self.files_width))
                     .h_full()
                     .flex_none()
                     .border_r_1()
                     .border_color(border)
-                    .child(self.files.clone()),
+                    .child(self.files.clone())
+                    .child(self.grip(Pane::Files, false, cx)),
             )
             .when(self.structure_open, |el| {
                 el.child(self.render_structure(current.as_deref(), cx))
@@ -449,13 +574,16 @@ impl WriteView {
             }
         }
 
+        let grip = self.grip(Pane::Structure, false, cx);
         v_flex()
-            .w(px(STRUCTURE_WIDTH))
+            .relative()
+            .w(px(self.structure_width))
             .h_full()
             .flex_none()
             .bg(sidebar)
             .border_r_1()
             .border_color(border)
+            .child(grip)
             .child(
                 h_flex()
                     .h(px(HEADER_HEIGHT))
@@ -780,8 +908,11 @@ impl Render for WriteView {
         let chip = (self.sidebar == Sidebar::Closed).then(|| self.render_chip(cx));
         let theme = cx.theme();
         let (border, surface, muted) = (theme.border, theme.background, theme.muted_foreground);
+        let player_width = self.player_width;
+        let player_grip = self.player_open.then(|| self.grip(Pane::Player, true, cx));
         let panel = self.player_open.then(|| {
             v_flex()
+                .relative()
                 .h_full()
                 .flex_none()
                 .overflow_hidden()
@@ -790,7 +921,7 @@ impl Render for WriteView {
                 .bg(surface)
                 .child(
                     h_flex()
-                        .w(px(PLAYER_WIDTH))
+                        .w(px(player_width))
                         .h(px(HEADER_HEIGHT))
                         .flex_none()
                         .px_2()
@@ -812,11 +943,12 @@ impl Render for WriteView {
                 )
                 .child(
                     div()
-                        .w(px(PLAYER_WIDTH))
+                        .w(px(player_width))
                         .flex_1()
                         .min_h_0()
                         .child(self.player.clone()),
                 )
+                .children(player_grip)
                 // The slide: the panel's width grows from nothing, so the
                 // manuscript beside it is pushed rather than covered. The
                 // contents stay at full width and are clipped meanwhile, so
@@ -824,12 +956,23 @@ impl Render for WriteView {
                 .with_animation(
                     SharedString::from(format!("write-player-{}", self.openings)),
                     Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
-                    |panel, delta| panel.w(px(PLAYER_WIDTH * delta)),
+                    move |panel, delta| panel.w(px(player_width * delta)),
                 )
         });
         h_flex()
             .id("write-view")
             .size_full()
+            // A pane edge being dragged: the pointer, in this view's
+            // coordinates, is the new edge. Saved once, on the drop.
+            .on_drag_move(
+                cx.listener(|this, event: &gpui::DragMoveEvent<PaneDrag>, _, cx| {
+                    let PaneDrag(pane) = *event.drag(cx);
+                    let x = f32::from(event.event.position.x - event.bounds.left());
+                    let width = f32::from(event.bounds.size.width);
+                    this.drag_pane(pane, x, width, cx);
+                }),
+            )
+            .on_drop(cx.listener(|this, _: &PaneDrag, _, cx| this.save_panes(cx)))
             .children(sidebar)
             .child(
                 div()

@@ -61,6 +61,7 @@ impl Harness {
         let config = scratch_dir("config");
         cx.update(|cx| {
             gpui_component::init(cx);
+            crate::hover_card::install(cx);
             brink_gpui_shell::settings::init_at(Some(config), cx);
             brink_gpui_shell::theme::init(cx);
             cx.set_global(Prompts::default());
