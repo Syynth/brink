@@ -160,6 +160,9 @@ pub struct ContinuousView {
     /// The focused section's editor, observed for caret moves. Replaced
     /// whenever another section takes focus.
     caret_watch: Option<Subscription>,
+    /// Each section's prose lints, and a fingerprint of the text they were
+    /// checked against (`ProseCache`).
+    prose: ProseCache,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -217,6 +220,7 @@ impl ContinuousView {
             focus: cx.focus_handle(),
             caret: None,
             caret_watch: None,
+            prose: ProseCache::default(),
             _subscriptions: vec![watch],
         }
     }
@@ -491,7 +495,7 @@ impl ContinuousView {
             .map(|(path, (editor, _))| (path.clone(), editor.clone()))
             .collect();
         for (path, editor) in sections {
-            apply_diagnostics(&self.project, &path, &editor, cx);
+            apply_diagnostics(&self.project, &path, &editor, &self.prose, cx);
         }
     }
 
@@ -563,6 +567,7 @@ impl ContinuousView {
         me: &WeakEntity<Self>,
         section_subs: &Rc<RefCell<Vec<Subscription>>>,
         read: &ReadCell,
+        prose: &ProseCache,
         path: &str,
         is_last: bool,
         line_height_override: Option<f32>,
@@ -652,7 +657,7 @@ impl ContinuousView {
 
         // A section built after the analysis landed starts with its
         // problems; later analyses reach it through `refresh_diagnostics`.
-        apply_diagnostics(project, path, &state, cx);
+        apply_diagnostics(project, path, &state, prose, cx);
 
         (state, height)
     }
@@ -748,6 +753,7 @@ impl Render for ContinuousView {
         let section_subs = self.section_subs.clone();
         let mounted = self.mounted.clone();
         let read = self.read.clone();
+        let prose = self.prose.clone();
         // The Read view's face: the UI's proportional font, at the editor's
         // own size — so a row is the same height either way and only the
         // wrapping moves, which `remeasure_sections` already follows.
@@ -787,6 +793,7 @@ impl Render for ContinuousView {
                                 &me,
                                 &section_subs,
                                 &read,
+                                &prose,
                                 &path,
                                 index + 1 == count,
                                 measured,
@@ -836,13 +843,39 @@ impl Render for ContinuousView {
     }
 }
 
+/// Each section's prose lints, keyed by path, with a fingerprint of the
+/// text they were checked against.
+///
+/// A Script tab re-checks its prose on every analysis; the manuscript holds
+/// every file it has ever scrolled past, and doing that for all of them on
+/// every keystroke would spell-check the whole story per character. So a
+/// file is checked again only when its text has changed since its lints
+/// were taken, and the lints it already has are put back after each
+/// analysis replaces the compiler's squiggles.
+#[derive(Clone, Default)]
+struct ProseCache(Rc<RefCell<HashMap<String, CheckedProse>>>);
+
+/// A section's prose lints, and the fingerprint of the text they fit.
+type CheckedProse = (u64, Vec<brink_gpui_model::prose::ProseLint>);
+
+/// A fingerprint of a section's text, to tell whether its lints still fit.
+fn fingerprint(source: &str) -> u64 {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
 /// Give `editor` the problems the last analysis found in `path`, replacing
-/// what it had — as a Script tab does (`Document::refresh`). A TODO note's
-/// band is its presentation, so it gets no squiggle here either.
+/// what it had — as a Script tab does (`Document::refresh`) — and its prose
+/// lints with them: the ones it has when its text is unchanged, a fresh
+/// check when it has moved. A TODO note's band is its presentation, so it
+/// gets no squiggle here either.
 fn apply_diagnostics(
     project: &Entity<Project>,
     path: &str,
     editor: &Entity<EditorState>,
+    prose: &ProseCache,
     cx: &mut App,
 ) {
     let (rope, source) = {
@@ -850,13 +883,22 @@ fn apply_diagnostics(
         (state.text().clone(), state.value().to_string())
     };
     let index = brink_ir::LineIndex::new(&source);
-    let diagnostics: Vec<lsp_types::Diagnostic> = project
+    let mut diagnostics: Vec<lsp_types::Diagnostic> = project
         .read(cx)
         .diagnostics_for(path)
         .iter()
         .filter(|d| d.code != crate::todos::TODO_CODE)
         .map(|d| crate::document::to_lsp_diagnostic(d, &index))
         .collect();
+    let print = fingerprint(&source);
+    let cached = prose
+        .0
+        .borrow()
+        .get(path)
+        .filter(|(at, _)| *at == print)
+        .map(|(_, lints)| crate::document::prose_diagnostics(lints, &source));
+    let fresh = cached.is_some();
+    diagnostics.extend(cached.unwrap_or_default());
     editor.update(cx, |state, cx| {
         if let Some(set) = state.diagnostics_mut() {
             set.reset(&rope);
@@ -864,6 +906,51 @@ fn apply_diagnostics(
         }
         cx.notify();
     });
+    if !fresh {
+        check_prose(project, path, editor, prose, print, cx);
+    }
+}
+
+/// Ask the worker for `path`'s prose lints, against text whose fingerprint
+/// is `print`; keep them, report them to Problems, and put the section's
+/// squiggles back together with them — unless the text has moved on again
+/// meanwhile, when the next check is the one that counts.
+fn check_prose(
+    project: &Entity<Project>,
+    path: &str,
+    editor: &Entity<EditorState>,
+    prose: &ProseCache,
+    print: u64,
+    cx: &mut App,
+) {
+    let query = project.read(cx).query(
+        brink_gpui_model::query::QueryKind::Prose {
+            path: path.to_owned(),
+        },
+        cx,
+    );
+    let (project, editor, prose, path) = (
+        project.clone(),
+        editor.clone(),
+        prose.clone(),
+        path.to_owned(),
+    );
+    cx.spawn(async move |cx| {
+        let Ok(brink_gpui_model::query::QueryResult::Prose(lints)) = query.await else {
+            return;
+        };
+        cx.update(|cx| {
+            if fingerprint(editor.read(cx).value().as_ref()) != print {
+                return;
+            }
+            project.update(cx, |project, cx| {
+                crate::document::report_prose(project, &path, &lints, cx);
+            });
+            prose.0.borrow_mut().insert(path.clone(), (print, lints));
+            apply_diagnostics(&project, &path, &editor, &prose, cx);
+        });
+    })
+    .detach();
 }
 
 /// The editor chrome Read changes (W8): line numbers in `faint`, and no

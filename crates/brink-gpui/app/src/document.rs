@@ -477,46 +477,12 @@ impl Document {
             // told as well as the editor. Reported by PATH rather than
             // held here, because a file can be open in three editors at
             // once and one list of its lints is what a panel wants.
-            let reported: Vec<brink_gpui_model::worker::Diagnostic> = lints
-                .iter()
-                .map(|lint| brink_gpui_model::worker::Diagnostic {
-                    start: lint.start,
-                    end: lint.end,
-                    severity: brink_ir::Severity::Hint,
-                    // The same `prose.<kind>` code the editor's own
-                    // squiggle carries, which is how Problems tells a
-                    // prose lint from a compiler diagnostic.
-                    code: format!("prose.{}", lint.kind),
-                    message: lint.message.clone(),
-                })
-                .collect();
             project.update(cx, |project, cx| {
-                project.set_prose(&path, reported, cx);
+                report_prose(project, &path, &lints, cx);
             });
             editor.update(cx, |state, cx| {
                 let source = state.value().to_string();
-                let index = LineIndex::new(&source);
-                let at = |offset: u32| {
-                    let (line, character) = index.line_col(rowan::TextSize::from(offset));
-                    lsp::Position { line, character }
-                };
-                let diagnostics: Vec<lsp::Diagnostic> = lints
-                    .into_iter()
-                    // A lint whose range no longer fits the text is a
-                    // lint about text that has since changed: dropped,
-                    // not clamped onto whatever now sits there.
-                    .filter(|lint| lint.end as usize <= source.len() && lint.end > lint.start)
-                    .map(|lint| lsp::Diagnostic {
-                        range: lsp::Range {
-                            start: at(lint.start),
-                            end: at(lint.end),
-                        },
-                        severity: Some(lsp::DiagnosticSeverity::HINT),
-                        code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
-                        message: lint.message,
-                        ..Default::default()
-                    })
-                    .collect();
+                let diagnostics = prose_diagnostics(&lints, &source);
                 if diagnostics.is_empty() {
                     return;
                 }
@@ -617,6 +583,60 @@ impl Document {
         })
         .detach();
     }
+}
+
+/// Tell the project a file's prose lints, so Problems lists them beside
+/// the compiler's. By PATH rather than held by an editor, because a file
+/// can be open in several at once and one list of its lints is what a
+/// panel wants.
+pub(crate) fn report_prose(
+    project: &mut Project,
+    path: &str,
+    lints: &[brink_gpui_model::prose::ProseLint],
+    cx: &mut Context<Project>,
+) {
+    let reported: Vec<brink_gpui_model::worker::Diagnostic> = lints
+        .iter()
+        .map(|lint| brink_gpui_model::worker::Diagnostic {
+            start: lint.start,
+            end: lint.end,
+            severity: brink_ir::Severity::Hint,
+            // The same `prose.<kind>` code the editor's own squiggle
+            // carries, which is how Problems tells a prose lint from a
+            // compiler diagnostic.
+            code: format!("prose.{}", lint.kind),
+            message: lint.message.clone(),
+        })
+        .collect();
+    project.set_prose(path, reported, cx);
+}
+
+/// A file's prose lints as the editor's squiggles, against `source`. A
+/// lint whose range no longer fits the text is about text that has since
+/// changed: dropped, not clamped onto whatever now sits there.
+pub(crate) fn prose_diagnostics(
+    lints: &[brink_gpui_model::prose::ProseLint],
+    source: &str,
+) -> Vec<lsp::Diagnostic> {
+    let index = LineIndex::new(source);
+    let at = |offset: u32| {
+        let (line, character) = index.line_col(rowan::TextSize::from(offset));
+        lsp::Position { line, character }
+    };
+    lints
+        .iter()
+        .filter(|lint| lint.end as usize <= source.len() && lint.end > lint.start)
+        .map(|lint| lsp::Diagnostic {
+            range: lsp::Range {
+                start: at(lint.start),
+                end: at(lint.end),
+            },
+            severity: Some(lsp::DiagnosticSeverity::HINT),
+            code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
+            message: lint.message.clone(),
+            ..Default::default()
+        })
+        .collect()
 }
 
 pub(crate) fn to_lsp_diagnostic(
