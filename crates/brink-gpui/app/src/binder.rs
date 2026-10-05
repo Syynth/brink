@@ -1751,8 +1751,10 @@ impl Render for Binder {
             }))
             .size_full()
             .bg(sidebar)
-            .border_r_1()
-            .border_color(border)
+            // A docked Binder draws its own edge. A files-only one is a
+            // column inside a host that already rules its columns apart, and
+            // drawing one here too doubled the line to 2px.
+            .when(!self.files_only, |el| el.border_r_1().border_color(border))
             .on_key_down(cx.listener(Self::on_key))
             .child(header)
             .when(self.filter_open, |el| {

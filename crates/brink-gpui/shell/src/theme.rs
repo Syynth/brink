@@ -137,7 +137,7 @@ fn mocha() -> StudioTheme {
         dark: true,
         tokens: Tokens {
             editor_bg: 0x1e1e2e,
-            surface_bg: 0x252536,
+            surface_bg: 0x181825,
             panel_bg: 0x2a2a3d,
             fg: 0xcdd6f4,
             fg_muted: 0x6c7086,

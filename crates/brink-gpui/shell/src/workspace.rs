@@ -1350,7 +1350,10 @@ impl Workspace {
     fn render_writing_leading(&self, cx: &mut Context<Self>) -> AnyElement {
         let (sidebar, border) = {
             let theme = cx.theme();
-            (theme.sidebar, theme.sidebar_border)
+            (
+                theme.sidebar,
+                theme.sidebar_border.opacity(DIVIDER_STRENGTH),
+            )
         };
         let buttons: Vec<AnyElement> = self
             .writing_buttons
@@ -1531,6 +1534,12 @@ pub struct WritingButton {
     /// than with the others, left of the switch.
     pub leading: bool,
 }
+
+/// How much of the border colour Write mode's column dividers keep: the
+/// line between the sidebar's columns, and between it and the text. Full
+/// strength read as a seam rather than an edge; the hover card's rules use
+/// the same 55%.
+pub const DIVIDER_STRENGTH: f32 = 0.55;
 
 /// How long the Writing sidebar and the Player take to slide. One value,
 /// so the sidebar's body and the title bar's strip above it move together.
