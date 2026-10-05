@@ -35,6 +35,7 @@ mod settings_diagnostics;
 mod settings_formatting;
 mod settings_general;
 mod settings_prose;
+mod signature_help;
 mod state_view;
 mod story_graph;
 mod structural;
@@ -2190,6 +2191,25 @@ impl Studio {
         self.open(&target.path, Some(span), window, cx);
     }
 
+    /// The spelling card's "Add to dictionary": the word goes into
+    /// `[prose] dictionary` in `brink.toml`, as Settings ▸ Prose adds one.
+    /// A project with no `brink.toml` has nowhere to keep it, so nothing
+    /// happens — the web's behaviour.
+    fn add_to_dictionary(
+        &mut self,
+        action: &crate::hover_card::AddToDictionary,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let word = action.word.trim().to_owned();
+        if word.is_empty() {
+            return;
+        }
+        crate::settings_config::edit_config(&self.project, cx, |doc| {
+            doc.add_to_string_array("prose", "dictionary", &word)
+        });
+    }
+
     /// The sidebar is Write mode's (W4); from Script the gesture can only
     /// mean "show me it".
     fn toggle_writing_sidebar(
@@ -2540,6 +2560,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_player))
             .on_action(cx.listener(Self::go_to_hover_target))
+            .on_action(cx.listener(Self::add_to_dictionary))
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
@@ -3435,6 +3456,290 @@ mod modes_driven {
         let shot = scratch_dir("shot").join("write-squiggles.png");
         h.screenshot(window, &shot);
         eprintln!("squiggles screenshot: {}", shot.display());
+    }
+
+    /// Put the pointer over `needle` in the Write view's `path` section,
+    /// as a mouse would — the editor works out where the text is drawn.
+    fn hover_text(h: &mut Harness, window: AnyWindowHandle, path: &str, needle: &str) {
+        let studio = h.studio(window).expect("open");
+        let editor = h
+            .read(|cx| studio.read(cx).manuscript.read(cx).section_editor(path))
+            .expect("mounted");
+        let at = h.read(|cx| {
+            let state = editor.read(cx);
+            let start = state.value().find(needle).expect("the text is there");
+            state.range_to_bounds(&(start..start + needle.len()))
+        });
+        let bounds = at.expect("the text is on screen");
+        let centre = bounds.center();
+        h.hover(window, f32::from(centre.x), f32::from(centre.y));
+        h.advance(std::time::Duration::from_millis(400));
+    }
+
+    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a noir themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
+
+    fn linted_project() -> std::path::PathBuf {
+        let dir = scratch_dir("linted");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(dir.join("story.ink"), LINTED).expect("story");
+        dir
+    }
+
+    /// The hover card lists every problem under the pointer, the way the
+    /// web does: label, message, code — and for a misspelling, its fixes
+    /// and "Add to dictionary", which writes `brink.toml`.
+    #[test]
+    fn the_hover_card_lists_problems_and_adds_to_the_dictionary() {
+        let mut h = Harness::new();
+        let window = h.open(&linted_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let prose_ready = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                editor
+                    .read(cx)
+                    .diagnostics()
+                    .is_some_and(|set| set.iter().any(|d| d.message.contains("noir")))
+            })
+        });
+        assert!(prose_ready, "the misspelling is linted");
+
+        hover_text(&mut h, window, "story.ink", "noir");
+        let under = h.read(|cx| {
+            editor
+                .read(cx)
+                .pointer_diagnostics()
+                .iter()
+                .map(|d| d.message.to_string())
+                .collect::<Vec<_>>()
+        });
+        assert!(
+            under.iter().any(|m| m.contains("noir")),
+            "the card has the lint under the pointer: {under:?}"
+        );
+        let shot = scratch_dir("shot").join("card-spelling.png");
+        h.screenshot(window, &shot);
+        eprintln!("card screenshot: {}", shot.display());
+
+        hover_text(&mut h, window, "story.ink", "nonexistent");
+        let shot = scratch_dir("shot").join("card-error.png");
+        h.screenshot(window, &shot);
+        eprintln!("card screenshot: {}", shot.display());
+
+        h.dispatch(
+            window,
+            crate::hover_card::AddToDictionary {
+                word: "noir".to_owned(),
+            },
+        );
+        let config = h.read(|cx| {
+            let project = studio.read(cx).project.read(cx);
+            project
+                .config_path()
+                .and_then(|p| project.loaded_source(p))
+                .map(str::to_owned)
+        });
+        assert!(
+            config
+                .as_deref()
+                .is_some_and(|c| c.contains("dictionary") && c.contains("noir")),
+            "the word is in brink.toml: {config:?}"
+        );
+        let gone = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                editor
+                    .read(cx)
+                    .diagnostics()
+                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("noir")))
+            })
+        });
+        assert!(gone, "and once it is a word, the lint is gone");
+    }
+
+    /// A prose fix from the card replaces the misspelled word, as an edit.
+    #[test]
+    fn a_prose_fix_replaces_the_word() {
+        let mut h = Harness::new();
+        let window = h.open(&linted_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let start = LINTED.find("noir").expect("the word");
+        h.app_window(window, |window, cx| {
+            crate::hover_card::apply_fix(&editor, start..start + 4, "nor", window, cx);
+        });
+        let text = h.read(|cx| editor.read(cx).value().to_string());
+        assert!(text.contains("It's a nor themed card."), "{text}");
+        let saved_in_project = h.read(|cx| {
+            studio
+                .read(cx)
+                .project
+                .read(cx)
+                .loaded_source("story.ink")
+                .is_some_and(|s| s.contains("a nor themed"))
+        });
+        assert!(
+            saved_in_project,
+            "the edit reached the project like any keystroke"
+        );
+    }
+
+    /// While a story runs, a hover over a variable can say what it holds
+    /// — and stops saying so once the sources move under the session.
+    #[test]
+    fn a_running_storys_values_reach_the_hover_until_it_goes_stale() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        let note = |h: &mut Harness| h.read(|cx| crate::hover_card::runtime_note("gold", cx));
+        let live = h.settle_until(std::time::Duration::from_secs(10), |h| note(h).is_some());
+        assert!(live, "the global's value is published while the story runs");
+        assert_eq!(
+            note(&mut h).as_deref(),
+            Some("`gold = 5` \u{2014} global, runtime")
+        );
+        assert_eq!(
+            h.read(|cx| crate::hover_card::runtime_note("nobody", cx)),
+            None,
+            "a name the story doesn't hold says nothing"
+        );
+
+        // An edit leaves the session on an older program: no value then.
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                let end = state.value().len();
+                state.set_selected_range(end..end, cx);
+                state.replace("// edited\n", window, cx);
+            });
+        });
+        let quiet = h.settle_until(std::time::Duration::from_secs(10), |h| note(h).is_none());
+        assert!(
+            quiet,
+            "a stale session's values aren't offered as the truth"
+        );
+    }
+
+    /// Paused, a frame's local shadows the global of the same name.
+    #[test]
+    fn a_paused_frames_local_shadows_the_global() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            crate::hover_card::publish_runtime(
+                crate::hover_card::RuntimeValues {
+                    globals: vec![("x".to_owned(), "1".to_owned())],
+                    locals: vec![("x".to_owned(), "2".to_owned())],
+                },
+                cx,
+            );
+        });
+        assert_eq!(
+            h.read(|cx| crate::hover_card::runtime_note("x", cx))
+                .as_deref(),
+            Some("`x = 2` \u{2014} local, runtime")
+        );
+    }
+
+    /// Typing a call shows its parameters: `(` opens the hint on the
+    /// first, `,` moves it on, and leaving the call puts it away.
+    #[test]
+    fn typing_a_call_shows_its_parameters() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("sig");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nHello.\n-> DONE\n=== function greet(name, times) ===\n~ return name\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let after_hello = "-> start\n=== start ===\nHello.".len();
+        let type_at_caret = |h: &mut Harness, text: &str| {
+            let text = text.to_owned();
+            h.app_window(window, |window, cx| {
+                editor.update(cx, |state, cx| state.replace(&text, window, cx));
+            });
+        };
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_selected_range(after_hello..after_hello, cx)
+            });
+        });
+        let hint = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .signature_hint()
+                    .showing()
+                    .map(|s| (s.label.clone(), s.active))
+            })
+        };
+
+        type_at_caret(&mut h, " {greet(");
+        let shown = h.settle_until(std::time::Duration::from_secs(10), |h| hint(h).is_some());
+        assert!(shown, "`(` opens the hint");
+        let (label, active) = hint(&mut h).expect("showing");
+        assert!(label.contains("name") && label.contains("times"), "{label}");
+        assert_eq!(active, 0);
+
+        type_at_caret(&mut h, "\"Ada\", ");
+        let moved = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            hint(h).is_some_and(|(_, active)| active == 1)
+        });
+        assert!(
+            moved,
+            "`,` moves it to the next parameter: {:?}",
+            hint(&mut h)
+        );
+        let shot = scratch_dir("shot").join("signature.png");
+        h.screenshot(window, &shot);
+        eprintln!("signature screenshot: {}", shot.display());
+
+        type_at_caret(&mut h, "2)}");
+        let gone = h.settle_until(std::time::Duration::from_secs(10), |h| hint(h).is_none());
+        assert!(gone, "leaving the call puts it away: {:?}", hint(&mut h));
     }
 
     /// The picture: the bare page, with its chip.

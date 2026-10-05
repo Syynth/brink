@@ -74,6 +74,10 @@ pub struct PlayState {
     pub globals: Vec<(String, String)>,
     /// Call frames, innermost first: `(kind, location)`.
     pub call_stack: Vec<(String, Option<String>)>,
+    /// Each call frame's named locals as `(name, value)`, innermost frame
+    /// first (parallel to `call_stack`). Compiler-minted temps are left out,
+    /// as the studio hides them; a frame without debug info has none.
+    pub locals: Vec<Vec<(String, String)>>,
     /// Visit counts by path, sorted by path — anonymous containers are
     /// left out, as the runtime's own path-resolved list does.
     pub visits: Vec<(String, u32)>,
@@ -547,6 +551,33 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
     }
 }
 
+/// A runtime value as the studio shows one — the web's
+/// `debugValueDisplay`, so a hover reads the same in both studios.
+#[must_use]
+pub fn debug_value_display(value: &brink_runtime::DebugValue) -> String {
+    use brink_runtime::DebugValue as V;
+    match value {
+        V::Int(n) => n.to_string(),
+        V::Float(f) => f.to_string(),
+        V::Bool(b) => b.to_string(),
+        V::Str(s) => serde_json::to_string(s).unwrap_or_else(|_| format!("{s:?}")),
+        V::Null => "null".to_owned(),
+        V::List(members) => format!("({})", members.join(", ")),
+        V::DivertTarget(path) => format!("-> {}", path.as_deref().unwrap_or("?")),
+        V::Struct { name, fields } => format!(
+            "{}{{{}}}",
+            name.as_deref().unwrap_or("struct"),
+            fields
+                .iter()
+                .map(|(n, v)| format!("{n}: {}", debug_value_display(v)))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        V::Handle { kind, id } => format!("{kind}#{id}"),
+        V::Other(display) => display.clone(),
+    }
+}
+
 /// The file and 1-based line the flow is stopped on.
 fn current_line(play: &Play) -> Option<(String, u32)> {
     let position = play.story.debug_snapshot().position?;
@@ -650,6 +681,18 @@ fn snapshot(story: &Story<FastRng>) -> PlayState {
             .globals
             .into_iter()
             .map(|g| (g.name, g.value))
+            .collect(),
+        locals: snap
+            .call_stack
+            .iter()
+            .map(|f| {
+                f.locals
+                    .iter()
+                    .flatten()
+                    .filter(|l| !l.synthetic)
+                    .map(|l| (l.name.clone(), debug_value_display(&l.value)))
+                    .collect()
+            })
             .collect(),
         call_stack: snap
             .call_stack

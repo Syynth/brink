@@ -24,13 +24,18 @@
 use std::ops::Range;
 use std::rc::Rc;
 
+use brink_gpui_model::prose::ProseFix;
 use brink_gpui_model::query::HoverTarget;
+use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Font, FontWeight, Global, InteractiveText, IntoElement, ParentElement as _,
-    SharedString, StrikethroughStyle, StyleRefinement, Styled as _, StyledText, TextRun,
-    UnderlineStyle, Window, div, px,
+    AnyElement, App, Font, FontWeight, Global, InteractiveText, SharedString, StrikethroughStyle,
+    StyleRefinement, StyledText, TextRun, UnderlineStyle, Window, div, px,
 };
-use gpui_component::{ActiveTheme as _, input::HoverRenderer, v_flex};
+use gpui_component::{
+    ActiveTheme as _, h_flex,
+    input::{HoverCard, HoverRenderer},
+    v_flex,
+};
 
 /// Go to a hover link's target. The studio decides where that is: the
 /// manuscript in Write mode, a tab in Script.
@@ -40,6 +45,109 @@ pub struct GoToHoverTarget {
     pub path: String,
     pub start: usize,
     pub end: usize,
+}
+
+/// Add a misspelled word to the project's `[prose] dictionary` — the
+/// spelling card's "Add to dictionary". The studio writes `brink.toml`.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = hover, no_json)]
+pub struct AddToDictionary {
+    pub word: String,
+}
+
+/// A prose lint's fixes, as a squiggle's `data` carries them.
+pub(crate) fn fixes_to_data(fixes: &[ProseFix]) -> serde_json::Value {
+    serde_json::Value::Array(
+        fixes
+            .iter()
+            .map(|fix| match fix {
+                ProseFix::Replace(text) => serde_json::json!({ "replace": text }),
+                ProseFix::Remove => serde_json::json!({ "remove": true }),
+            })
+            .collect(),
+    )
+}
+
+/// The fixes back out of a squiggle's `data`; none when it carries none.
+pub(crate) fn prose_fixes(data: Option<&serde_json::Value>) -> Vec<ProseFix> {
+    data.and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    if let Some(text) = item.get("replace").and_then(serde_json::Value::as_str) {
+                        Some(ProseFix::Replace(text.to_owned()))
+                    } else {
+                        item.get("remove").map(|_| ProseFix::Remove)
+                    }
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// A prose fix, applied: the lint's span becomes `text` (empty removes it),
+/// as an edit the author made — so it is undoable, and the section or tab
+/// reports it to the project like any keystroke.
+pub(crate) fn apply_fix(
+    editor: &gpui::Entity<gpui_component::input::EditorState>,
+    range: Range<usize>,
+    text: &str,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    editor.update(cx, |state, cx| {
+        state.set_selected_range(range, cx);
+        state.replace(text, window, cx);
+    });
+}
+
+/// What a running story holds, for a hover to show (`runtime_note`).
+/// Empty unless a story is live and in sync; `locals` only while the
+/// debugger has it paused (the innermost frame's).
+#[derive(Default, Clone)]
+pub(crate) struct RuntimeValues {
+    pub globals: Vec<(String, String)>,
+    pub locals: Vec<(String, String)>,
+}
+
+impl Global for RuntimeValues {}
+
+/// The State panel's say on what the story holds now.
+pub(crate) fn publish_runtime(values: RuntimeValues, cx: &mut App) {
+    cx.set_global(values);
+}
+
+/// What a hover over `name` adds while a story runs — the web's
+/// `runtimeValueNote`: a paused frame's local first (it shadows the
+/// global), then the global; `None` when neither holds it.
+pub(crate) fn runtime_note(name: &str, cx: &App) -> Option<String> {
+    let values = cx.try_global::<RuntimeValues>()?;
+    if let Some((_, value)) = values.locals.iter().find(|(n, _)| n == name) {
+        return Some(format!("`{name} = {value}` \u{2014} local, runtime"));
+    }
+    let (_, value) = values.globals.iter().find(|(n, _)| n == name)?;
+    Some(format!("`{name} = {value}` \u{2014} global, runtime"))
+}
+
+/// The identifier spanning byte `offset` in `text`, and where it is — the
+/// web's `identifierAt`. Never a number.
+pub(crate) fn identifier_at(text: &str, offset: usize) -> Option<(String, Range<usize>)> {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let offset = offset.min(text.len());
+    let start = text[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| word(*c))
+        .last()
+        .map_or(offset, |(i, _)| i);
+    let end = text[offset..]
+        .char_indices()
+        .find(|(_, c)| !word(*c))
+        .map_or(text.len(), |(i, _)| offset + i);
+    let name = &text[start..end];
+    (!name.is_empty() && !name.starts_with(|c: char| c.is_ascii_digit()))
+        .then(|| (name.to_owned(), start..end))
 }
 
 /// The targets of the hover most recently answered, beside its content.
@@ -62,11 +170,12 @@ pub(crate) fn remember(content: &str, links: Vec<Option<HoverTarget>>, cx: &mut 
 
 /// Draw every editor's hover with this card from now on.
 pub(crate) fn install(cx: &mut App) {
+    // Each section pads itself, so the rules between them run edge to edge.
     let card = StyleRefinement::default()
-        .px(px(12.))
-        .py(px(9.))
+        .p_0()
         .rounded(px(8.))
-        .max_w(px(480.));
+        .overflow_hidden()
+        .max_w(px(460.));
     gpui_component::input::set_hover_renderer(
         HoverRenderer {
             render: Rc::new(render),
@@ -162,8 +271,51 @@ fn link(rest: &str) -> Option<(Piece, usize)> {
     Some((Piece::Link { label, code, index }, close + 3 + end + 1))
 }
 
-/// The card's content.
-fn render(hover: &lsp_types::Hover, _window: &mut Window, cx: &mut App) -> AnyElement {
+/// The whole card: the hover section if the provider answered, then a
+/// section listing every problem under the pointer — one card, as the web
+/// stacks them (`.cm-tooltip-section`), with a rule between.
+fn render(card: &HoverCard, window: &mut Window, cx: &mut App) -> AnyElement {
+    let rule = palette(cx).border;
+    // The card sits inside the editor, whose text style is the code face;
+    // the web's card is in the UI face, with code (and fixes) in mono.
+    let ui = cx.theme().font_family.clone();
+    let mut sections: Vec<AnyElement> = Vec::new();
+    if let Some(hover) = &card.hover {
+        sections.push(hover_section(hover, cx));
+    }
+    if !card.diagnostics.is_empty() {
+        sections.push(problems_section(card, window, cx));
+    }
+    v_flex()
+        .font_family(ui)
+        .children(sections.into_iter().enumerate().map(|(ix, section)| {
+            div()
+                .when(ix > 0, |el| el.border_t_1().border_color(rule))
+                .child(section)
+        }))
+        .into_any_element()
+}
+
+/// The theme's colours, as the card names them.
+fn palette(cx: &App) -> Colours {
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    let hsla = brink_gpui_shell::theme::hsla;
+    Colours {
+        fg: hsla(tokens.fg),
+        muted: hsla(tokens.fg_muted),
+        accent: hsla(tokens.accent),
+        info: hsla(tokens.info),
+        chip: hsla(tokens.surface_bg),
+        error: hsla(tokens.error),
+        warning: hsla(tokens.warning),
+        panel: hsla(tokens.panel_bg),
+        border: hsla(tokens.border).opacity(0.55),
+        solid_border: hsla(tokens.border),
+    }
+}
+
+/// The symbol's card: one row per line of `brink_ide`'s markdown.
+fn hover_section(hover: &lsp_types::Hover, cx: &mut App) -> AnyElement {
     let content = match &hover.contents {
         lsp_types::HoverContents::Markup(markup) => markup.value.clone(),
         lsp_types::HoverContents::Scalar(lsp_types::MarkedString::String(s)) => s.clone(),
@@ -185,16 +337,7 @@ fn render(hover: &lsp_types::Hover, _window: &mut Window, cx: &mut App) -> AnyEl
         .map(|held| held.links.clone())
         .unwrap_or_default();
 
-    let tokens = brink_gpui_shell::theme::current(cx).tokens;
-    let hsla = brink_gpui_shell::theme::hsla;
-    let colours = Colours {
-        fg: hsla(tokens.fg),
-        muted: hsla(tokens.fg_muted),
-        accent: hsla(tokens.accent),
-        info: hsla(tokens.info),
-        chip: hsla(tokens.surface_bg),
-    };
-    let border = hsla(tokens.border).opacity(0.55);
+    let colours = palette(cx);
     let theme = cx.theme();
     let ui = gpui::font(theme.font_family.clone());
     let mono = gpui::font(theme.mono_font_family.clone());
@@ -223,15 +366,195 @@ fn render(hover: &lsp_types::Hover, _window: &mut Window, cx: &mut App) -> AnyEl
                 }
             });
         div()
-            .when_first(first, border)
+            .when_first(first, colours.border)
             .child(line_el)
             .into_any_element()
     });
     v_flex()
+        .px(px(12.))
+        .py(px(9.))
         .gap(px(5.))
         .text_sm()
         .line_height(gpui::relative(1.55))
         .children(rows)
+        .into_any_element()
+}
+
+/// Every problem under the pointer, one row each, ruled between
+/// (`.cm-tooltip-lint` > `li.cm-diagnostic`).
+fn problems_section(card: &HoverCard, window: &mut Window, cx: &mut App) -> AnyElement {
+    let colours = palette(cx);
+    let rows: Vec<AnyElement> = card
+        .diagnostics
+        .iter()
+        .enumerate()
+        .map(|(ix, entry)| problem_row(ix, entry, &card.editor, &colours, window, cx))
+        .collect();
+    v_flex()
+        .children(rows.into_iter().enumerate().map(|(ix, row)| {
+            div()
+                .when(ix > 0, |el| el.border_t_1().border_color(colours.border))
+                .child(row)
+        }))
+        .into_any_element()
+}
+
+/// One problem: its label (the severity, or a prose lint's kind), its
+/// message as written, its code underneath, and — for a prose lint — the
+/// checker's fixes and, for a misspelling, "Add to dictionary".
+fn problem_row(
+    ix: usize,
+    entry: &gpui_component::highlighter::DiagnosticEntry,
+    editor: &gpui::Entity<gpui_component::input::EditorState>,
+    colours: &Colours,
+    _window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    use gpui_component::highlighter::DiagnosticSeverity as S;
+    let code = entry
+        .code
+        .as_ref()
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    let prose_kind = code.strip_prefix("prose.").map(str::to_owned);
+    let (label, label_colour) = match (&prose_kind, entry.severity) {
+        (Some(kind), _) => (kind.to_lowercase(), colours.muted),
+        (None, S::Error) => ("error".to_owned(), colours.error),
+        (None, S::Warning) => ("warning".to_owned(), colours.warning),
+        // The web has three severities; an info and a hint read alike.
+        (None, S::Info | S::Hint) => ("info".to_owned(), colours.info),
+    };
+    let source = match &prose_kind {
+        Some(kind) => format!("prose:{kind}"),
+        None => code.clone(),
+    };
+    let mono = gpui::font(cx.theme().mono_font_family.clone());
+    // `.cm-prose-fix:hover` — the primary fix's accent at 14%, the rest
+    // on the surface colour.
+    let soft = colours.accent.opacity(0.14);
+    let hover_bg = colours.chip;
+    let hover_fg = colours.fg;
+
+    let mut actions: Vec<AnyElement> = Vec::new();
+    if prose_kind.is_some() {
+        let range = entry.range.clone();
+        for (n, fix) in prose_fixes(entry.data.as_ref()).into_iter().enumerate() {
+            let (shown, text) = match &fix {
+                ProseFix::Replace(text) => (text.clone(), text.clone()),
+                ProseFix::Remove => ("Remove".to_owned(), String::new()),
+            };
+            let editor = editor.clone();
+            let range = range.clone();
+            let primary = n == 0;
+            actions.push(
+                div()
+                    .id(SharedString::from(format!("prose-fix-{ix}-{n}")))
+                    .px(px(11.))
+                    .py(px(5.))
+                    .min_h(px(26.))
+                    .rounded(px(5.))
+                    .border_1()
+                    .border_color(if primary {
+                        colours.accent
+                    } else {
+                        colours.solid_border
+                    })
+                    .bg(colours.panel)
+                    .text_color(if primary { colours.accent } else { colours.fg })
+                    .font(mono.clone())
+                    .text_xs()
+                    .cursor_pointer()
+                    .hover(move |s| s.bg(if primary { soft } else { hover_bg }))
+                    .child(shown)
+                    .on_click(move |_, window, cx| {
+                        apply_fix(&editor, range.clone(), &text, window, cx);
+                    })
+                    .into_any_element(),
+            );
+        }
+        if prose_kind.as_deref() == Some("Spelling") {
+            let word = editor
+                .read(cx)
+                .value()
+                .get(entry.range.clone())
+                .map(str::to_owned);
+            if let Some(word) = word.filter(|w| !w.trim().is_empty()) {
+                actions.push(
+                    div()
+                        .id(SharedString::from(format!("prose-dict-{ix}")))
+                        .px(px(11.))
+                        .py(px(5.))
+                        .min_h(px(26.))
+                        .rounded(px(5.))
+                        .border_1()
+                        .border_dashed()
+                        .border_color(colours.solid_border)
+                        .text_color(colours.muted)
+                        .text_xs()
+                        .cursor_pointer()
+                        .hover(move |s| s.text_color(hover_fg))
+                        .child("Add to dictionary")
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(AddToDictionary { word: word.clone() }),
+                                cx,
+                            );
+                        })
+                        .into_any_element(),
+                );
+            }
+        }
+    }
+
+    v_flex()
+        .px(px(12.))
+        .py(px(9.))
+        .gap(px(6.))
+        .child({
+            // Label and message as ONE run of text — the web's
+            // `.cm-diag-body`: the label inline, the message wrapping
+            // under it. (The kit lays a pop-up out at its contents' least
+            // width, so two boxes side by side wrapped the message to a
+            // word a line.)
+            let label_len = label.len();
+            let message = entry.message.to_string();
+            let text = format!("{label}  {message}");
+            let ui = gpui::font(cx.theme().font_family.clone());
+            let run = |len: usize, font: Font, color: gpui::Hsla| TextRun {
+                len,
+                font,
+                color,
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            let runs = vec![
+                run(
+                    label_len,
+                    Font {
+                        weight: FontWeight::SEMIBOLD,
+                        ..ui.clone()
+                    },
+                    label_colour,
+                ),
+                run(text.len() - label_len, ui, colours.fg),
+            ];
+            div()
+                .text_sm()
+                .line_height(gpui::relative(1.5))
+                .child(StyledText::new(text).with_runs(runs))
+        })
+        .when(!source.is_empty(), |el| {
+            el.child(
+                div()
+                    .text_size(px(10.))
+                    .text_color(colours.muted.opacity(0.85))
+                    .child(source),
+            )
+        })
+        .when(!actions.is_empty(), |el| {
+            el.child(h_flex().flex_wrap().gap(px(6.)).children(actions))
+        })
         .into_any_element()
 }
 
@@ -245,6 +568,12 @@ struct Colours {
     accent: gpui::Hsla,
     info: gpui::Hsla,
     chip: gpui::Hsla,
+    error: gpui::Hsla,
+    warning: gpui::Hsla,
+    panel: gpui::Hsla,
+    /// The 55% rule between sections and rows.
+    border: gpui::Hsla,
+    solid_border: gpui::Hsla,
 }
 
 /// A line ready to draw: its characters, a style per stretch, and the
@@ -363,6 +692,26 @@ impl FirstLine for gpui::Div {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_identifier_under_the_pointer_is_found_as_the_web_finds_it() {
+        let text = "~ gold = gold + 1";
+        assert_eq!(identifier_at(text, 4), Some(("gold".to_owned(), 2..6)));
+        assert_eq!(
+            identifier_at(text, 6),
+            Some(("gold".to_owned(), 2..6)),
+            "at its end"
+        );
+        assert_eq!(identifier_at(text, 16), None, "a number is no identifier");
+        assert_eq!(identifier_at(text, 1), None, "nor is a space");
+    }
+
+    #[test]
+    fn a_lints_fixes_survive_the_trip_through_a_squiggle() {
+        let fixes = vec![ProseFix::Replace("noir".to_owned()), ProseFix::Remove];
+        assert_eq!(prose_fixes(Some(&fixes_to_data(&fixes))), fixes);
+        assert!(prose_fixes(None).is_empty(), "a compiler squiggle has none");
+    }
 
     #[test]
     fn the_inline_subset_reads_as_the_web_reads_it() {

@@ -91,6 +91,8 @@ pub struct Player {
     start_at: Option<String>,
     /// Sources changed since the running story was compiled.
     stale: bool,
+    /// The last outcome left the flow stopped by the debugger.
+    paused: bool,
     /// Follow-in-editor is held off because the author is editing. An
     /// edit means they are reading their own text, not the story's;
     /// Play and Restart resume it. Mirrors the web's `followPaused`.
@@ -132,12 +134,21 @@ impl Player {
             running: false,
             start_at: None,
             stale: false,
+            paused: false,
             follow_paused: false,
             generation: 0,
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
             _subscriptions: vec![on_project],
         }
+    }
+
+    /// Whether the session is paused by the debugger — at a breakpoint,
+    /// after a step, on a watchpoint — rather than mid-turn or waiting on
+    /// the reader. What lets a hover show a frame's locals.
+    #[must_use]
+    pub fn is_paused(&self) -> bool {
+        self.running && self.paused
     }
 
     /// Whether a running story is older than the sources — the Player's
@@ -298,6 +309,12 @@ impl Player {
     }
 
     fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
+        // Every outcome says afresh whether the flow is held by the
+        // debugger: a stop that isn't the story's own end.
+        self.paused = outcome
+            .stop
+            .as_ref()
+            .is_some_and(|stop| stop.reason != "terminal");
         // A Start arms the marked lines against the program it just
         // compiled, and says which of them bound to nothing. The Project
         // owns the marks, so it is told: a mark that can never hit is

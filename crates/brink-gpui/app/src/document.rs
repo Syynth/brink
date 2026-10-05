@@ -89,6 +89,8 @@ pub struct Document {
     /// Whether a frame has been rendered — which is what gives the editor
     /// the layout a scroll-into-view is computed against.
     laid_out: bool,
+    /// Parameter hints while a call is being typed.
+    signature: crate::signature_help::SignatureHint,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -194,11 +196,25 @@ impl Document {
             state
         });
 
-        let on_change = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.on_edited(&editor, cx);
-            }
-        });
+        let on_change = cx.subscribe(
+            &editor,
+            |this, editor, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    this.on_edited(&editor, cx);
+                    let (project, path) = (this.project.clone(), this.path.clone());
+                    crate::signature_help::SignatureHint::edited(
+                        this,
+                        |doc: &mut Document| &mut doc.signature,
+                        &project,
+                        &path,
+                        &editor,
+                        cx,
+                    );
+                }
+                InputEvent::Blur if this.signature.dismiss() => cx.notify(),
+                _ => {}
+            },
+        );
         let on_project = cx.subscribe_in(
             &project,
             window,
@@ -263,6 +279,7 @@ impl Document {
             group: None,
             pending_reveal: None,
             laid_out: false,
+            signature: crate::signature_help::SignatureHint::default(),
             _subscriptions: vec![on_change, on_project, on_theme, on_settings],
         };
         // The editor may normalise what it was given (line endings); if it
@@ -634,6 +651,9 @@ pub(crate) fn prose_diagnostics(
             severity: Some(lsp::DiagnosticSeverity::HINT),
             code: Some(lsp::NumberOrString::String(format!("prose.{}", lint.kind))),
             message: lint.message.clone(),
+            // The fixes ride in `data`, where the hover card reads them
+            // back (`hover_card::prose_fixes`).
+            data: (!lint.fixes.is_empty()).then(|| crate::hover_card::fixes_to_data(&lint.fixes)),
             ..Default::default()
         })
         .collect()
@@ -1503,19 +1523,45 @@ impl HoverProvider for BrinkHover {
         // targets travel beside the markdown (`hover_card::remember`), and
         // recording them needs the app.
         cx.spawn(async move |cx| {
-            let QueryResult::Hover(Some(info)) = query.await? else {
-                return Ok(None);
+            let info = match query.await? {
+                QueryResult::Hover(info) => info,
+                _ => None,
             };
             let index = LineIndex::new(&source);
-            let markdown = info.markdown;
-            let links = info.links;
+            // While a story runs, the variable's value right now — appended
+            // to the hover, or alone when the word has none (the web's
+            // `augmentHoverWithRuntimeValue`).
+            let word = crate::hover_card::identifier_at(&source, offset);
+            let note = cx.update(|cx| {
+                word.as_ref()
+                    .and_then(|(name, _)| crate::hover_card::runtime_note(name, cx))
+            });
+            let (markdown, links, range) = match (info, note) {
+                (Some(info), note) => {
+                    let markdown = match note {
+                        Some(note) => format!("{}\n\n{note}", info.markdown),
+                        None => info.markdown,
+                    };
+                    (markdown, info.links, info.range)
+                }
+                (None, Some(note)) => {
+                    let range = word.map(|(_, r)| {
+                        (
+                            u32::try_from(r.start).unwrap_or(u32::MAX),
+                            u32::try_from(r.end).unwrap_or(u32::MAX),
+                        )
+                    });
+                    (note, Vec::new(), range)
+                }
+                (None, None) => return Ok(None),
+            };
             cx.update(|cx| crate::hover_card::remember(&markdown, links, cx));
             Ok(Some(lsp::Hover {
                 contents: lsp::HoverContents::Markup(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
                     value: markdown,
                 }),
-                range: info.range.map(|(start, end)| lsp::Range {
+                range: range.map(|(start, end)| lsp::Range {
                     start: position(&index, start),
                     end: position(&index, end),
                 }),
@@ -1693,12 +1739,21 @@ impl gpui::Render for Document {
         // the state every render — see `compiled_output.rs`, where a
         // construction-time flag was overwritten on the first frame).
         let readonly = self.project.read(cx).is_library(&self.path);
-        gpui_component::v_flex().size_full().child(
-            gpui_component::input::Editor::new(&self.editor)
-                .readonly(readonly)
-                .flex_1()
-                .bordered(false),
-        )
+        gpui_component::v_flex()
+            .size_full()
+            // Escape puts the parameter hint away, as the web's does.
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.signature.dismiss() {
+                    cx.notify();
+                }
+            }))
+            .child(
+                gpui_component::input::Editor::new(&self.editor)
+                    .readonly(readonly)
+                    .flex_1()
+                    .bordered(false),
+            )
+            .children(self.signature.render(cx))
     }
 }
 

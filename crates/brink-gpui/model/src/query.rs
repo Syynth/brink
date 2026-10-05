@@ -26,6 +26,12 @@ pub enum QueryKind {
         path: String,
         offset: u32,
     },
+    /// The call the cursor is in: its signature, and which argument it is
+    /// on — parameter hints while typing a call.
+    SignatureHelp {
+        path: String,
+        offset: u32,
+    },
     Completions {
         path: String,
         offset: u32,
@@ -169,6 +175,7 @@ pub enum QueryKind {
 #[derive(Debug, Clone)]
 pub enum QueryResult {
     Hover(Option<HoverInfo>),
+    SignatureHelp(Option<Signature>),
     Completions(Vec<Completion>),
     DocumentSymbols(Vec<Symbol>),
     InlayHints(Vec<InlayHint>),
@@ -395,6 +402,18 @@ pub struct InlayHint {
     pub label: String,
 }
 
+/// A call's signature, for parameter hints.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Signature {
+    /// The whole signature as shown, e.g. `greet(name, times)`.
+    pub label: String,
+    pub documentation: Option<String>,
+    /// Each parameter's label, as it appears inside `label`.
+    pub parameters: Vec<String>,
+    /// Which parameter the cursor is on.
+    pub active: u32,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoverInfo {
     /// Markdown. Links are `[text](#N)`, `N` indexing [`Self::links`] —
@@ -536,6 +555,9 @@ pub(crate) fn answer(
         | QueryKind::StoryGraph
         | QueryKind::Prose { .. } => QueryResult::Unavailable,
         QueryKind::Hover { path, offset } => QueryResult::Hover(hover(session, path, *offset)),
+        QueryKind::SignatureHelp { path, offset } => {
+            QueryResult::SignatureHelp(signature_help(session, path, *offset))
+        }
         QueryKind::Completions { path, offset } => match completions(session, path, *offset) {
             Some(items) => QueryResult::Completions(items),
             None => QueryResult::Unavailable,
@@ -898,6 +920,29 @@ pub(crate) fn clamp_offset(source: &str, offset: u32) -> u32 {
         at -= 1;
     }
     u32::try_from(at).unwrap_or(u32::MAX)
+}
+
+fn signature_help(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    offset: u32,
+) -> Option<Signature> {
+    let id = session.file_id(path)?;
+    let analysis = session.analysis()?;
+    let source = session.source(id)?;
+    let offset = clamp_offset(source, offset);
+    let info = brink_ide::signature::signature_help_with_dialect(
+        analysis,
+        source,
+        offset as usize,
+        session.language_dialect(),
+    )?;
+    Some(Signature {
+        label: info.label,
+        documentation: info.documentation,
+        parameters: info.parameters.into_iter().map(|p| p.label).collect(),
+        active: info.active_parameter,
+    })
 }
 
 fn hover(session: &brink_ide::session::IdeSession, path: &str, offset: u32) -> Option<HoverInfo> {
