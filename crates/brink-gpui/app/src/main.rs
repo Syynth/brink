@@ -16,6 +16,7 @@ mod fixes;
 mod graph_layout;
 #[cfg(test)]
 mod harness;
+mod hover_card;
 mod inkt_highlight;
 mod knots;
 mod landing;
@@ -2164,6 +2165,31 @@ impl Studio {
         self.play_at(None, window, cx);
     }
 
+    /// A hover card's "Defined in" link. Where it goes is the mode's
+    /// business: the manuscript holds every story file in Write; Script
+    /// opens a tab — and anything the manuscript does not hold (`std`)
+    /// can only be shown there.
+    fn go_to_hover_target(
+        &mut self,
+        target: &crate::hover_card::GoToHoverTarget,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let span = target.start..target.end;
+        let writing = self.workspace.read(cx).editor_view(cx) == EditorView::Write;
+        if writing && self.manuscript.read(cx).holds(&target.path) {
+            self.manuscript
+                .update(cx, |m, cx| m.reveal_span(&target.path, span, cx));
+            return;
+        }
+        if writing {
+            self.workspace.update(cx, |workspace, cx| {
+                workspace.require_editor_view(EditorView::Script, cx);
+            });
+        }
+        self.open(&target.path, Some(span), window, cx);
+    }
+
     /// The sidebar is Write mode's (W4); from Script the gesture can only
     /// mean "show me it".
     fn toggle_writing_sidebar(
@@ -2513,6 +2539,7 @@ impl Render for Studio {
             .on_action(cx.listener(Self::make_choice_body))
             .on_action(cx.listener(Self::play))
             .on_action(cx.listener(Self::toggle_player))
+            .on_action(cx.listener(Self::go_to_hover_target))
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
@@ -2613,6 +2640,8 @@ fn main() {
     });
     app.run(move |cx| {
         gpui_component::init(cx);
+        // The editor's hover card, drawn as the web studio draws it.
+        hover_card::install(cx);
         // Hide and the platform's own chords — before any window, since
         // the menu bar is the application's.
         brink_gpui_shell::menus::init(cx);
@@ -3216,6 +3245,105 @@ mod modes_driven {
             "the pop-up took {} px from the text",
             before - with_hover
         );
+    }
+
+    /// The hover card's "Defined in" link goes where the mode keeps the
+    /// file: a story file in place in the manuscript; anything the
+    /// manuscript doesn't hold, in Script.
+    #[test]
+    fn a_hover_link_goes_to_its_target_by_mode() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let second = OUTLINE_STORY.find("= second").expect("the stitch") + 2;
+        h.dispatch(
+            window,
+            crate::hover_card::GoToHoverTarget {
+                path: "story.ink".to_owned(),
+                start: second,
+                end: second + 6,
+            },
+        );
+        assert_eq!(
+            mode(&mut h, window),
+            EditorView::Write,
+            "a story file stays in Write"
+        );
+        let caret = h.read(|cx| {
+            studio
+                .read(cx)
+                .manuscript
+                .read(cx)
+                .caret()
+                .map(|(p, o)| (p.to_owned(), o))
+        });
+        assert_eq!(
+            caret,
+            Some(("story.ink".to_owned(), second + 6)),
+            "revealed in place"
+        );
+
+        h.dispatch(
+            window,
+            crate::hover_card::GoToHoverTarget {
+                path: "brink.toml".to_owned(),
+                start: 0,
+                end: 0,
+            },
+        );
+        assert_eq!(
+            mode(&mut h, window),
+            EditorView::Script,
+            "the rest opens in Script"
+        );
+    }
+
+    /// The picture: a hover card, as `brink_ide` writes one.
+    #[test]
+    fn the_hover_card_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let content = "**label** `clue_case_file.case_file_open`\n\n*Defined in* [`clues/clue_case_file.ink`](#0)".to_owned();
+        h.update(|cx| {
+            crate::hover_card::remember(
+                &content,
+                vec![Some(brink_gpui_model::query::HoverTarget {
+                    path: "story.ink".to_owned(),
+                    start: 0,
+                    end: 3,
+                })],
+                cx,
+            );
+            editor.update(cx, |state, cx| {
+                state.present_hover(
+                    4..8,
+                    lsp_types::Hover {
+                        contents: lsp_types::HoverContents::Markup(lsp_types::MarkupContent {
+                            kind: lsp_types::MarkupKind::Markdown,
+                            value: content.clone(),
+                        }),
+                        range: None,
+                    },
+                    cx,
+                );
+            });
+        });
+        h.settle();
+        let shot = scratch_dir("shot").join("hover-card.png");
+        h.screenshot(window, &shot);
+        eprintln!("hover screenshot: {}", shot.display());
     }
 
     /// The picture: the bare page, with its chip.

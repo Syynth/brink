@@ -1479,15 +1479,21 @@ impl HoverProvider for BrinkHover {
             },
             cx,
         );
-        cx.background_spawn(async move {
+        // On the foreground, unlike the other providers: the card's link
+        // targets travel beside the markdown (`hover_card::remember`), and
+        // recording them needs the app.
+        cx.spawn(async move |cx| {
             let QueryResult::Hover(Some(info)) = query.await? else {
                 return Ok(None);
             };
             let index = LineIndex::new(&source);
+            let markdown = info.markdown;
+            let links = info.links;
+            cx.update(|cx| crate::hover_card::remember(&markdown, links, cx));
             Ok(Some(lsp::Hover {
                 contents: lsp::HoverContents::Markup(lsp::MarkupContent {
                     kind: lsp::MarkupKind::Markdown,
-                    value: info.markdown,
+                    value: markdown,
                 }),
                 range: info.range.map(|(start, end)| lsp::Range {
                     start: position(&index, start),

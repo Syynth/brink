@@ -397,9 +397,24 @@ pub struct InlayHint {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HoverInfo {
-    /// Markdown, with link refs already stripped.
+    /// Markdown. Links are `[text](#N)`, `N` indexing [`Self::links`] —
+    /// `brink_ide::hover`'s own convention, kept so a renderer can follow
+    /// them; `brink_ide::hover::strip_link_refs` flattens them for one
+    /// that cannot.
     pub markdown: String,
     pub range: Option<(u32, u32)>,
+    /// Where each `#N` link goes: a root-relative path and a byte range.
+    /// A target in a file the session has no path for is `None`, and its
+    /// link renders as plain text.
+    pub links: Vec<Option<HoverTarget>>,
+}
+
+/// A hover link's destination.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HoverTarget {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -898,9 +913,22 @@ fn hover(session: &brink_ide::session::IdeSession, path: &str, offset: u32) -> O
         offset.into(),
         &session.db().file_metadata(),
     )?;
+    let links = info
+        .links
+        .iter()
+        .map(|link| {
+            let path = session.db().file_path(link.file)?.to_owned();
+            Some(HoverTarget {
+                path,
+                start: link.range.start().into(),
+                end: link.range.end().into(),
+            })
+        })
+        .collect();
     Some(HoverInfo {
-        markdown: brink_ide::hover::strip_link_refs(&info.content),
+        markdown: info.content,
         range: info.range.map(|r| (r.start().into(), r.end().into())),
+        links,
     })
 }
 
