@@ -163,6 +163,8 @@ pub struct ContinuousView {
     /// Each section's prose lints, and a fingerprint of the text they were
     /// checked against (`ProseCache`).
     prose: ProseCache,
+    /// Parameter hints while a call is being typed, in whichever section.
+    signature: crate::signature_help::SignatureHint,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -230,6 +232,7 @@ impl ContinuousView {
             caret: None,
             caret_watch: None,
             prose: ProseCache::default(),
+            signature: crate::signature_help::SignatureHint::default(),
             _subscriptions: vec![watch],
         }
     }
@@ -393,6 +396,12 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// The parameter hint, for the tests.
+    #[cfg(test)]
+    pub fn signature_hint(&self) -> &crate::signature_help::SignatureHint {
+        &self.signature
     }
 
     /// `path`'s section's editor.
@@ -654,11 +663,32 @@ impl ContinuousView {
                         this.follow_caret(focused_path.clone(), state.clone(), cx);
                     });
                 }
+                if matches!(event, InputEvent::Blur) {
+                    let _ = following.update(cx, |this, cx| {
+                        if this.signature.dismiss() {
+                            cx.notify();
+                        }
+                    });
+                }
                 if matches!(event, InputEvent::Change) {
                     let text = state.read(cx).value().to_string();
                     let origin = state.entity_id();
                     edited_project.update(cx, |project, cx| {
                         project.edit(&edited_path, text, Some(origin), cx);
+                    });
+                    // After the edit has gone to the worker: the hint asks
+                    // about the text as it now is, and the worker answers
+                    // in order.
+                    let _ = following.update(cx, |this, cx| {
+                        let project = this.project.clone();
+                        crate::signature_help::SignatureHint::edited(
+                            this,
+                            |view: &mut ContinuousView| &mut view.signature,
+                            &project,
+                            &focused_path,
+                            &state,
+                            cx,
+                        );
                     });
                 }
             },
@@ -849,6 +879,13 @@ impl Render for ContinuousView {
                         .child(heading(&path, column, cx)),
                 )
             })
+            .children(self.signature.render(cx))
+            // Escape puts the parameter hint away, as the web's does.
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.signature.dismiss() {
+                    cx.notify();
+                }
+            }))
     }
 }
 

@@ -35,6 +35,7 @@ mod settings_diagnostics;
 mod settings_formatting;
 mod settings_general;
 mod settings_prose;
+mod signature_help;
 mod state_view;
 mod story_graph;
 mod structural;
@@ -3665,6 +3666,80 @@ mod modes_driven {
                 .as_deref(),
             Some("`x = 2` \u{2014} local, runtime")
         );
+    }
+
+    /// Typing a call shows its parameters: `(` opens the hint on the
+    /// first, `,` moves it on, and leaving the call puts it away.
+    #[test]
+    fn typing_a_call_shows_its_parameters() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("sig");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nHello.\n-> DONE\n=== function greet(name, times) ===\n~ return name\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+            })
+            .expect("mounted");
+        let after_hello = "-> start\n=== start ===\nHello.".len();
+        let type_at_caret = |h: &mut Harness, text: &str| {
+            let text = text.to_owned();
+            h.app_window(window, |window, cx| {
+                editor.update(cx, |state, cx| state.replace(&text, window, cx));
+            });
+        };
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |state, cx| {
+                state.set_selected_range(after_hello..after_hello, cx)
+            });
+        });
+        let hint = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .manuscript
+                    .read(cx)
+                    .signature_hint()
+                    .showing()
+                    .map(|s| (s.label.clone(), s.active))
+            })
+        };
+
+        type_at_caret(&mut h, " {greet(");
+        let shown = h.settle_until(std::time::Duration::from_secs(10), |h| hint(h).is_some());
+        assert!(shown, "`(` opens the hint");
+        let (label, active) = hint(&mut h).expect("showing");
+        assert!(label.contains("name") && label.contains("times"), "{label}");
+        assert_eq!(active, 0);
+
+        type_at_caret(&mut h, "\"Ada\", ");
+        let moved = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            hint(h).is_some_and(|(_, active)| active == 1)
+        });
+        assert!(
+            moved,
+            "`,` moves it to the next parameter: {:?}",
+            hint(&mut h)
+        );
+        let shot = scratch_dir("shot").join("signature.png");
+        h.screenshot(window, &shot);
+        eprintln!("signature screenshot: {}", shot.display());
+
+        type_at_caret(&mut h, "2)}");
+        let gone = h.settle_until(std::time::Duration::from_secs(10), |h| hint(h).is_none());
+        assert!(gone, "leaving the call puts it away: {:?}", hint(&mut h));
     }
 
     /// The picture: the bare page, with its chip.

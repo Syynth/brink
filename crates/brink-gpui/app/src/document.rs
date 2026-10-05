@@ -89,6 +89,8 @@ pub struct Document {
     /// Whether a frame has been rendered — which is what gives the editor
     /// the layout a scroll-into-view is computed against.
     laid_out: bool,
+    /// Parameter hints while a call is being typed.
+    signature: crate::signature_help::SignatureHint,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -194,11 +196,25 @@ impl Document {
             state
         });
 
-        let on_change = cx.subscribe(&editor, |this, editor, event: &InputEvent, cx| {
-            if matches!(event, InputEvent::Change) {
-                this.on_edited(&editor, cx);
-            }
-        });
+        let on_change = cx.subscribe(
+            &editor,
+            |this, editor, event: &InputEvent, cx| match event {
+                InputEvent::Change => {
+                    this.on_edited(&editor, cx);
+                    let (project, path) = (this.project.clone(), this.path.clone());
+                    crate::signature_help::SignatureHint::edited(
+                        this,
+                        |doc: &mut Document| &mut doc.signature,
+                        &project,
+                        &path,
+                        &editor,
+                        cx,
+                    );
+                }
+                InputEvent::Blur if this.signature.dismiss() => cx.notify(),
+                _ => {}
+            },
+        );
         let on_project = cx.subscribe_in(
             &project,
             window,
@@ -263,6 +279,7 @@ impl Document {
             group: None,
             pending_reveal: None,
             laid_out: false,
+            signature: crate::signature_help::SignatureHint::default(),
             _subscriptions: vec![on_change, on_project, on_theme, on_settings],
         };
         // The editor may normalise what it was given (line endings); if it
@@ -1722,12 +1739,21 @@ impl gpui::Render for Document {
         // the state every render — see `compiled_output.rs`, where a
         // construction-time flag was overwritten on the first frame).
         let readonly = self.project.read(cx).is_library(&self.path);
-        gpui_component::v_flex().size_full().child(
-            gpui_component::input::Editor::new(&self.editor)
-                .readonly(readonly)
-                .flex_1()
-                .bordered(false),
-        )
+        gpui_component::v_flex()
+            .size_full()
+            // Escape puts the parameter hint away, as the web's does.
+            .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
+                if event.keystroke.key == "escape" && this.signature.dismiss() {
+                    cx.notify();
+                }
+            }))
+            .child(
+                gpui_component::input::Editor::new(&self.editor)
+                    .readonly(readonly)
+                    .flex_1()
+                    .bordered(false),
+            )
+            .children(self.signature.render(cx))
     }
 }
 
