@@ -102,9 +102,10 @@ use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
 /// How wide a pane's grab strip is, inside its edge.
 const GRIP: f32 = 5.;
 
-/// A sidebar row's height, and its header's.
+/// A sidebar row's height, and its header's: the shell's, so the columns'
+/// header rows end level with the Binder's and the manuscript's heading.
 const ROW_HEIGHT: f32 = 24.;
-const HEADER_HEIGHT: f32 = 30.;
+const HEADER_HEIGHT: f32 = brink_gpui_shell::tool_window::HEADER_HEIGHT;
 
 /// What Write mode asks of the studio.
 #[derive(Debug, Clone)]

@@ -252,15 +252,21 @@ impl Harness {
 
     /// Render `window` and write it to `path` as a PNG.
     pub fn screenshot(&mut self, window: AnyWindowHandle, path: &Path) {
+        self.capture(window)
+            .save(path)
+            .expect("writing the screenshot");
+    }
+
+    /// Render `window` and hand back its pixels, for a test that measures
+    /// the picture rather than looking at it.
+    pub fn capture(&mut self, window: AnyWindowHandle) -> image::RgbaImage {
         self.app()
             .update_window(window, |_, window, _| window.refresh())
             .ok();
         self.settle();
-        let image = self
-            .app()
+        self.app()
             .capture_screenshot(window)
-            .expect("the headless renderer is installed");
-        image.save(path).expect("writing the screenshot");
+            .expect("the headless renderer is installed")
     }
 
     /// Run everything that is ready, and give the real threads (the worker,

@@ -73,8 +73,9 @@ const SECTION_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
 /// author would keep in one piece.
 const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
 
-/// Height of the boundary heading between two files.
-const HEADING_HEIGHT: f32 = 30.0;
+/// Height of the boundary heading between two files: the shell's header
+/// height, so the sticky heading ends level with the sidebar's header row.
+const HEADING_HEIGHT: f32 = brink_gpui_shell::tool_window::HEADER_HEIGHT;
 
 /// Rows of scroll-past-the-end, on the LAST section only.
 ///

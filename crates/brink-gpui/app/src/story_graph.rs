@@ -348,6 +348,7 @@ impl StoryGraphView {
         h_flex()
             .w_full()
             .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
+            .flex_none()
             .gap_2()
             .px_2()
             .items_center()

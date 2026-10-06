@@ -1513,6 +1513,7 @@ impl Binder {
         h_flex()
             .w_full()
             .h(px(brink_gpui_shell::tool_window::HEADER_HEIGHT))
+            .flex_none()
             .px_2()
             .gap_1()
             .items_center()
