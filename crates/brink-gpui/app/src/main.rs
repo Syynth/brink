@@ -4018,6 +4018,41 @@ mod modes_driven {
         assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
     }
 
+    /// The next knot's header pushes the pinned strip up as it arrives,
+    /// rather than replacing it outright.
+    #[test]
+    fn the_next_knot_pushes_the_pinned_lines_up() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let row = h
+            .read(|cx| manuscript.read(cx).row_height("story.ink", cx))
+            .expect("laid out");
+        // `=== market ===` is line 123 (from zero); put it a row and a half
+        // below the top, under the two pinned rows.
+        let into = 92. + (123. - 1.5) * row;
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(into, cx)));
+        let settled = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.capture(window);
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+                .len()
+                == 2
+        });
+        assert!(settled, "the knot and stitch pin");
+        let pushes = h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_pushes(cx)));
+        assert_eq!(pushes.len(), 2);
+        assert!(
+            (pushes[0] + 0.5 * row).abs() < 1.,
+            "the strip is half a row up: {pushes:?}"
+        );
+        let shot = scratch_dir("shot").join("pushed.png");
+        h.screenshot(window, &shot);
+        eprintln!("pushed screenshot: {}", shot.display());
+    }
+
     /// Script's editors pin the same lines, from their own scroll.
     #[test]
     fn script_pins_the_knot_and_stitch_lines_too() {
@@ -4051,6 +4086,66 @@ mod modes_driven {
         let shot = scratch_dir("shot").join("script-pinned.png");
         h.screenshot(window, &shot);
         eprintln!("script pinned screenshot: {}", shot.display());
+    }
+
+    /// The arrow keys carry the caret out of one file and into the next:
+    /// the manuscript moves as one text.
+    #[test]
+    fn the_arrow_keys_cross_between_files() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let caret = |h: &mut Harness| {
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
+        };
+        let focus = |h: &mut Harness, path: &str| {
+            let handle = h
+                .read(|cx| manuscript.read(cx).section_focus(path, cx))
+                .expect("mounted");
+            h.app_window(window, |window, cx| window.focus(&handle, cx));
+        };
+        // `chapter_two`'s first line, column 4.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.reveal_span("chapter_two.ink", 4..4, cx)));
+        focus(&mut h, "chapter_two.ink");
+        h.capture(window);
+
+        // Up from its first line: the last line of the file above, which
+        // ends with an empty line after `-> END`.
+        h.press(window, "up");
+        h.capture(window);
+        let draft = "=== alternate_ending ===\nThe door stays shut.\n-> END\n";
+        assert_eq!(
+            caret(&mut h),
+            Some(("alternate_ending.ink".to_owned(), draft.len()))
+        );
+        // Up again stays in that file, as any editor would.
+        h.press(window, "up");
+        h.capture(window);
+        assert_eq!(
+            caret(&mut h).map(|(p, _)| p).as_deref(),
+            Some("alternate_ending.ink")
+        );
+
+        // Down twice: off its last line, into `chapter_two`'s first.
+        h.press(window, "down");
+        h.press(window, "down");
+        h.capture(window);
+        assert_eq!(caret(&mut h), Some(("chapter_two.ink".to_owned(), 0)));
+
+        // Left from the very start: the end of the file above.
+        h.press(window, "left");
+        h.capture(window);
+        assert_eq!(
+            caret(&mut h),
+            Some(("alternate_ending.ink".to_owned(), draft.len()))
+        );
+        // Right from its very end: back to the start.
+        h.press(window, "right");
+        h.capture(window);
+        assert_eq!(caret(&mut h), Some(("chapter_two.ink".to_owned(), 0)));
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

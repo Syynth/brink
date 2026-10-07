@@ -1740,9 +1740,12 @@ impl gpui_component::dock::Panel for Document {
 impl Document {
     /// The knot and stitch lines to pin at the top of the editor, from its
     /// scroll and the file's outline (asked for here when there is none).
-    fn pinned_lines(&mut self, cx: &mut Context<Self>) -> Vec<crate::sticky_lines::PinnedLine> {
+    fn pinned_lines(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> (Vec<crate::sticky_lines::PinnedLine>, Vec<gpui::Pixels>) {
         if language_of(&self.path) != BRINK {
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         }
         let Some(outline) = &self.outline else {
             if !self.outline_pending {
@@ -1765,31 +1768,32 @@ impl Document {
                 })
                 .detach();
             }
-            return Vec::new();
+            return (Vec::new(), Vec::new());
         };
         let state = self.editor.read(cx);
-        let (Some(within), Some(row)) = (state.visible_offset_range(), state.line_height()) else {
-            return Vec::new();
+        let Some(within) = state.visible_offset_range() else {
+            return (Vec::new(), Vec::new());
         };
         let top = -state.scroll_offset().y;
-        let Some(line) = crate::sticky_lines::line_at(state, top, within.clone()) else {
-            return Vec::new();
-        };
-        let under = crate::sticky_lines::line_at(state, top + row, within).unwrap_or(line);
-        crate::sticky_lines::pinned_at(outline, &state.value(), line, under)
+        crate::sticky_lines::pin(state, outline, top, within).unwrap_or_default()
     }
 
     /// The pinned lines' text, for the tests.
     #[cfg(test)]
     pub(crate) fn pinned_texts(&mut self, cx: &mut Context<Self>) -> Vec<String> {
-        self.pinned_lines(cx).into_iter().map(|l| l.text).collect()
+        self.pinned_lines(cx)
+            .0
+            .into_iter()
+            .map(|l| l.text)
+            .collect()
     }
 
     /// The pinned lines' overlay, over the top of the editor.
     fn render_pinned(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
-        let lines = self.pinned_lines(cx);
+        let (lines, pushes) = self.pinned_lines(cx);
         let path = self.path.to_string();
-        if self.pins.update(Some(&path), lines) {
+        let row = self.editor.read(cx).line_height().unwrap_or(gpui::px(20.));
+        if self.pins.update(Some(&path), lines, pushes, row) {
             cx.spawn(async move |this, cx| {
                 cx.background_executor()
                     .timer(crate::sticky_lines::PIN_OUT)
