@@ -248,6 +248,9 @@ impl Studio {
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
+        // Write mode's crumb sits over the manuscript's text.
+        let anchor = workspace.read(cx).writing_crumb_anchor();
+        manuscript.update(cx, |m, _| m.set_crumb_anchor(anchor));
         // Write mode's Files column: a second Binder, files only, with its
         // own expansion and selection — every file interaction the Binder
         // has, rather than a list that behaves differently.
@@ -2993,9 +2996,15 @@ mod modes_driven {
                 s.write.read(cx).crumb(cx)
             })
         };
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| crumb(h).is_some());
+        // The file shows at once; the knot and stitch once the outline lands.
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            crumb(h).is_some_and(|c| c.contains('\u{203a}'))
+        });
         assert!(found, "the outline never arrived");
-        assert_eq!(crumb(&mut h).as_deref(), Some("start \u{203a} second"));
+        assert_eq!(
+            crumb(&mut h).as_deref(),
+            Some("story.ink \u{203a} start \u{203a} second")
+        );
 
         // The structure column starts off, and its toggle widens the
         // sidebar — and the title bar's strip, which is told the width.

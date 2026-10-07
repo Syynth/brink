@@ -391,15 +391,25 @@ impl WriteView {
         self.manuscript.read(cx).current_file().map(str::to_owned)
     }
 
-    /// `knot › stitch` at the caret, for the title bar.
+    /// `file › knot › stitch` at the caret, for the title bar — as far
+    /// down as the caret is inside (decision log 2026-10-07).
     #[must_use]
     pub(crate) fn crumb(&self, cx: &App) -> Option<SharedString> {
         let (path, offset) = self.manuscript.read(cx).caret()?;
-        let (knot, stitch) = at_caret(self.symbols.get(path)?, offset)?;
-        Some(match stitch {
-            Some(stitch) => format!("{} \u{203a} {}", knot.name, stitch.name).into(),
-            None => knot.name.clone().into(),
-        })
+        let mut crumb = path.to_owned();
+        if let Some((knot, stitch)) = self
+            .symbols
+            .get(path)
+            .and_then(|symbols| at_caret(symbols, offset))
+        {
+            crumb.push_str(" \u{203a} ");
+            crumb.push_str(&knot.name);
+            if let Some(stitch) = stitch {
+                crumb.push_str(" \u{203a} ");
+                crumb.push_str(&stitch.name);
+            }
+        }
+        Some(crumb.into())
     }
 
     /// A manuscript separator's `⋯` menu, carried out: the file operations

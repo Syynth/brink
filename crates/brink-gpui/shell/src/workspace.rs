@@ -210,8 +210,14 @@ pub struct Workspace {
     /// traffic lights and its toggle in its own header row (W4) — and it
     /// slides with the sidebar, so the two never part mid-slide.
     writing_sidebar: Option<SidebarStrip>,
-    /// Where the caret is, after the story's name: `knot › stitch`.
+    /// Where the caret is, after the story's name: `file › knot › stitch`.
     writing_crumb: Option<SharedString>,
+    /// The window x the crumb starts at: where the manuscript's text
+    /// starts, so the title reads as the column's own heading. Written by
+    /// the manuscript as it lays out (`writing_crumb_anchor`), read here
+    /// as the bar draws; `None` until it has, and the crumb sits after the
+    /// strip as before.
+    writing_crumb_at: Rc<std::cell::Cell<Option<gpui::Pixels>>>,
     /// The window's fallback focus: where keys land before anything has
     /// been clicked, and where they return when the focused surface goes
     /// off screen. Without it a fresh window hears no shortcut at all.
@@ -276,6 +282,7 @@ impl Workspace {
             writing_buttons: Vec::new(),
             writing_sidebar: None,
             writing_crumb: None,
+            writing_crumb_at: Rc::default(),
             focus: cx.focus_handle(),
         };
         // A default keystroke an override took away is bound to `Unbound`
@@ -700,7 +707,14 @@ impl Workspace {
         }
     }
 
-    /// Say where the caret is, for the title bar: `knot › stitch`.
+    /// The cell the manuscript writes its text's left edge into, which
+    /// Write mode's crumb lines up with.
+    #[must_use]
+    pub fn writing_crumb_anchor(&self) -> Rc<std::cell::Cell<Option<gpui::Pixels>>> {
+        self.writing_crumb_at.clone()
+    }
+
+    /// Say where the caret is, for the title bar: `file › knot › stitch`.
     pub fn set_writing_crumb(&mut self, crumb: Option<SharedString>, cx: &mut Context<Self>) {
         if self.writing_crumb != crumb {
             self.writing_crumb = crumb;
@@ -1306,7 +1320,7 @@ impl Workspace {
     /// the app's buttons — Read and Play
     /// (`docs/gpui-writing-scripting-modes.md` §3.1). The sidebar toggle and
     /// the caret's knot › stitch arrive with their own slice.
-    fn render_writing_title(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn render_writing_title(&self, window: &Window, cx: &mut Context<Self>) -> AnyElement {
         let muted = cx.theme().muted_foreground;
         let buttons: Vec<AnyElement> = self
             .writing_buttons
@@ -1318,22 +1332,43 @@ impl Workspace {
             Some(crumb) => SharedString::from(format!("{} \u{b7} {crumb}", self.story_title)),
             None => self.story_title.clone(),
         };
+        let text = |title: SharedString| div().truncate().text_sm().text_color(muted).child(title);
+        // Over the manuscript's text, once it has said where that starts —
+        // placed in window coordinates, since the column moves with the
+        // sidebar and the window and the bar's own layout knows neither.
+        // Kept clear of the buttons at the right end.
+        // The text never sits left of the sidebar (it pushes the column),
+        // so only the traffic lights and the toggle need clearing.
+        let anchored_at = self
+            .writing_crumb_at
+            .get()
+            .filter(|x| *x > px(TRAFFIC_LIGHTS + WRITING_TOGGLE_ROOM));
+        let title_el = match anchored_at {
+            Some(x) => {
+                let room =
+                    (window.viewport_size().width - x - px(WRITING_BUTTONS_ROOM)).max(px(80.));
+                div()
+                    .flex_1()
+                    .child(
+                        gpui::anchored().position(gpui::point(x, px(0.))).child(
+                            h_flex()
+                                .h(TITLE_BAR_HEIGHT)
+                                .max_w(room)
+                                .items_center()
+                                .child(text(title)),
+                        ),
+                    )
+                    .into_any_element()
+            }
+            // Off the sidebar's edge, or the toggle's, by a step.
+            None => text(title).flex_1().min_w_0().pl_2().into_any_element(),
+        };
         h_flex()
             .flex_1()
             .min_w_0()
             .gap_2()
             .items_center()
-            .child(
-                div()
-                    .flex_1()
-                    .min_w_0()
-                    // Off the sidebar's edge, or the toggle's, by a step.
-                    .pl_2()
-                    .truncate()
-                    .text_sm()
-                    .text_color(muted)
-                    .child(title),
-            )
+            .child(title_el)
             .children(buttons)
             .into_any_element()
     }
@@ -1565,6 +1600,12 @@ const TRAFFIC_LIGHTS: f32 = 80.;
 #[cfg(not(target_os = "macos"))]
 const TRAFFIC_LIGHTS: f32 = 12.;
 
+/// Room the sidebar toggle takes after the traffic lights, and the room
+/// Write mode's buttons and the mode switch take at the bar's right end:
+/// what an anchored crumb keeps clear of.
+const WRITING_TOGGLE_ROOM: f32 = 40.;
+const WRITING_BUTTONS_ROOM: f32 = 240.;
+
 /// Asked on every render of the title bar: is this toggle on?
 pub type IsOn = Rc<dyn Fn(&App) -> bool>;
 
@@ -1611,7 +1652,7 @@ impl Render for Workspace {
         // persisted layout never learns Write was there.
         let writing = self.editor_view(cx) == EditorView::Write;
         let switcher = self.view_switcher(cx);
-        let writing_title = writing.then(|| self.render_writing_title(cx));
+        let writing_title = writing.then(|| self.render_writing_title(window, cx));
         let writing_leading = writing.then(|| self.render_writing_leading(cx));
         let status = (!writing).then(|| self.render_status(cx));
         let notices = self.render_notices(cx);

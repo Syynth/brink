@@ -170,6 +170,9 @@ pub struct ContinuousView {
     prose: ProseCache,
     /// Parameter hints while a call is being typed, in whichever section.
     signature: crate::signature_help::SignatureHint,
+    /// Where the title bar's crumb starts: written with the window x the
+    /// text starts at, each time that moves (`set_crumb_anchor`).
+    crumb_anchor: Option<Rc<std::cell::Cell<Option<gpui::Pixels>>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -244,6 +247,7 @@ impl ContinuousView {
             caret_watch: None,
             prose: ProseCache::default(),
             signature: crate::signature_help::SignatureHint::default(),
+            crumb_anchor: None,
             _subscriptions: vec![watch],
         }
     }
@@ -407,6 +411,12 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// Keep the title bar's crumb over the text: `cell` gets the window x
+    /// the text starts at, whenever that moves.
+    pub fn set_crumb_anchor(&mut self, cell: Rc<std::cell::Cell<Option<gpui::Pixels>>>) {
+        self.crumb_anchor = Some(cell);
     }
 
     /// The parameter hint, for the tests.
@@ -881,6 +891,30 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
+            // Where the text starts, for the title bar's crumb: offset 0's
+            // left edge in any laid-out section (they share the column, so
+            // any will do). Measured after layout and passed on only when
+            // it moves; the bar reads it as it draws, so a move asks for
+            // one more frame to show it.
+            .when_some(self.crumb_anchor.clone(), |el, cell| {
+                let editors = self.editors.clone();
+                el.child(
+                    gpui::canvas(
+                        move |_, window, cx| {
+                            let left = editors.borrow().values().find_map(|(editor, _)| {
+                                editor.read(cx).range_to_bounds(&(0..0)).map(|b| b.left())
+                            });
+                            if left.is_some() && cell.get() != left {
+                                cell.set(left);
+                                window.refresh();
+                            }
+                        },
+                        |_, (), _, _| {},
+                    )
+                    .absolute()
+                    .size_0(),
+                )
+            })
             .children(self.signature.render(cx))
             // Escape puts the parameter hint away, as the web's does.
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
