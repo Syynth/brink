@@ -1,6 +1,6 @@
 //! The **Continuous view** — the project as one manuscript.
 //!
-//! Every file in binder order in a single scroller, a heading between each,
+//! Every file in binder order in a single scroller, a chapter break opening each,
 //! scrolling straight through the boundaries
 //! (`packages/studio-shell/src/continuous-view.tsx`, ruled 2026-08-26).
 //!
@@ -38,8 +38,11 @@ use gpui::{
     WeakEntity, Window, div, list, prelude::FluentBuilder as _, px,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, h_flex,
+    ActiveTheme as _, IconName, Sizable as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Editor, EditorState, InputEvent},
+    menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
 
@@ -73,9 +76,10 @@ const SECTION_SIZE: gpui_component::Size = gpui_component::Size::XSmall;
 /// author would keep in one piece.
 const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
 
-/// Height of the boundary heading between two files: the shell's header
-/// height, so the sticky heading ends level with the sidebar's header row.
-const HEADING_HEIGHT: f32 = brink_gpui_shell::tool_window::HEADER_HEIGHT;
+/// Height of the chapter break that opens each file, and the space above
+/// its title. Fixed, so a reveal can count rows from a section's top.
+const SEPARATOR_HEIGHT: f32 = 92.0;
+const SEPARATOR_SPACE_ABOVE: f32 = 36.0;
 
 /// Rows of scroll-past-the-end, on the LAST section only.
 ///
@@ -174,6 +178,8 @@ pub struct ContinuousView {
 pub enum ManuscriptEvent {
     /// The caret moved to `offset` in `path` — or into another file.
     Caret { path: String, offset: usize },
+    /// A file separator's `⋯` menu asked for something.
+    File { path: String, action: FileAction },
 }
 
 impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
@@ -191,7 +197,11 @@ impl ContinuousView {
                     if this.read.on.get() {
                         this.sync_prose(cx);
                     }
+                    // Draft status is read off the analysis.
+                    cx.notify();
                 }
+                // The separators' unsaved dots.
+                ProjectEvent::Saved => cx.notify(),
                 ProjectEvent::SourceChanged {
                     path,
                     origin,
@@ -331,7 +341,7 @@ impl ContinuousView {
     /// per-file editors do not scroll: this list does.
     pub fn reveal(&mut self, path: &str, cx: &mut Context<Self>) {
         if let Some(index) = self.files.iter().position(|f| f == path) {
-            // The file's START under the sticky heading. `scroll_to_reveal_
+            // The file's START, its chapter break. `scroll_to_reveal_
             // item` would do the least scrolling that shows any of the item,
             // which for a long file below the viewport is its last screen —
             // a Binder click then landed on the file's end.
@@ -384,7 +394,7 @@ impl ContinuousView {
         let line_height = self
             .measured_line_height
             .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
-        let offset = (HEADING_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.0);
+        let offset = (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: px(offset),
@@ -801,13 +811,6 @@ impl Render for ContinuousView {
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
 
-        // The file the top of the scroller is currently inside — `list`
-        // reports its topmost visible item, which is exactly that.
-        let sticky = self
-            .files
-            .get(self.list.logical_scroll_top().item_ix)
-            .cloned();
-
         v_flex()
             .id("continuous")
             // The view's focus handle must be in the tree: the shell moves
@@ -847,11 +850,17 @@ impl Render for ContinuousView {
                         stats.0 += 1;
                         stats.1 = started.elapsed().as_secs_f64() * 1e3;
                     }
+                    let marks = {
+                        let project = project.read(cx);
+                        FileMarks {
+                            draft: project.is_draft(&path),
+                            entry: project.entry() == Some(path.as_str()),
+                            dirty: project.is_dirty(&path),
+                        }
+                    };
                     v_flex()
                         .w_full()
-                        // Only a boundary between two files gets a top edge:
-                        // the first heading sits under the title bar's own.
-                        .child(heading(&path, column, index > 0, cx))
+                        .child(separator(&path, column, marks, &me, cx))
                         .child(
                             // The column: centred in the room there is,
                             // never wider than the window allows.
@@ -872,17 +881,6 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
-            .when_some(sticky, |el, path| {
-                el.child(
-                    div()
-                        .absolute()
-                        .top_0()
-                        .left_0()
-                        .right_0()
-                        // Pinned under the title bar, whose edge is its top.
-                        .child(heading(&path, column, false, cx)),
-                )
-            })
             .children(self.signature.render(cx))
             // Escape puts the parameter hint away, as the web's does.
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -1038,43 +1036,183 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     Some(px(chars * ch + gutter))
 }
 
-/// The boundary between two files.
+/// What a file's separator shows about it, read off the project.
+#[derive(Clone, Copy, Default)]
+struct FileMarks {
+    /// Matched a `[project] drafts` glob (decision log: drafts are marked
+    /// in their heading, never left out).
+    draft: bool,
+    /// The story's entry file, drawn with the entry drop as in the Binder.
+    entry: bool,
+    /// Edits not yet saved.
+    dirty: bool,
+}
+
+/// What a separator's `⋯` menu asks of the manuscript's host.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileAction {
+    Play,
+    OpenInScript,
+    RevealInFiles,
+    Rename,
+    Delete,
+}
+
+/// The file's name as a chapter title: its path without the extension, in
+/// capitals, tracked with thin spaces (GPUI text has no letter-spacing).
+fn chapter_title(path: &str) -> String {
+    let stem = path
+        .rsplit_once('.')
+        .map_or(path, |(stem, _)| stem)
+        .to_uppercase();
+    let mut out = String::with_capacity(stem.len() * 4);
+    for (i, c) in stem.chars().enumerate() {
+        if i > 0 {
+            out.push('\u{2009}');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The boundary between two files: a chapter break (decision log
+/// 2026-10-07). Space, then the file's icon and its name in tracked
+/// capitals, centred over the column, over a short rule. An unsaved file
+/// shows a dot; a draft is drawn in the draft colour with a small badge.
+/// The `⋯` file menu shows on hover.
 ///
-/// GPUI has no `position: sticky`, so the manuscript draws this twice:
-/// inline at each boundary, and again as an overlay pinned to the top of the
-/// scroller showing whichever file is currently under it — which is what
-/// makes the heading read as sticky. `top_edge` is off where something
-/// above already draws the line, so it never doubles to 2px.
-fn heading(path: &str, column: Option<gpui::Pixels>, top_edge: bool, cx: &App) -> impl IntoElement {
+/// Nothing is pinned: the title bar's crumb names the cursor's file, and
+/// the knot and stitch at the top of the view pin as their own lines.
+fn separator(
+    path: &str,
+    column: Option<gpui::Pixels>,
+    marks: FileMarks,
+    me: &WeakEntity<ContinuousView>,
+    cx: &App,
+) -> impl IntoElement {
     let theme = cx.theme();
-    // The band runs the full width; its label sits over the column, so a
-    // file's name lines up with its text.
-    h_flex()
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    let draft_colour = brink_gpui_shell::theme::hsla(tokens.draft);
+    let (icon, icon_colour) = if marks.draft {
+        (icons::BrinkIcon::DropDraft, draft_colour)
+    } else if marks.entry {
+        (icons::BrinkIcon::DropEntryOutline, theme.primary)
+    } else {
+        (icons::BrinkIcon::Drop, theme.muted_foreground)
+    };
+    let name_colour = if marks.draft {
+        draft_colour
+    } else {
+        theme.foreground.opacity(0.8)
+    };
+    let rule = if marks.draft {
+        draft_colour.opacity(0.45)
+    } else {
+        theme.border
+    };
+    let group = SharedString::from(format!("separator-{path}"));
+    let menu = {
+        let me = me.clone();
+        let path = path.to_owned();
+        Button::new(SharedString::from(format!("separator-menu-{path}")))
+            .ghost()
+            .xsmall()
+            .icon(IconName::Ellipsis)
+            .dropdown_menu(move |menu, _, _| {
+                let act = |action: FileAction| {
+                    let me = me.clone();
+                    let path = path.clone();
+                    move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                        let path = path.clone();
+                        let _ = me.update(cx, |_, cx| {
+                            cx.emit(ManuscriptEvent::File { path, action });
+                        });
+                    }
+                };
+                let copy = {
+                    let path = path.clone();
+                    move |_: &gpui::ClickEvent, _: &mut Window, cx: &mut App| {
+                        cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
+                    }
+                };
+                menu.item(PopupMenuItem::new("Play from here").on_click(act(FileAction::Play)))
+                    .item(
+                        PopupMenuItem::new("Open in Script")
+                            .on_click(act(FileAction::OpenInScript)),
+                    )
+                    .item(
+                        PopupMenuItem::new("Reveal in Files")
+                            .on_click(act(FileAction::RevealInFiles)),
+                    )
+                    .separator()
+                    .item(PopupMenuItem::new("Rename\u{2026}").on_click(act(FileAction::Rename)))
+                    .item(PopupMenuItem::new("Copy path").on_click(copy))
+                    .separator()
+                    .item(PopupMenuItem::new("Delete\u{2026}").on_click(act(FileAction::Delete)))
+            })
+    };
+    v_flex()
+        .id(group.clone())
+        .group(group.clone())
         .w_full()
-        .h(px(HEADING_HEIGHT))
-        .justify_center()
-        .bg(theme.sidebar)
-        .when(top_edge, |el| el.border_t_1())
-        .border_b_1()
-        .border_color(theme.border)
+        .h(px(SEPARATOR_HEIGHT))
+        .pt(px(SEPARATOR_SPACE_ABOVE))
+        .items_center()
+        .gap(px(9.))
         .child(
+            // The column, so the title centres over the text rather than
+            // the window.
             h_flex()
                 .when_some(column, |el, width| el.w(width).max_w_full())
                 .when(column.is_none(), |el| el.w_full())
-                .h_full()
-                .px_4()
-                .gap_2()
-                .items_center()
-                .child(icons::icon(
-                    icons::BrinkIcon::Drop,
-                    px(12.),
-                    theme.muted_foreground,
-                ))
+                .h(px(22.))
+                .justify_center()
                 .child(
-                    div()
-                        .text_xs()
-                        .text_color(theme.foreground)
-                        .child(path.to_owned()),
+                    // The title itself, and the menu hung off its right end
+                    // out of the flow, so the title centres on its own.
+                    h_flex()
+                        .relative()
+                        .h_full()
+                        .items_center()
+                        .gap(px(8.))
+                        .child(icons::icon(icon, px(13.), icon_colour))
+                        .child(
+                            div()
+                                .text_xs()
+                                .text_color(name_colour)
+                                .child(chapter_title(path)),
+                        )
+                        .when(marks.draft, |el| {
+                            el.child(
+                                div()
+                                    .px(px(4.))
+                                    .rounded(px(3.))
+                                    .bg(draft_colour.opacity(0.14))
+                                    .text_size(px(8.5))
+                                    .text_color(draft_colour)
+                                    .child("D\u{2009}R\u{2009}A\u{2009}F\u{2009}T"),
+                            )
+                        })
+                        .when(marks.dirty, |el| {
+                            el.child(
+                                div()
+                                    .size(px(5.))
+                                    .rounded_full()
+                                    .bg(theme.foreground.opacity(0.7)),
+                            )
+                        })
+                        // Shown on hover, so a resting break is only its name.
+                        .child(
+                            div()
+                                .absolute()
+                                .left_full()
+                                .top(px(1.))
+                                .pl(px(6.))
+                                .invisible()
+                                .group_hover(group, |s| s.visible())
+                                .child(menu),
+                        ),
                 ),
         )
+        .child(div().w(px(36.)).h(px(1.)).bg(rule))
 }

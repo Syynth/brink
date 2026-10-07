@@ -1045,6 +1045,12 @@ impl Studio {
                 crate::write_view::WriteEvent::Outline(event) => {
                     this.on_outline(event, window, cx);
                 }
+                crate::write_view::WriteEvent::OpenInScript { path } => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.require_editor_view(EditorView::Script, cx);
+                    });
+                    this.open(path, None, window, cx);
+                }
             },
         );
         // The Files column's own events. Everything but Open is what the
@@ -3769,10 +3775,9 @@ mod modes_driven {
     }
 
     /// The header rows across the window end on one line: Script's Binder
-    /// header, editor tab strip and dock header; Write's Files header,
-    /// Structure header and the manuscript's file heading. Each is 1px of
-    /// edge under the title bar's 1px, never 2px, and never a step between
-    /// columns. The x positions are blank stretches of each header in the
+    /// header, editor tab strip and dock header; Write's Files header. Each
+    /// is 1px of edge under the title bar's 1px, never 2px, and never a
+    /// step between columns. The x positions are blank stretches of each header in the
     /// harness's 1280-wide window (2x).
     #[test]
     fn the_header_rows_end_on_one_line() {
@@ -3800,18 +3805,110 @@ mod modes_driven {
         let write = h.capture(window);
         let files = edge_rows(&mut h, &write, 192);
         assert_eq!(files, binder, "Write's Files header vs Script's Binder");
-        assert_eq!(
-            edge_rows(&mut h, &write, 1920),
-            files,
-            "Write: manuscript heading vs Files"
-        );
-        // The Structure column's header draws no edge of its own; only the
-        // title bar's crosses it.
+        // The Structure column's header and the manuscript (whose file
+        // breaks are chapter titles, not bands) draw no edge of their own;
+        // only the title bar's crosses them.
         assert_eq!(
             edge_rows(&mut h, &write, 768),
             files[..2],
             "Write: structure header"
         );
+        assert_eq!(
+            edge_rows(&mut h, &write, 1920),
+            files[..2],
+            "Write: manuscript"
+        );
+    }
+
+    /// Three files for the chapter breaks: the entry, a chapter it
+    /// includes, and a draft nothing includes.
+    fn chapters_project() -> std::path::PathBuf {
+        let dir = scratch_dir("chapters");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\ndrafts = [\"alternate_*.ink\"]\n",
+        )
+        .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE chapter_two.ink\n-> start\n=== start ===\nThe lamp gutters.\nThe rain keeps on.\n-> chapter_two\n",
+        )
+        .expect("writing the story");
+        std::fs::write(
+            dir.join("chapter_two.ink"),
+            "=== chapter_two ===\nMorning comes grey.\nSomeone knocks, twice.\n-> DONE\n",
+        )
+        .expect("writing the chapter");
+        std::fs::write(
+            dir.join("alternate_ending.ink"),
+            "=== alternate_ending ===\nThe door stays shut.\n-> END\n",
+        )
+        .expect("writing the draft");
+        dir
+    }
+
+    /// The picture: the chapter breaks — the entry, an unsaved chapter and
+    /// a draft.
+    #[test]
+    fn the_chapter_break_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.update(|cx| {
+            let project = studio.read(cx).project.clone();
+            project.update(cx, |p, cx| {
+                p.edit(
+                    "chapter_two.ink",
+                    "=== chapter_two ===\nMorning comes grey.\nSomeone knocks, twice.\n-> DONE\n\n"
+                        .into(),
+                    None,
+                    cx,
+                );
+            });
+        });
+        h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .project
+                    .read(cx)
+                    .is_draft("alternate_ending.ink")
+            })
+        });
+        // Over chapter_two's title, so its `⋯` shows.
+        h.hover(window, 640., 256.);
+        let shot = scratch_dir("shot").join("chapters.png");
+        h.screenshot(window, &shot);
+        eprintln!("chapters screenshot: {}", shot.display());
+    }
+
+    /// A separator's "Reveal in Files" opens the sidebar on that file.
+    #[test]
+    fn a_separator_reveals_its_file_in_the_sidebar() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.update(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            manuscript.update(cx, |_, cx| {
+                cx.emit(crate::continuous::ManuscriptEvent::File {
+                    path: "chapter_two.ink".into(),
+                    action: crate::continuous::FileAction::RevealInFiles,
+                });
+            });
+        });
+        h.settle();
+        let (open, selected) = h.read(|cx| {
+            let write = studio.read(cx).write.read(cx);
+            (
+                write.is_sidebar_open(),
+                write.files_selected(cx).map(|k| k.to_string()),
+            )
+        });
+        assert!(open, "the sidebar opened");
+        assert_eq!(selected.as_deref(), Some("chapter_two.ink"));
     }
 
     /// The picture: the sidebar open, the caret in a stitch.
