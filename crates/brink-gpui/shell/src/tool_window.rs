@@ -13,13 +13,13 @@ use crate::region::RailSlot;
 
 /// The height of a tool window's own header row.
 ///
-/// It is the kit's TAB-STRIP height (`dock/tab_panel.rs`, `px(30.)`), not a
-/// number of our own. The side docks draw no tab strip (`skin.rs`, ruled
+/// It is the kit's TAB-STRIP height (a medium `Tab`, `tab/tab.rs`
+/// `TabVariant::height`: `px(32.)`), not a number of our own. The side docks draw no tab strip (`skin.rs`, ruled
 /// 2026-09-05), so a panel's header is the thing that has to line up with
 /// the centre's tabs straight across the window — and four panels had each
 /// picked their own value (32, and three different content-plus-`py_1`
 /// heights), which is what made the seam visible.
-pub const HEADER_HEIGHT: f32 = 30.;
+pub const HEADER_HEIGHT: f32 = 32.;
 
 /// A centre tab's title for a panel that is NOT a file.
 ///

@@ -5743,3 +5743,11 @@
 - **STATUS:** tentative
 - **WHAT:** Write mode's manuscript gets a max width again: a centred column sized by a "Manuscript width" setting in characters (Settings ▸ Appearance; default 80, range 40–200, below 40 = full width). It's measured in the editor's monospace `ch`, so it follows ⌘=/⌘- and stays put when Read switches face. This supersedes W3's "left-aligned and stretches" for now. The Files column, the structure column and the Player can be dragged to new widths, within a range, and the widths are saved with the window layout.
 - **WHY:** The maintainer wants to try the column again after using the full-width manuscript ("i think i do want try re-adding"), so this is tentative. Characters, centring and a full-width escape were chosen over pixels or a fixed width so the column scales with the type and can be turned off. Panes are resizable like every other pane in the app, and the sizes are remembered like the Script docks' sizes are.
+
+## gpui sidebars sit darker than the editor (Mocha mantle), theme-wide
+- **WHEN:** 2026-10-05
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Mocha's sidebar surface is `#181825` (Catppuccin mantle), darker than the editor's `#1e1e2e`, and applies theme-wide (Binder, docks, the Write sidebar). Dividers between panels are one 1px line at reduced strength, never doubled.
+- **WHY:** The old `#252536` gave the sidebar too little contrast with the editor. Of the three shades rendered side by side, the maintainer preferred the darker one. It is Catppuccin's own sidebar pairing, and it sets the sidebars behind the text. The 1px divider looked better than the 2px one, but it still read as too visible at full strength.

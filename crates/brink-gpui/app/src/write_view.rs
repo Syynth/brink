@@ -102,9 +102,10 @@ use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
 /// How wide a pane's grab strip is, inside its edge.
 const GRIP: f32 = 5.;
 
-/// A sidebar row's height, and its header's.
+/// A sidebar row's height, and its header's: the shell's, so the columns'
+/// header rows end level with the Binder's and the manuscript's heading.
 const ROW_HEIGHT: f32 = 24.;
-const HEADER_HEIGHT: f32 = 30.;
+const HEADER_HEIGHT: f32 = brink_gpui_shell::tool_window::HEADER_HEIGHT;
 
 /// What Write mode asks of the studio.
 #[derive(Debug, Clone)]
@@ -451,7 +452,10 @@ impl Focusable for WriteView {
 impl WriteView {
     fn render_sidebar(&self, cx: &mut Context<Self>) -> AnyElement {
         let current = self.current_file(cx);
-        let border = cx.theme().sidebar_border;
+        let border = cx
+            .theme()
+            .sidebar_border
+            .opacity(brink_gpui_shell::workspace::DIVIDER_STRENGTH);
         let width = f32::from(self.sidebar_width());
         let opening = self.sidebar == Sidebar::Open;
         h_flex()
@@ -488,8 +492,13 @@ impl WriteView {
     /// globals (W6).
     fn render_structure(&self, current: Option<&str>, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (sidebar, border, muted) =
-            (theme.sidebar, theme.sidebar_border, theme.muted_foreground);
+        let (sidebar, border, muted) = (
+            theme.sidebar,
+            theme
+                .sidebar_border
+                .opacity(brink_gpui_shell::workspace::DIVIDER_STRENGTH),
+            theme.muted_foreground,
+        );
         let caret = self
             .manuscript
             .read(cx)

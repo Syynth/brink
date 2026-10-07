@@ -3757,6 +3757,63 @@ mod modes_driven {
         eprintln!("chip screenshot: {}", shot.display());
     }
 
+    /// The physical rows, from just above the title bar's edge (its buttons
+    /// end higher) down past the header band, where column `x` is exactly
+    /// the theme's border colour.
+    fn edge_rows(h: &mut Harness, image: &image::RgbaImage, x: u32) -> Vec<u32> {
+        let border = h.read(|cx| brink_gpui_shell::theme::current(cx).tokens.border);
+        let want = [(border >> 16) as u8, (border >> 8) as u8, border as u8];
+        (60..image.height().min(300))
+            .filter(|y| image.get_pixel(x, *y).0[..3] == want)
+            .collect()
+    }
+
+    /// The header rows across the window end on one line: Script's Binder
+    /// header, editor tab strip and dock header; Write's Files header,
+    /// Structure header and the manuscript's file heading. Each is 1px of
+    /// edge under the title bar's 1px, never 2px, and never a step between
+    /// columns. The x positions are blank stretches of each header in the
+    /// harness's 1280-wide window (2x).
+    #[test]
+    fn the_header_rows_end_on_one_line() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let script = h.capture(window);
+        let binder = edge_rows(&mut h, &script, 240);
+        assert_eq!(
+            binder.len(),
+            4,
+            "title edge + header edge, 2px each: {binder:?}"
+        );
+        for (what, x) in [("editor tab strip", 1000), ("right dock header", 1950)] {
+            assert_eq!(
+                edge_rows(&mut h, &script, x),
+                binder,
+                "Script: {what} vs Binder"
+            );
+        }
+
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        h.dispatch(window, super::ToggleStructureColumn);
+        h.advance(std::time::Duration::from_secs(1));
+        let write = h.capture(window);
+        let files = edge_rows(&mut h, &write, 192);
+        assert_eq!(files, binder, "Write's Files header vs Script's Binder");
+        assert_eq!(
+            edge_rows(&mut h, &write, 1920),
+            files,
+            "Write: manuscript heading vs Files"
+        );
+        // The Structure column's header draws no edge of its own; only the
+        // title bar's crosses it.
+        assert_eq!(
+            edge_rows(&mut h, &write, 768),
+            files[..2],
+            "Write: structure header"
+        );
+    }
+
     /// The picture: the sidebar open, the caret in a stitch.
     #[test]
     fn the_writing_sidebar_picture() {
