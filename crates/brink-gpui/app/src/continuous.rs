@@ -46,6 +46,8 @@ use gpui_component::{
     v_flex,
 };
 
+use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
+
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
 use brink_gpui_shell::icons;
@@ -181,6 +183,10 @@ pub struct ContinuousView {
     /// layout once it is (`render`). Bounded, so a caret that can never be
     /// placed cannot keep asking for frames.
     reveal_caret: Rc<std::cell::Cell<u8>>,
+    /// Each file's outline, for the pinned structure lines; asked for when
+    /// a file first reaches the top of the view, dropped on each analysis.
+    outlines: HashMap<String, Vec<Symbol>>,
+    outline_pending: std::collections::HashSet<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -208,7 +214,9 @@ impl ContinuousView {
                     if this.read.on.get() {
                         this.sync_prose(cx);
                     }
-                    // Draft status is read off the analysis.
+                    // Draft status is read off the analysis, and the
+                    // outlines the pinned lines come from are now stale.
+                    this.outlines.clear();
                     cx.notify();
                 }
                 // The separators' unsaved dots.
@@ -257,6 +265,8 @@ impl ContinuousView {
             signature: crate::signature_help::SignatureHint::default(),
             crumb_anchor: None,
             reveal_caret: Rc::default(),
+            outlines: HashMap::new(),
+            outline_pending: std::collections::HashSet::new(),
             _subscriptions: vec![watch],
         }
     }
@@ -438,10 +448,88 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// The pinned lines' text, for the tests.
+    #[cfg(test)]
+    pub fn pinned_texts(&mut self, cx: &mut Context<Self>) -> Vec<String> {
+        self.pinned_lines(cx)
+            .map(|(_, lines)| lines.into_iter().map(|l| l.text).collect())
+            .unwrap_or_default()
+    }
+
     /// The list's visible area in window coordinates, for the tests.
     #[cfg(test)]
     pub fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
         self.list.viewport_bounds()
+    }
+
+    /// Ask the worker for a file's outline, unless it is held or asked for.
+    fn request_outline(&mut self, path: &str, cx: &mut Context<Self>) {
+        if self.outlines.contains_key(path) || !self.outline_pending.insert(path.to_owned()) {
+            return;
+        }
+        let query = self.project.read(cx).query(
+            QueryKind::DocumentSymbols {
+                path: path.to_owned(),
+            },
+            cx,
+        );
+        let path = path.to_owned();
+        cx.spawn(async move |this, cx| {
+            let answer = query.await;
+            let _ = this.update(cx, |this, cx| {
+                this.outline_pending.remove(&path);
+                if let Ok(QueryResult::DocumentSymbols(found)) = answer {
+                    this.outlines.insert(path, found);
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// The knot and stitch lines to pin at the top of the view: the file
+    /// whose section is there, and the headers above its top line. `None`
+    /// while that file's chapter break is still on screen.
+    fn pinned_lines(
+        &mut self,
+        cx: &mut Context<Self>,
+    ) -> Option<(String, Vec<crate::sticky_lines::PinnedLine>)> {
+        let top = self.list.logical_scroll_top();
+        let path = self.files.get(top.item_ix)?.clone();
+        let into_text = top.offset_in_item - px(SEPARATOR_HEIGHT);
+        if into_text <= px(0.) {
+            return None;
+        }
+        let Some(symbols) = self.outlines.get(&path) else {
+            self.request_outline(&path, cx);
+            return None;
+        };
+        let (editor, _) = self.editors.borrow().get(&path).cloned()?;
+        let state = editor.read(cx);
+        let len = state.value().len();
+        let line = crate::sticky_lines::line_at(state, into_text, 0..len)?;
+        let pinned = crate::sticky_lines::pinned_at(symbols, &state.value(), line);
+        Some((path, pinned))
+    }
+
+    /// Where the pinned lines sit and in what face: over the text column,
+    /// in the sections' own rows.
+    fn pinned_geometry(&self, path: &str, cx: &App) -> Option<crate::sticky_lines::Geometry> {
+        let (editor, _) = self.editors.borrow().get(path).cloned()?;
+        let text_left = editor.read(cx).range_to_bounds(&(0..0))?.left();
+        let theme = cx.theme();
+        Some(crate::sticky_lines::Geometry {
+            text_left: text_left - self.list.viewport_bounds().left(),
+            line_height: px(self
+                .measured_line_height
+                .unwrap_or_else(|| f32::from(theme.mono_font_size) * LINE_HEIGHT_FACTOR)),
+            font: if self.read.on.get() {
+                theme.font_family.clone()
+            } else {
+                theme.mono_font_family.clone()
+            },
+            font_size: theme.mono_font_size,
+        })
     }
 
     /// The parameter hint, for the tests.
@@ -849,6 +937,20 @@ impl Render for ContinuousView {
         let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
+        // The knot and stitch the top of the view is inside, pinned there.
+        let pinned = self.pinned_lines(cx).and_then(|(path, lines)| {
+            let geometry = self.pinned_geometry(&path, cx)?;
+            let me = self.me.clone();
+            crate::sticky_lines::render(
+                &lines,
+                &geometry,
+                move |offset, _, cx| {
+                    let path = path.clone();
+                    let _ = me.update(cx, |this, cx| this.reveal_span(&path, offset..offset, cx));
+                },
+                cx,
+            )
+        });
 
         v_flex()
             .id("continuous")
@@ -975,6 +1077,7 @@ impl Render for ContinuousView {
                 .absolute()
                 .size_0()
             })
+            .children(pinned)
             .children(self.signature.render(cx))
             // Escape puts the parameter hint away, as the web's does.
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
@@ -1131,7 +1234,7 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
 }
 
 /// Scroll so the caret at `offset` in `path` is on screen, with a couple
-/// of rows to spare. `true` once it is; `false` when its section was not
+/// of rows to spare (and room for the pinned lines at the top). `true` once it is; `false` when its section was not
 /// laid out yet, in which case the list is scrolled to the caret's row as
 /// counted from the text, for the next frame to settle exactly.
 fn keep_caret_on_screen(
@@ -1150,12 +1253,14 @@ fn keep_caret_on_screen(
         return true;
     };
     let margin = px(2. * line_height);
+    // Clear of the pinned knot and stitch lines too, which cover the top.
+    let margin_top = margin + px(2. * line_height);
     if list.bounds_for_item(index).is_some()
         && let Some(at) = editor.read(cx).range_to_bounds(&(offset..offset))
     {
         let view = list.viewport_bounds();
-        if at.top() < view.top() + margin {
-            list.scroll_by(at.top() - view.top() - margin);
+        if at.top() < view.top() + margin_top {
+            list.scroll_by(at.top() - view.top() - margin_top);
         } else if at.bottom() > view.bottom() - margin {
             list.scroll_by(at.bottom() - view.bottom() + margin);
         }

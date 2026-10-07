@@ -37,6 +37,7 @@ mod settings_general;
 mod settings_prose;
 mod signature_help;
 mod state_view;
+mod sticky_lines;
 mod story_graph;
 mod structural;
 mod tab_title;
@@ -3968,6 +3969,51 @@ mod modes_driven {
         h.capture(window);
         h.capture(window);
         assert!(on_screen(&mut h), "the caret is back in view");
+    }
+
+    /// A long knot with a long stitch, then another knot: room to scroll
+    /// past each header.
+    fn long_outline_project() -> std::path::PathBuf {
+        let dir = scratch_dir("long-outline");
+        let lines =
+            |what: &str| -> String { (0..60).map(|i| format!("{what} line {i}.\n")).collect() };
+        let story = format!(
+            "-> start\n=== start ===\n{}= second\n{}=== market ===\n{}",
+            lines("Start"),
+            lines("Second"),
+            lines("Market"),
+        );
+        std::fs::write(dir.join("story.ink"), story).expect("writing the story");
+        dir
+    }
+
+    /// Scrolled into a stitch, its knot's header and its own stay pinned at
+    /// the top of the manuscript; back at the top, nothing is.
+    #[test]
+    fn the_knot_and_stitch_lines_pin_as_they_scroll_past() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let pinned = |h: &mut Harness| {
+            h.capture(window);
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+        };
+        // Line ~80 of the file: inside `second`.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5, cx)));
+        h.capture(window);
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            !pinned(h).is_empty()
+        });
+        assert!(found, "nothing pinned");
+        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        let shot = scratch_dir("shot").join("pinned.png");
+        h.screenshot(window, &shot);
+        eprintln!("pinned screenshot: {}", shot.display());
+
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(0., cx)));
+        assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
     }
 
     /// The picture: the sidebar open, the caret in a stitch.
