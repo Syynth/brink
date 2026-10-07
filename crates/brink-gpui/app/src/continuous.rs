@@ -41,7 +41,7 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, EditorState, InputEvent},
+    input::{Editor, EditorState, InputEvent, MoveDown, MoveLeft, MoveRight, MoveUp},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
@@ -189,6 +189,9 @@ pub struct ContinuousView {
     outline_pending: std::collections::HashSet<String>,
     /// What is pinned now, and what is fading out.
     pins: crate::sticky_lines::Pins,
+    /// A section to focus once it exists: an arrow key crossed into a file
+    /// that had not been mounted yet (`cross_file`).
+    pending_focus: Option<String>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -270,6 +273,7 @@ impl ContinuousView {
             outlines: HashMap::new(),
             outline_pending: std::collections::HashSet::new(),
             pins: crate::sticky_lines::Pins::default(),
+            pending_focus: None,
             _subscriptions: vec![watch],
         }
     }
@@ -455,14 +459,122 @@ impl ContinuousView {
     #[cfg(test)]
     pub fn pinned_texts(&mut self, cx: &mut Context<Self>) -> Vec<String> {
         self.pinned_lines(cx)
-            .map(|(_, lines)| lines.into_iter().map(|l| l.text).collect())
+            .map(|(_, lines, _)| lines.into_iter().map(|l| l.text).collect())
             .unwrap_or_default()
+    }
+
+    /// The pinned rows' pushes, for the tests.
+    #[cfg(test)]
+    pub fn pinned_pushes(&mut self, cx: &mut Context<Self>) -> Vec<f32> {
+        self.pinned_lines(cx)
+            .map(|(_, _, pushes)| pushes.into_iter().map(f32::from).collect())
+            .unwrap_or_default()
+    }
+
+    /// A section's laid-out row height, for the tests.
+    #[cfg(test)]
+    pub fn row_height(&self, path: &str, cx: &App) -> Option<f32> {
+        let (editor, _) = self.editors.borrow().get(path).cloned()?;
+        editor.read(cx).line_height().map(f32::from)
     }
 
     /// The list's visible area in window coordinates, for the tests.
     #[cfg(test)]
     pub fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
         self.list.viewport_bounds()
+    }
+
+    /// An arrow key at the edge of a file: off its first or last row, or
+    /// past its first or last character, the caret carries on into the
+    /// neighbouring file — the manuscript reads as one text, so it moves as
+    /// one (maintainer, 2026-10-07). Keeps its column across Up and Down.
+    /// `false` when the key is the section's own business: not at an edge,
+    /// a selection to collapse, a completion or code-action menu open, or
+    /// no file beyond.
+    fn cross_file(&mut self, dir: Cross, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some((path, editor)) = self
+            .editors
+            .borrow()
+            .iter()
+            .find(|(_, (editor, _))| editor.read(cx).focus_handle(cx).is_focused(window))
+            .map(|(path, (editor, _))| (path.clone(), editor.clone()))
+        else {
+            return false;
+        };
+        let state = editor.read(cx);
+        if !state.selected_range().is_empty()
+            || state.completion_menu_state().open
+            || state.code_action_menu_state().open
+        {
+            return false;
+        }
+        let text = state.value();
+        let (cursor, len) = (state.cursor(), text.len());
+        let row = |offset: usize| state.range_to_bounds(&(offset..offset)).map(|b| b.top());
+        let at_edge = match dir {
+            Cross::Left => cursor == 0,
+            Cross::Right => cursor == len,
+            Cross::Up => row(cursor).is_some() && row(cursor) == row(0),
+            Cross::Down => row(cursor).is_some() && row(cursor) == row(len),
+        };
+        if !at_edge {
+            return false;
+        }
+        let Some(index) = self.files.iter().position(|f| *f == path) else {
+            return false;
+        };
+        let target = match dir {
+            Cross::Up | Cross::Left => index.checked_sub(1),
+            Cross::Down | Cross::Right => Some(index + 1),
+        };
+        let Some(target) = target.and_then(|i| self.files.get(i)).cloned() else {
+            return false;
+        };
+        let column = text[crate::sticky_lines::line_start(&text, cursor)..cursor]
+            .chars()
+            .count();
+        let mounted = self.editors.borrow().get(&target).map(|(e, _)| e.clone());
+        let target_text = match &mounted {
+            Some(editor) => editor.read(cx).value().to_string(),
+            None => self
+                .project
+                .read(cx)
+                .loaded_source(&target)
+                .unwrap_or_default()
+                .to_owned(),
+        };
+        // The same column on the line it lands on, or that line's end.
+        let on_line = |start: usize| {
+            let line = &target_text[start..];
+            let line = &line[..line.find('\n').unwrap_or(line.len())];
+            start
+                + line
+                    .char_indices()
+                    .nth(column)
+                    .map_or(line.len(), |(at, _)| at)
+        };
+        let offset = match dir {
+            Cross::Left => target_text.len(),
+            Cross::Right => 0,
+            Cross::Up => on_line(crate::sticky_lines::line_start(
+                &target_text,
+                target_text.len(),
+            )),
+            Cross::Down => on_line(0),
+        };
+        match mounted {
+            Some(editor) => {
+                let handle = editor.read(cx).focus_handle(cx);
+                editor.update(cx, |state, cx| state.set_selected_range(offset..offset, cx));
+                window.focus(&handle, cx);
+                self.follow_caret(target, editor, cx);
+            }
+            None => {
+                self.pending_focus = Some(target.clone());
+                self.reveal_span(&target, offset..offset, cx);
+            }
+        }
+        true
     }
 
     /// Ask the worker for a file's outline, unless it is held or asked for.
@@ -496,7 +608,11 @@ impl ContinuousView {
     fn pinned_lines(
         &mut self,
         cx: &mut Context<Self>,
-    ) -> Option<(String, Vec<crate::sticky_lines::PinnedLine>)> {
+    ) -> Option<(
+        String,
+        Vec<crate::sticky_lines::PinnedLine>,
+        Vec<gpui::Pixels>,
+    )> {
         let top = self.list.logical_scroll_top();
         let path = self.files.get(top.item_ix)?.clone();
         let into_text = top.offset_in_item - px(SEPARATOR_HEIGHT);
@@ -510,11 +626,8 @@ impl ContinuousView {
         let (editor, _) = self.editors.borrow().get(&path).cloned()?;
         let state = editor.read(cx);
         let len = state.value().len();
-        let row = state.line_height()?;
-        let line = crate::sticky_lines::line_at(state, into_text, 0..len)?;
-        let under = crate::sticky_lines::line_at(state, into_text + row, 0..len).unwrap_or(line);
-        let pinned = crate::sticky_lines::pinned_at(symbols, &state.value(), line, under);
-        Some((path, pinned))
+        let (pinned, pushes) = crate::sticky_lines::pin(state, symbols, into_text, 0..len)?;
+        Some((path, pinned, pushes))
     }
 
     /// Where the pinned lines sit and in what face: over the text column,
@@ -926,6 +1039,13 @@ impl Render for ContinuousView {
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
+        if let Some(path) = self.pending_focus.clone()
+            && let Some((editor, _)) = self.editors.borrow().get(&path).cloned()
+        {
+            self.pending_focus = None;
+            let handle = editor.read(cx).focus_handle(cx);
+            window.focus(&handle, cx);
+        }
 
         let surface = cx.theme().background;
         let files = self.files.clone();
@@ -945,10 +1065,15 @@ impl Render for ContinuousView {
         let column = column_width(window, cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
-            let (path, lines) = self
+            let (path, lines, pushes) = self
                 .pinned_lines(cx)
-                .map_or((None, Vec::new()), |(path, lines)| (Some(path), lines));
-            if self.pins.update(path.as_deref(), lines) {
+                .map_or((None, Vec::new(), Vec::new()), |(path, lines, pushes)| {
+                    (Some(path), lines, pushes)
+                });
+            let row = px(self
+                .measured_line_height
+                .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR));
+            if self.pins.update(path.as_deref(), lines, pushes, row) {
                 // Lines let go are drawn while they fade; a frame after
                 // that stops drawing them.
                 cx.spawn(async move |this, cx| {
@@ -1107,6 +1232,28 @@ impl Render for ContinuousView {
             .children(pinned)
             .children(self.signature.render(cx))
             // Escape puts the parameter hint away, as the web's does.
+            // The arrow keys at a file's edge carry on into the next file.
+            // Captured: the section's own handler would move nowhere.
+            .capture_action(cx.listener(|this, _: &MoveUp, window, cx| {
+                if this.cross_file(Cross::Up, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveDown, window, cx| {
+                if this.cross_file(Cross::Down, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveLeft, window, cx| {
+                if this.cross_file(Cross::Left, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
+            .capture_action(cx.listener(|this, _: &MoveRight, window, cx| {
+                if this.cross_file(Cross::Right, window, cx) {
+                    cx.stop_propagation();
+                }
+            }))
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && this.signature.dismiss() {
                     cx.notify();
@@ -1317,6 +1464,15 @@ struct FileMarks {
     entry: bool,
     /// Edits not yet saved.
     dirty: bool,
+}
+
+/// Which way an arrow key would carry the caret out of its file.
+#[derive(Clone, Copy)]
+enum Cross {
+    Up,
+    Down,
+    Left,
+    Right,
 }
 
 /// What a separator's `⋯` menu asks of the manuscript's host.
