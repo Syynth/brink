@@ -150,7 +150,7 @@ pub(crate) fn line_at(
 
 /// Where the line at `offset` starts in the editor's content (zero at its
 /// first line, whatever it has scrolled); `None` when it is not laid out.
-fn content_top(state: &EditorState, offset: usize) -> Option<Pixels> {
+pub(crate) fn content_top(state: &EditorState, offset: usize) -> Option<Pixels> {
     let origin = state.text_bounds()?.top() + state.scroll_offset().y;
     state
         .range_to_bounds(&(offset..offset))
@@ -260,6 +260,11 @@ impl Pins {
         self.shown = next;
         self.push = push;
         released
+    }
+
+    /// How many rows are pinned now.
+    pub(crate) fn shown_rows(&self) -> usize {
+        self.shown.len()
     }
 
     fn is_empty(&self) -> bool {

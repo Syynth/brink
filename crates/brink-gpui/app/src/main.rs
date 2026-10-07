@@ -4100,6 +4100,47 @@ mod modes_driven {
         assert_eq!(caret(&mut h), Some(("story.ink".to_owned(), header)));
     }
 
+    /// A jump lands where the line really is: prose wraps, so counting
+    /// newlines puts a far line well above its true place.
+    #[test]
+    fn a_reveal_finds_its_line_through_wrapped_prose() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("wrapped");
+        let long = "The rain keeps on, and the lamp gutters, and nobody comes; ".repeat(6);
+        let prose: String = (0..80).map(|i| format!("{i} {long}\n")).collect();
+        // Room after it, so the list can scroll it to the top.
+        let story = format!("-> start\n=== start ===\n{prose}=== market ===\n{prose}");
+        std::fs::write(dir.join("story.ink"), &story).expect("writing the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let market = story.find("=== market").expect("the knot");
+        h.update(|cx| {
+            manuscript.update(cx, |m, cx| m.reveal_span("story.ink", market..market, cx))
+        });
+        h.capture(window);
+        h.capture(window);
+        let (at, view) = h.read(|cx| {
+            let m = manuscript.read(cx);
+            let editor = m.section_editor("story.ink").expect("mounted");
+            (
+                editor.read(cx).range_to_bounds(&(market..market)),
+                m.viewport(),
+            )
+        });
+        let at = at.expect("the line is laid out");
+        // Near the top, where a reveal puts it (a few rows down, clear of
+        // the pinned lines) — not dragged in at the bottom edge after
+        // landing a screen short.
+        let rows_down = f32::from(at.top() - view.top()) / f32::from(at.size.height);
+        assert!(
+            (2.0..8.0).contains(&rows_down),
+            "the knot's header is near the top: {rows_down} rows down"
+        );
+    }
+
     /// Script's editors pin the same lines, from their own scroll.
     #[test]
     fn script_pins_the_knot_and_stitch_lines_too() {
@@ -4193,6 +4234,56 @@ mod modes_driven {
         h.press(window, "right");
         h.capture(window);
         assert_eq!(caret(&mut h), Some(("chapter_two.ink".to_owned(), 0)));
+    }
+
+    /// In Script, a cursor that moves under the pinned lines is scrolled
+    /// clear of them, as it would be off the edge.
+    #[test]
+    fn script_keeps_the_cursor_clear_of_the_pinned_lines() {
+        let mut h = Harness::new();
+        let dir = long_outline_project();
+        let story = std::fs::read_to_string(dir.join("story.ink")).expect("the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let document = h
+            .read(|cx| studio.read(cx).code.read(cx).active_document().cloned())
+            .expect("the entry is open");
+        let editor = h.read(|cx| document.read(cx).editor().clone());
+        let row = h
+            .read(|cx| editor.read(cx).line_height())
+            .expect("laid out");
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| {
+                e.set_scroll_offset(gpui::point(gpui::px(0.), -row * 80.), cx)
+            });
+        });
+        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.capture(window);
+            h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
+                .len()
+                == 2
+        });
+        assert!(pinned, "the knot and stitch pin");
+        // The cursor onto line 81, the first in view: under the strip.
+        let line_81: usize = story.split_inclusive('\n').take(80).map(str::len).sum();
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| e.set_selected_range(line_81..line_81, cx));
+        });
+        h.capture(window);
+        h.capture(window);
+        // Measured as the editor counts it — its line's display row, less
+        // how far it has scrolled — not through bounds from its last layout.
+        let rows_down = h.read(|cx| {
+            let state = editor.read(cx);
+            let y = row * state.display_row_of_buffer_line(80) as f32 + state.scroll_offset().y;
+            f32::from(y) / f32::from(row)
+        });
+        assert!(
+            rows_down >= 2. - 0.05,
+            "the cursor is below the two pinned rows: {rows_down} rows down"
+        );
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

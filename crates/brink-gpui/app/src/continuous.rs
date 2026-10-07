@@ -47,6 +47,7 @@ use gpui_component::{
 };
 
 use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
+use brink_ir::SymbolKind;
 
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
@@ -192,6 +193,9 @@ pub struct ContinuousView {
     /// A section to focus once it exists: an arrow key crossed into a file
     /// that had not been mounted yet (`cross_file`).
     pending_focus: Option<String>,
+    /// Frames a reveal may wait for its section to lay out, so it can land
+    /// on the line's true place (`apply_pending_reveal`).
+    reveal_retries: u8,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -274,6 +278,7 @@ impl ContinuousView {
             outline_pending: std::collections::HashSet::new(),
             pins: crate::sticky_lines::Pins::default(),
             pending_focus: None,
+            reveal_retries: 0,
             _subscriptions: vec![watch],
         }
     }
@@ -398,6 +403,7 @@ impl ContinuousView {
         // `ListState::splice` zeroes the scroll offset inside the spliced
         // item — a scroll applied before that pass was thrown away by it.
         self.pending_reveal = Some((path.to_owned(), span));
+        self.reveal_retries = REVEAL_TRIES;
         cx.notify();
     }
 
@@ -412,19 +418,46 @@ impl ContinuousView {
             self.pending_reveal = None;
             return;
         };
-        self.pending_reveal = None;
         // The section does not scroll — the list does — so "show this span"
-        // is a list offset: the heading, then the span's row, backed off a
-        // few rows so the target is not pinned to the top edge.
-        let line = editor
-            .read(cx)
-            .value()
-            .get(..span.start)
-            .map_or(0, |before| before.matches('\n').count());
+        // is a list offset: the chapter break, then the span's line as the
+        // section laid it out (prose wraps, so counting newlines lands a
+        // far line well short), backed off past the rows that will pin
+        // above it, and one more.
         let line_height = self
             .measured_line_height
             .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
-        let offset = (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.0);
+        let (text, y) = {
+            let state = editor.read(cx);
+            let text = state.value().to_string();
+            let line = text
+                .get(..span.start)
+                .map_or(0, |before| before.matches('\n').count());
+            // Its display row, wrapping and folds counted, whether or not
+            // the section has laid that far — once it has laid out at all,
+            // which is what gives the wrap map its width.
+            let y = state
+                .line_height()
+                .map(|_| state.display_row_of_buffer_line(line) as f32 * line_height);
+            (text, y)
+        };
+        let Some(y) = y else {
+            // Never laid out: get it on screen, and place the line on the
+            // next frame.
+            if self.reveal_retries > 0 {
+                self.reveal_retries -= 1;
+                self.list.scroll_to(gpui::ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            } else {
+                self.pending_reveal = None;
+            }
+            return;
+        };
+        self.pending_reveal = None;
+        let reserve = (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height;
+        let offset = (SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: px(offset),
@@ -437,6 +470,33 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// How many rows will pin above `offset` once it is near the top of
+    /// the view: the file's own row, and the knot and stitch it is inside
+    /// whose headers are above it. Two of those when the outline has not
+    /// arrived, the most there can be.
+    fn pinned_rows_at(&self, path: &str, text: &str, offset: usize) -> usize {
+        let Some(symbols) = self.outlines.get(path) else {
+            return 3;
+        };
+        let line = crate::sticky_lines::line_start(text, offset.min(text.len()));
+        let holds = |s: &&Symbol| (s.full_start as usize) <= offset && offset < s.full_end as usize;
+        let above =
+            |s: &Symbol| crate::sticky_lines::line_start(text, s.full_start as usize) < line;
+        let knot = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Knot)
+            .find(holds)
+            .filter(|k| above(k));
+        let stitch = knot.and_then(|k| {
+            k.children
+                .iter()
+                .filter(|s| s.kind == SymbolKind::Stitch)
+                .find(holds)
+                .filter(|s| above(s))
+        });
+        1 + usize::from(knot.is_some()) + usize::from(stitch.is_some())
     }
 
     /// Keep the title bar's crumb over the text: `cell` gets the window x
@@ -1180,6 +1240,9 @@ impl Render for ContinuousView {
                 let editors = self.editors.clone();
                 let anchor = self.crumb_anchor.clone();
                 let reveal = self.reveal_caret.clone();
+                // The rows pinned over the top of the view, which a caret
+                // under them is as hidden by as by the edge.
+                let covered = self.pins.shown_rows();
                 let caret = self.caret.clone();
                 let files = self.files.clone();
                 let list = self.list.clone();
@@ -1211,6 +1274,7 @@ impl Render for ContinuousView {
                                     path,
                                     *offset,
                                     line_height,
+                                    covered,
                                     cx,
                                 )
                             });
@@ -1407,10 +1471,20 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     Some(px(chars * ch + gutter))
 }
 
-/// Scroll so the caret at `offset` in `path` is on screen, with a couple
-/// of rows to spare (and room for the pinned lines at the top). `true` once it is; `false` when its section was not
-/// laid out yet, in which case the list is scrolled to the caret's row as
-/// counted from the text, for the next frame to settle exactly.
+/// Scroll so the caret at `offset` in `path` is on screen: below the
+/// pinned rows covering the top (`covered`, plus one to spare) and a couple
+/// of rows clear of the bottom. `true` once it is; `false` when its section
+/// has never laid out, in which case the list is scrolled to it for the
+/// next frame to settle.
+///
+/// Where the caret sits is counted in display rows — soft wrap and folds
+/// included — from where the list put its section this frame: a line the
+/// section has not laid out has no bounds, or stale ones, and acting on
+/// those scrolled the view far past the caret.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the canvas closure's captures, passed through"
+)]
 fn keep_caret_on_screen(
     list: &ListState,
     files: &[String],
@@ -1418,6 +1492,7 @@ fn keep_caret_on_screen(
     path: &str,
     offset: usize,
     line_height: f32,
+    covered: usize,
     cx: &App,
 ) -> bool {
     let Some(index) = files.iter().position(|f| f == path) else {
@@ -1426,32 +1501,48 @@ fn keep_caret_on_screen(
     let Some((editor, _)) = editors.get(path) else {
         return true;
     };
-    let margin = px(2. * line_height);
-    // Clear of the pinned knot and stitch lines too, which cover the top.
-    let margin_top = margin + px(2. * line_height);
-    if list.bounds_for_item(index).is_some()
-        && let Some(at) = editor.read(cx).range_to_bounds(&(offset..offset))
-    {
-        let view = list.viewport_bounds();
-        if at.top() < view.top() + margin_top {
-            list.scroll_by(at.top() - view.top() - margin_top);
-        } else if at.bottom() > view.bottom() - margin {
-            list.scroll_by(at.bottom() - view.bottom() + margin);
-        }
-        return true;
-    }
     let state = editor.read(cx);
-    let line = state
-        .value()
+    if state.line_height().is_none() {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
+        return false;
+    }
+    let text = state.value();
+    let line = text
         .get(..offset)
         .map_or(0, |before| before.matches('\n').count());
-    list.scroll_to(gpui::ListOffset {
-        item_ix: index,
-        offset_in_item: px(
-            (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.),
-        ),
-    });
-    false
+    let start = crate::sticky_lines::line_start(&text, offset.min(text.len()));
+    // Which wrapped row of its line the caret is on, when the line is laid
+    // out (both bounds from the same layout, so their difference holds).
+    let within = match (
+        state.range_to_bounds(&(offset..offset)),
+        state.range_to_bounds(&(start..start)),
+    ) {
+        (Some(at), Some(line_top)) => f32::from(at.top() - line_top.top()).max(0.),
+        _ => 0.,
+    };
+    let in_item =
+        SEPARATOR_HEIGHT + state.display_row_of_buffer_line(line) as f32 * line_height + within;
+    let Some(item) = list.bounds_for_item(index) else {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px((in_item - (covered + 1) as f32 * line_height).max(0.)),
+        });
+        return false;
+    };
+    let top = item.top() + px(in_item);
+    let bottom = top + px(line_height);
+    let view = list.viewport_bounds();
+    let margin_top = px((covered + 1) as f32 * line_height);
+    let margin_bottom = px(2. * line_height);
+    if top < view.top() + margin_top {
+        list.scroll_by(top - view.top() - margin_top);
+    } else if bottom > view.bottom() - margin_bottom {
+        list.scroll_by(bottom - view.bottom() + margin_bottom);
+    }
+    true
 }
 
 /// What a file's separator shows about it, read off the project.
