@@ -91,6 +91,15 @@ pub struct Document {
     laid_out: bool,
     /// Parameter hints while a call is being typed.
     signature: crate::signature_help::SignatureHint,
+    /// The file's outline, for the pinned structure lines: asked for on
+    /// the first frame after each analysis.
+    outline: Option<Vec<brink_gpui_model::query::Symbol>>,
+    outline_pending: bool,
+    /// What is pinned at the top now, and what is fading out.
+    pins: crate::sticky_lines::Pins,
+    /// This view's left edge in the window, after layout: the editor sits
+    /// inset in it, so the pinned lines measure from here, not from it.
+    left: Rc<std::cell::Cell<Option<gpui::Pixels>>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -222,7 +231,10 @@ impl Document {
                 // Diagnostics and inlays are analysis products, so they
                 // arrive with the analysis rather than being pulled on a
                 // timer.
-                ProjectEvent::Analyzed => this.refresh(cx),
+                ProjectEvent::Analyzed => {
+                    this.outline = None;
+                    this.refresh(cx);
+                }
                 // A mark is drawn by the highlighter, and the highlighter
                 // only runs on an edit — so a toggle has to ask for one.
                 ProjectEvent::BreakpointsChanged => this.reinstall_highlighter(cx),
@@ -270,6 +282,10 @@ impl Document {
             },
         );
 
+        // The pinned lines follow the editor's scroll, which the editor
+        // notifies of and this view would not otherwise hear.
+        let on_scroll = cx.observe(&editor, |_, _, cx| cx.notify());
+
         let mut this = Self {
             path,
             editor,
@@ -280,7 +296,11 @@ impl Document {
             pending_reveal: None,
             laid_out: false,
             signature: crate::signature_help::SignatureHint::default(),
-            _subscriptions: vec![on_change, on_project, on_theme, on_settings],
+            outline: None,
+            outline_pending: false,
+            pins: crate::sticky_lines::Pins::default(),
+            left: Rc::default(),
+            _subscriptions: vec![on_change, on_project, on_theme, on_settings, on_scroll],
         };
         // The editor may normalise what it was given (line endings); if it
         // did, that is an edit like any other.
@@ -1717,6 +1737,88 @@ impl gpui_component::dock::Panel for Document {
     }
 }
 
+impl Document {
+    /// The knot and stitch lines to pin at the top of the editor, from its
+    /// scroll and the file's outline (asked for here when there is none).
+    fn pinned_lines(&mut self, cx: &mut Context<Self>) -> Vec<crate::sticky_lines::PinnedLine> {
+        if language_of(&self.path) != BRINK {
+            return Vec::new();
+        }
+        let Some(outline) = &self.outline else {
+            if !self.outline_pending {
+                self.outline_pending = true;
+                let query = self.project.read(cx).query(
+                    QueryKind::DocumentSymbols {
+                        path: self.path.to_string(),
+                    },
+                    cx,
+                );
+                cx.spawn(async move |this, cx| {
+                    let answer = query.await;
+                    let _ = this.update(cx, |this, cx| {
+                        this.outline_pending = false;
+                        if let Ok(QueryResult::DocumentSymbols(found)) = answer {
+                            this.outline = Some(found);
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+            return Vec::new();
+        };
+        let state = self.editor.read(cx);
+        let (Some(within), Some(row)) = (state.visible_offset_range(), state.line_height()) else {
+            return Vec::new();
+        };
+        let top = -state.scroll_offset().y;
+        let Some(line) = crate::sticky_lines::line_at(state, top, within.clone()) else {
+            return Vec::new();
+        };
+        let under = crate::sticky_lines::line_at(state, top + row, within).unwrap_or(line);
+        crate::sticky_lines::pinned_at(outline, &state.value(), line, under)
+    }
+
+    /// The pinned lines' text, for the tests.
+    #[cfg(test)]
+    pub(crate) fn pinned_texts(&mut self, cx: &mut Context<Self>) -> Vec<String> {
+        self.pinned_lines(cx).into_iter().map(|l| l.text).collect()
+    }
+
+    /// The pinned lines' overlay, over the top of the editor.
+    fn render_pinned(&mut self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let lines = self.pinned_lines(cx);
+        let path = self.path.to_string();
+        if self.pins.update(Some(&path), lines) {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor()
+                    .timer(crate::sticky_lines::PIN_OUT)
+                    .await;
+                let _ = this.update(cx, |_, cx| cx.notify());
+            })
+            .detach();
+        }
+        let state = self.editor.read(cx);
+        let first = state.visible_offset_range()?.start;
+        let geometry = crate::sticky_lines::Geometry {
+            text_left: state.range_to_bounds(&(first..first))?.left() - self.left.get()?,
+            line_height: state.line_height()?,
+            font: cx.theme().mono_font_family.clone(),
+            font_size: cx.theme().mono_font_size,
+            folds: true,
+        };
+        let me = cx.weak_entity();
+        crate::sticky_lines::render(
+            &self.pins,
+            &geometry,
+            move |offset, window, cx| {
+                let _ = me.update(cx, |this, cx| this.reveal(offset..offset, window, cx));
+            },
+            cx,
+        )
+    }
+}
+
 impl gpui::Render for Document {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl gpui::IntoElement {
         // This frame is what gives the editor its layout, so a reveal that
@@ -1739,8 +1841,10 @@ impl gpui::Render for Document {
         // the state every render — see `compiled_output.rs`, where a
         // construction-time flag was overwritten on the first frame).
         let readonly = self.project.read(cx).is_library(&self.path);
+        let pinned = self.render_pinned(cx);
         gpui_component::v_flex()
             .size_full()
+            .relative()
             // Escape puts the parameter hint away, as the web's does.
             .capture_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, _, cx| {
                 if event.keystroke.key == "escape" && this.signature.dismiss() {
@@ -1753,6 +1857,23 @@ impl gpui::Render for Document {
                     .flex_1()
                     .bordered(false),
             )
+            .children(pinned)
+            // This view's left edge, for the next frame's pinned lines; a
+            // move asks for that frame.
+            .child({
+                let left = self.left.clone();
+                gpui::canvas(
+                    move |bounds, window, _| {
+                        if left.get() != Some(bounds.left()) {
+                            left.set(Some(bounds.left()));
+                            window.refresh();
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .size_full()
+            })
             .children(self.signature.render(cx))
     }
 }

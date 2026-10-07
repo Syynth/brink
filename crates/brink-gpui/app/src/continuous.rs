@@ -187,6 +187,8 @@ pub struct ContinuousView {
     /// a file first reaches the top of the view, dropped on each analysis.
     outlines: HashMap<String, Vec<Symbol>>,
     outline_pending: std::collections::HashSet<String>,
+    /// What is pinned now, and what is fading out.
+    pins: crate::sticky_lines::Pins,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -267,6 +269,7 @@ impl ContinuousView {
             reveal_caret: Rc::default(),
             outlines: HashMap::new(),
             outline_pending: std::collections::HashSet::new(),
+            pins: crate::sticky_lines::Pins::default(),
             _subscriptions: vec![watch],
         }
     }
@@ -507,8 +510,10 @@ impl ContinuousView {
         let (editor, _) = self.editors.borrow().get(&path).cloned()?;
         let state = editor.read(cx);
         let len = state.value().len();
+        let row = state.line_height()?;
         let line = crate::sticky_lines::line_at(state, into_text, 0..len)?;
-        let pinned = crate::sticky_lines::pinned_at(symbols, &state.value(), line);
+        let under = crate::sticky_lines::line_at(state, into_text + row, 0..len).unwrap_or(line);
+        let pinned = crate::sticky_lines::pinned_at(symbols, &state.value(), line, under);
         Some((path, pinned))
     }
 
@@ -529,6 +534,7 @@ impl ContinuousView {
                 theme.mono_font_family.clone()
             },
             font_size: theme.mono_font_size,
+            folds: false,
         })
     }
 
@@ -938,19 +944,40 @@ impl Render for ContinuousView {
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
         // The knot and stitch the top of the view is inside, pinned there.
-        let pinned = self.pinned_lines(cx).and_then(|(path, lines)| {
-            let geometry = self.pinned_geometry(&path, cx)?;
-            let me = self.me.clone();
-            crate::sticky_lines::render(
-                &lines,
-                &geometry,
-                move |offset, _, cx| {
-                    let path = path.clone();
-                    let _ = me.update(cx, |this, cx| this.reveal_span(&path, offset..offset, cx));
-                },
-                cx,
-            )
-        });
+        let pinned = {
+            let (path, lines) = self
+                .pinned_lines(cx)
+                .map_or((None, Vec::new()), |(path, lines)| (Some(path), lines));
+            if self.pins.update(path.as_deref(), lines) {
+                // Lines let go are drawn while they fade; a frame after
+                // that stops drawing them.
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor()
+                        .timer(crate::sticky_lines::PIN_OUT)
+                        .await;
+                    let _ = this.update(cx, |_, cx| cx.notify());
+                })
+                .detach();
+            }
+            let top = self
+                .files
+                .get(self.list.logical_scroll_top().item_ix)
+                .cloned();
+            top.and_then(|top| {
+                let geometry = self.pinned_geometry(&top, cx)?;
+                let me = self.me.clone();
+                crate::sticky_lines::render(
+                    &self.pins,
+                    &geometry,
+                    move |offset, _, cx| {
+                        let top = top.clone();
+                        let _ =
+                            me.update(cx, |this, cx| this.reveal_span(&top, offset..offset, cx));
+                    },
+                    cx,
+                )
+            })
+        };
 
         v_flex()
             .id("continuous")

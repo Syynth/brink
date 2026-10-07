@@ -4016,6 +4016,41 @@ mod modes_driven {
         assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
     }
 
+    /// Script's editors pin the same lines, from their own scroll.
+    #[test]
+    fn script_pins_the_knot_and_stitch_lines_too() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let document = h
+            .read(|cx| studio.read(cx).code.read(cx).active_document().cloned())
+            .expect("the entry is open");
+        let editor = h.read(|cx| document.read(cx).editor().clone());
+        let row = h
+            .read(|cx| editor.read(cx).line_height())
+            .expect("laid out");
+        // Line 80 of the file at the top: inside `second`.
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| {
+                e.set_scroll_offset(gpui::point(gpui::px(0.), -row * 80.), cx)
+            });
+        });
+        let pinned = |h: &mut Harness| {
+            h.capture(window);
+            h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
+        };
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            !pinned(h).is_empty()
+        });
+        assert!(found, "nothing pinned");
+        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        let shot = scratch_dir("shot").join("script-pinned.png");
+        h.screenshot(window, &shot);
+        eprintln!("script pinned screenshot: {}", shot.display());
+    }
+
     /// The picture: the sidebar open, the caret in a stitch.
     #[test]
     fn the_writing_sidebar_picture() {
