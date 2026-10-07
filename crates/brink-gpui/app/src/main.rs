@@ -4053,6 +4053,53 @@ mod modes_driven {
         eprintln!("pushed screenshot: {}", shot.display());
     }
 
+    /// A click on a pinned row goes to its header and nowhere else: the
+    /// press must not reach the text under the row first.
+    #[test]
+    fn a_click_on_a_pinned_row_goes_only_to_its_header() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let row = h
+            .read(|cx| manuscript.read(cx).row_height("story.ink", cx))
+            .expect("laid out");
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * row, cx)));
+        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.capture(window);
+            !h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+                .is_empty()
+        });
+        assert!(pinned, "the knot pins");
+        let caret = |h: &mut Harness| {
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
+        };
+        let editor = h
+            .read(|cx| manuscript.read(cx).section_editor("story.ink"))
+            .expect("mounted");
+        let cursor = |h: &mut Harness| h.read(|cx| editor.read(cx).cursor());
+        let before = (caret(&mut h), cursor(&mut h));
+        // The knot's row: the first under the top of the manuscript.
+        let (x, y) = h.read(|cx| {
+            let view = manuscript.read(cx).viewport();
+            (f32::from(view.center().x), f32::from(view.top()) + row / 2.)
+        });
+        h.hover(window, x, y);
+        h.mouse_down(window, x, y);
+        h.capture(window);
+        assert_eq!(
+            (caret(&mut h), cursor(&mut h)),
+            before,
+            "the press stays on the row"
+        );
+        h.mouse_up(window, x, y);
+        h.capture(window);
+        let header = "-> start\n".len();
+        assert_eq!(caret(&mut h), Some(("story.ink".to_owned(), header)));
+    }
+
     /// Script's editors pin the same lines, from their own scroll.
     #[test]
     fn script_pins_the_knot_and_stitch_lines_too() {

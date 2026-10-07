@@ -365,6 +365,10 @@ pub(crate) fn render(
         .id("pinned-lines")
         .absolute()
         .top(strip_push)
+        // A press on a pinned row is the row's, not the text's under it —
+        // or the editor puts its caret there before the row's click goes
+        // to the header. The wheel still scrolls through it.
+        .when(!pins.shown.is_empty(), |el| el.block_mouse_except_scroll())
         .left_0()
         .right_0()
         .h(geometry.line_height * rows as f32)
