@@ -3010,14 +3010,7 @@ mod modes_driven {
         // The structure column starts off, and its toggle widens the
         // sidebar — and the title bar's strip, which is told the width.
         let width = |h: &mut Harness| {
-            h.read(|cx| {
-                studio
-                    .read(cx)
-                    .write
-                    .read(cx)
-                    .sidebar_strip()
-                    .map(|s| s.width)
-            })
+            h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip().map(|s| s.to))
         };
         assert_eq!(width(&mut h), Some(gpui::px(240.)), "Files alone, at first");
         h.dispatch(window, super::ToggleStructureColumn);
@@ -3026,12 +3019,23 @@ mod modes_driven {
             Some(gpui::px(480.)),
             "and Structure beside it"
         );
+        // It slides there from the width the sidebar had: the strip and
+        // the sidebar run from one to the other, not jump.
+        let from = h.read(|cx| {
+            studio
+                .read(cx)
+                .write
+                .read(cx)
+                .sidebar_strip()
+                .map(|s| s.from)
+        });
+        assert_eq!(from, Some(gpui::px(240.)), "from Files alone");
 
         // Closing slides it away: sliding OUT, then gone.
         h.dispatch(window, super::ToggleWritingSidebar);
         let sliding = h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip());
         assert!(
-            sliding.is_none() || sliding.is_some_and(|s| !s.opening),
+            sliding.is_none() || sliding.is_some_and(|s| s.to == gpui::px(0.)),
             "a closing sidebar slides out: {sliding:?}"
         );
         h.advance(brink_gpui_shell::workspace::SLIDE);
@@ -3199,7 +3203,7 @@ mod modes_driven {
             (
                 w.width_of(Pane::Files),
                 w.width_of(Pane::Player),
-                w.sidebar_strip().map(|s| s.width),
+                w.sidebar_strip().map(|s| s.to),
             )
         });
         assert_eq!(files, 300.);
@@ -4294,6 +4298,52 @@ mod modes_driven {
             rows_down >= 2. - 0.05,
             "the cursor is below the two pinned rows: {rows_down} rows down"
         );
+    }
+
+    /// The title bar's crumb stays over the manuscript's text as the
+    /// structure column slides in and pushes the column across.
+    #[test]
+    fn the_crumb_follows_the_text_as_the_structure_column_opens() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        h.advance(brink_gpui_shell::workspace::SLIDE);
+        h.capture(window);
+        h.capture(window);
+        let (anchor, manuscript) = h.read(|cx| {
+            let s = studio.read(cx);
+            (
+                s.workspace.read(cx).writing_crumb_anchor(),
+                s.manuscript.clone(),
+            )
+        });
+        // Where the text starts in the section at the top of the view.
+        let text_left = |h: &mut Harness| {
+            h.read(|cx| {
+                let m = manuscript.read(cx);
+                let path = m.current_or_top_file().expect("a file");
+                let editor = m.section_editor(&path).expect("mounted");
+                let state = editor.read(cx);
+                let at = state.visible_offset_range().expect("laid out").start;
+                state.range_to_bounds(&(at..at)).map(|b| b.left())
+            })
+        };
+        let before = anchor.get();
+        assert_eq!(before, text_left(&mut h), "over the text, to begin with");
+        h.dispatch(window, super::ToggleStructureColumn);
+        // Halfway: the sidebar is between its two widths, not at either.
+        h.advance(brink_gpui_shell::workspace::SLIDE / 2);
+        let shot = scratch_dir("shot").join("structure-mid.png");
+        h.screenshot(window, &shot);
+        eprintln!("structure mid-slide screenshot: {}", shot.display());
+        h.advance(brink_gpui_shell::workspace::SLIDE);
+        h.capture(window);
+        h.capture(window);
+        let after = anchor.get();
+        assert_ne!(after, before, "the column moved");
+        assert_eq!(after, text_left(&mut h), "and the crumb with it");
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

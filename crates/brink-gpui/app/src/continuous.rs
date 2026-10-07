@@ -184,6 +184,10 @@ pub struct ContinuousView {
     /// layout once it is (`render`). Bounded, so a caret that can never be
     /// placed cannot keep asking for frames.
     reveal_caret: Rc<std::cell::Cell<u8>>,
+    /// This view's bounds as of the last frame, measured after layout: the
+    /// frame the editors' own bounds are from (they learn them as they
+    /// paint). See the crumb's measurement in `render`.
+    last_view: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// Each file's outline, for the pinned structure lines; asked for when
     /// a file first reaches the top of the view, dropped on each analysis.
     outlines: HashMap<String, Vec<Symbol>>,
@@ -274,6 +278,7 @@ impl ContinuousView {
             signature: crate::signature_help::SignatureHint::default(),
             crumb_anchor: None,
             reveal_caret: Rc::default(),
+            last_view: Rc::default(),
             outlines: HashMap::new(),
             outline_pending: std::collections::HashSet::new(),
             pins: crate::sticky_lines::Pins::default(),
@@ -536,6 +541,14 @@ impl ContinuousView {
     pub fn row_height(&self, path: &str, cx: &App) -> Option<f32> {
         let (editor, _) = self.editors.borrow().get(path).cloned()?;
         editor.read(cx).line_height().map(f32::from)
+    }
+
+    /// The file at the top of the view, for the tests.
+    #[cfg(test)]
+    pub fn current_or_top_file(&self) -> Option<String> {
+        self.files
+            .get(self.list.logical_scroll_top().item_ix)
+            .cloned()
     }
 
     /// The list's visible area in window coordinates, for the tests.
@@ -1272,6 +1285,7 @@ impl Render for ContinuousView {
             .child({
                 let editors = self.editors.clone();
                 let anchor = self.crumb_anchor.clone();
+                let last_view = self.last_view.clone();
                 let reveal = self.reveal_caret.clone();
                 // The rows pinned over the top of the view, which a caret
                 // under them is as hidden by as by the edge.
@@ -1283,15 +1297,35 @@ impl Render for ContinuousView {
                     .measured_line_height
                     .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
                 gpui::canvas(
-                    move |_, window, cx| {
-                        // Offset 0's left edge in any laid-out section: they
-                        // share the column, so any will do. Passed on only
-                        // when it moves; the bar reads it as it draws, so a
-                        // move asks for one more frame to show it.
+                    move |bounds, window, cx| {
+                        // Where the text starts, this frame: the column is
+                        // centred in this view (as the sections lay it out)
+                        // and the text sits the gutter's width into it. The
+                        // editors only learn their bounds as they paint —
+                        // after this — so theirs are a frame old, which
+                        // would leave the crumb trailing a sliding column;
+                        // but the gutter they give is the same either way.
+                        // The column's left edge in a view of these bounds.
+                        let column_left = |view: gpui::Bounds<gpui::Pixels>| match column {
+                            Some(width) if width < view.size.width => {
+                                view.left() + (view.size.width - width) / 2.
+                            }
+                            _ => view.left(),
+                        };
+                        // Last frame's view, the frame the editors' bounds
+                        // are from: the text's offset into the column is
+                        // read against it, and holds for this one.
+                        let last = last_view.replace(Some(bounds));
                         if let Some(cell) = &anchor {
-                            let left = editors.borrow().values().find_map(|(editor, _)| {
-                                editor.read(cx).range_to_bounds(&(0..0)).map(|b| b.left())
+                            let top = files.get(list.logical_scroll_top().item_ix);
+                            let into = top.zip(last).and_then(|(path, last)| {
+                                let (editor, _) = editors.borrow().get(path).cloned()?;
+                                let state = editor.read(cx);
+                                let at = state.visible_offset_range()?.start;
+                                let text = state.range_to_bounds(&(at..at))?.left();
+                                Some(text - column_left(last))
                             });
+                            let left = into.map(|into| column_left(bounds) + into);
                             if left.is_some() && cell.get() != left {
                                 cell.set(left);
                                 window.refresh();
@@ -1324,7 +1358,9 @@ impl Render for ContinuousView {
                     |_, (), _, _| {},
                 )
                 .absolute()
-                .size_0()
+                .top_0()
+                .left_0()
+                .size_full()
             })
             .children(pinned)
             .children(self.signature.render(cx))
