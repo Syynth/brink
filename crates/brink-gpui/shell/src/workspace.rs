@@ -1367,19 +1367,47 @@ impl Workspace {
             .get()
             .filter(|x| *x > px(TRAFFIC_LIGHTS + WRITING_TOGGLE_ROOM));
         let title_el = match anchored_at {
-            Some(x) => {
-                let room =
-                    (window.viewport_size().width - x - px(WRITING_BUTTONS_ROOM)).max(px(80.));
+            Some(_) => {
+                // Placed as the frame is drawn, not as the bar is built: the
+                // manuscript measures where its text starts while it lays
+                // out, which is after this bar, so a position read here
+                // would be a frame old — and trail the column through a
+                // slide. A deferred element is prepainted after everything
+                // else, by when this frame's measurement is in.
+                let cell = self.writing_crumb_at.clone();
+                let width = window.viewport_size().width;
+                let crumb = text(title);
                 div()
                     .flex_1()
+                    .h_full()
                     .child(
-                        gpui::anchored().position(gpui::point(x, px(0.))).child(
-                            h_flex()
-                                .h(TITLE_BAR_HEIGHT)
-                                .max_w(room)
-                                .items_center()
-                                .child(text(title)),
-                        ),
+                        gpui::deferred(
+                            gpui::canvas(
+                                move |bounds, window, cx| {
+                                    let x = cell.get().unwrap_or(bounds.left());
+                                    let room = (width - x - px(WRITING_BUTTONS_ROOM)).max(px(80.));
+                                    let mut crumb = h_flex()
+                                        .h(TITLE_BAR_HEIGHT)
+                                        .max_w(room)
+                                        .items_center()
+                                        .child(crumb)
+                                        .into_any_element();
+                                    crumb.prepaint_as_root(
+                                        gpui::point(x, px(0.)),
+                                        gpui::size(
+                                            gpui::AvailableSpace::Definite(room),
+                                            gpui::AvailableSpace::Definite(TITLE_BAR_HEIGHT),
+                                        ),
+                                        window,
+                                        cx,
+                                    );
+                                    crumb
+                                },
+                                |_, mut crumb, window, cx| crumb.paint(window, cx),
+                            )
+                            .size_full(),
+                        )
+                        .with_priority(0),
                     )
                     .into_any_element()
             }
@@ -1431,9 +1459,9 @@ impl Workspace {
         let Some(slide) = self.writing_sidebar else {
             return strip.w(px(closed)).children(buttons).into_any_element();
         };
-        let open = f32::from(slide.width);
-        // 0 → 1 while opening, 1 → 0 while closing.
-        let at = move |delta: f32| if slide.opening { delta } else { 1. - delta };
+        let (from, to) = (f32::from(slide.from), f32::from(slide.to));
+        // The sidebar's width at this point of the slide.
+        let at = move |delta: f32| from + (to - from) * delta;
         let backdrop = div()
             .absolute()
             .left_0()
@@ -1445,7 +1473,7 @@ impl Workspace {
             .with_animation(
                 SharedString::from(format!("writing-strip-backdrop-{}", slide.slide)),
                 Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
-                move |el, delta| el.w(px(open * at(delta))),
+                move |el, delta| el.w(px(at(delta))),
             );
         strip
             .child(backdrop)
@@ -1453,7 +1481,7 @@ impl Workspace {
             .with_animation(
                 SharedString::from(format!("writing-strip-{}", slide.slide)),
                 Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
-                move |el, delta| el.w(px(closed + (open - closed).max(0.) * at(delta))),
+                move |el, delta| el.w(px(at(delta).max(closed))),
             )
             .into_any_element()
     }
@@ -1606,11 +1634,12 @@ pub const SLIDE: std::time::Duration = std::time::Duration::from_millis(160);
 /// The Writing sidebar as the title bar draws it.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SidebarStrip {
-    /// The sidebar's full width.
-    pub width: gpui::Pixels,
-    /// Sliding in, or out. Once a slide out has finished the app says
-    /// `None` instead.
-    pub opening: bool,
+    /// The sidebar's width when this slide began, and the width it is
+    /// heading for: nothing to full as it opens, full to nothing as it
+    /// closes, one width to the other as a column comes or goes. Once a
+    /// slide out has finished the app says `None` instead.
+    pub from: gpui::Pixels,
+    pub to: gpui::Pixels,
     /// Bumped per slide, so each one animates from its start rather than
     /// resuming where the last ended.
     pub slide: usize,

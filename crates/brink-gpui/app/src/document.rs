@@ -97,9 +97,12 @@ pub struct Document {
     outline_pending: bool,
     /// What is pinned at the top now, and what is fading out.
     pins: crate::sticky_lines::Pins,
-    /// This view's left edge in the window, after layout: the editor sits
+    /// This view's bounds in the window, after layout: the editor sits
     /// inset in it, so the pinned lines measure from here, not from it.
-    left: Rc<std::cell::Cell<Option<gpui::Pixels>>>,
+    bounds: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
+    /// Where the cursor was when last looked at, so only a move of it is
+    /// kept clear of the pinned lines — never a scroll by the wheel.
+    last_cursor: Option<usize>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -284,7 +287,10 @@ impl Document {
 
         // The pinned lines follow the editor's scroll, which the editor
         // notifies of and this view would not otherwise hear.
-        let on_scroll = cx.observe(&editor, |_, _, cx| cx.notify());
+        let on_scroll = cx.observe(&editor, |this, editor, cx| {
+            this.keep_cursor_clear(&editor, cx);
+            cx.notify();
+        });
 
         let mut this = Self {
             path,
@@ -299,7 +305,8 @@ impl Document {
             outline: None,
             outline_pending: false,
             pins: crate::sticky_lines::Pins::default(),
-            left: Rc::default(),
+            bounds: Rc::default(),
+            last_cursor: None,
             _subscriptions: vec![on_change, on_project, on_theme, on_settings, on_scroll],
         };
         // The editor may normalise what it was given (line endings); if it
@@ -1775,7 +1782,7 @@ impl Document {
             return (Vec::new(), Vec::new());
         };
         let top = -state.scroll_offset().y;
-        crate::sticky_lines::pin(state, outline, top, within).unwrap_or_default()
+        crate::sticky_lines::pin(state, outline, top, within, None).unwrap_or_default()
     }
 
     /// The pinned lines' text, for the tests.
@@ -1786,6 +1793,41 @@ impl Document {
             .into_iter()
             .map(|l| l.text)
             .collect()
+    }
+
+    /// The editor keeps its cursor in view, but knows nothing of the pinned
+    /// lines over its top: a cursor moved under them is scrolled down clear
+    /// of them, as it would be off the edge.
+    fn keep_cursor_clear(&mut self, editor: &Entity<EditorState>, cx: &mut Context<Self>) {
+        let state = editor.read(cx);
+        let cursor = state.cursor();
+        if self.last_cursor.replace(cursor) == Some(cursor) {
+            return;
+        }
+        let rows = self.pins.shown_rows();
+        let Some(row) = state.line_height() else {
+            return;
+        };
+        if rows == 0 {
+            return;
+        }
+        // In the editor's content, by display rows (soft wrap and folds
+        // counted): the cursor's line may not be in the layout the editor
+        // last drew, and bounds from that layout put it a screen away.
+        let value = state.value();
+        let line = value
+            .get(..cursor)
+            .map_or(0, |before| before.matches('\n').count());
+        let cursor_y = row * state.display_row_of_buffer_line(line) as f32;
+        let scroll = state.scroll_offset();
+        // The strip covers `rows` rows from the top of the view. (The
+        // editor's few pixels of inset above its text are left out: they
+        // only keep the cursor that much further clear.)
+        let floor = -scroll.y + row * rows as f32;
+        if cursor_y < floor {
+            let to = gpui::point(scroll.x, scroll.y + (floor - cursor_y));
+            editor.update(cx, |state, cx| state.set_scroll_offset(to, cx));
+        }
     }
 
     /// The pinned lines' overlay, over the top of the editor.
@@ -1805,19 +1847,23 @@ impl Document {
         let state = self.editor.read(cx);
         let first = state.visible_offset_range()?.start;
         let geometry = crate::sticky_lines::Geometry {
-            text_left: state.range_to_bounds(&(first..first))?.left() - self.left.get()?,
+            text_left: state.range_to_bounds(&(first..first))?.left() - self.bounds.get()?.left(),
             line_height: state.line_height()?,
             font: cx.theme().mono_font_family.clone(),
             font_size: cx.theme().mono_font_size,
             folds: true,
+            // Script pins no file row: the tab names the file.
+            column: (gpui::px(0.), gpui::px(0.)),
         };
         let me = cx.weak_entity();
         crate::sticky_lines::render(
             &self.pins,
             &geometry,
-            move |offset, window, cx| {
-                let _ = me.update(cx, |this, cx| this.reveal(offset..offset, window, cx));
+            move |pin, window, cx| {
+                let at = pin.offset;
+                let _ = me.update(cx, |this, cx| this.reveal(at..at, window, cx));
             },
+            &|_| gpui::Empty.into_any_element(),
             cx,
         )
     }
@@ -1865,11 +1911,11 @@ impl gpui::Render for Document {
             // This view's left edge, for the next frame's pinned lines; a
             // move asks for that frame.
             .child({
-                let left = self.left.clone();
+                let cell = self.bounds.clone();
                 gpui::canvas(
                     move |bounds, window, _| {
-                        if left.get() != Some(bounds.left()) {
-                            left.set(Some(bounds.left()));
+                        if cell.get() != Some(bounds) {
+                            cell.set(Some(bounds));
                             window.refresh();
                         }
                     },

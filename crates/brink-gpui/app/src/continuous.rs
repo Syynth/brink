@@ -47,6 +47,7 @@ use gpui_component::{
 };
 
 use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
+use brink_ir::SymbolKind;
 
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
@@ -183,6 +184,10 @@ pub struct ContinuousView {
     /// layout once it is (`render`). Bounded, so a caret that can never be
     /// placed cannot keep asking for frames.
     reveal_caret: Rc<std::cell::Cell<u8>>,
+    /// This view's bounds as of the last frame, measured after layout: the
+    /// frame the editors' own bounds are from (they learn them as they
+    /// paint). See the crumb's measurement in `render`.
+    last_view: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
     /// Each file's outline, for the pinned structure lines; asked for when
     /// a file first reaches the top of the view, dropped on each analysis.
     outlines: HashMap<String, Vec<Symbol>>,
@@ -192,6 +197,9 @@ pub struct ContinuousView {
     /// A section to focus once it exists: an arrow key crossed into a file
     /// that had not been mounted yet (`cross_file`).
     pending_focus: Option<String>,
+    /// Frames a reveal may wait for its section to lay out, so it can land
+    /// on the line's true place (`apply_pending_reveal`).
+    reveal_retries: u8,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -270,10 +278,12 @@ impl ContinuousView {
             signature: crate::signature_help::SignatureHint::default(),
             crumb_anchor: None,
             reveal_caret: Rc::default(),
+            last_view: Rc::default(),
             outlines: HashMap::new(),
             outline_pending: std::collections::HashSet::new(),
             pins: crate::sticky_lines::Pins::default(),
             pending_focus: None,
+            reveal_retries: 0,
             _subscriptions: vec![watch],
         }
     }
@@ -398,6 +408,7 @@ impl ContinuousView {
         // `ListState::splice` zeroes the scroll offset inside the spliced
         // item — a scroll applied before that pass was thrown away by it.
         self.pending_reveal = Some((path.to_owned(), span));
+        self.reveal_retries = REVEAL_TRIES;
         cx.notify();
     }
 
@@ -412,19 +423,46 @@ impl ContinuousView {
             self.pending_reveal = None;
             return;
         };
-        self.pending_reveal = None;
         // The section does not scroll — the list does — so "show this span"
-        // is a list offset: the heading, then the span's row, backed off a
-        // few rows so the target is not pinned to the top edge.
-        let line = editor
-            .read(cx)
-            .value()
-            .get(..span.start)
-            .map_or(0, |before| before.matches('\n').count());
+        // is a list offset: the chapter break, then the span's line as the
+        // section laid it out (prose wraps, so counting newlines lands a
+        // far line well short), backed off past the rows that will pin
+        // above it, and one more.
         let line_height = self
             .measured_line_height
             .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
-        let offset = (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.0);
+        let (text, y) = {
+            let state = editor.read(cx);
+            let text = state.value().to_string();
+            let line = text
+                .get(..span.start)
+                .map_or(0, |before| before.matches('\n').count());
+            // Its display row, wrapping and folds counted, whether or not
+            // the section has laid that far — once it has laid out at all,
+            // which is what gives the wrap map its width.
+            let y = state
+                .line_height()
+                .map(|_| state.display_row_of_buffer_line(line) as f32 * line_height);
+            (text, y)
+        };
+        let Some(y) = y else {
+            // Never laid out: get it on screen, and place the line on the
+            // next frame.
+            if self.reveal_retries > 0 {
+                self.reveal_retries -= 1;
+                self.list.scroll_to(gpui::ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            } else {
+                self.pending_reveal = None;
+            }
+            return;
+        };
+        self.pending_reveal = None;
+        let reserve = (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height;
+        let offset = (SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: px(offset),
@@ -437,6 +475,33 @@ impl ContinuousView {
         // and the title bar's knot › stitch follow from here.
         self.follow_caret(path, editor, cx);
         cx.notify();
+    }
+
+    /// How many rows will pin above `offset` once it is near the top of
+    /// the view: the file's own row, and the knot and stitch it is inside
+    /// whose headers are above it. Two of those when the outline has not
+    /// arrived, the most there can be.
+    fn pinned_rows_at(&self, path: &str, text: &str, offset: usize) -> usize {
+        let Some(symbols) = self.outlines.get(path) else {
+            return 3;
+        };
+        let line = crate::sticky_lines::line_start(text, offset.min(text.len()));
+        let holds = |s: &&Symbol| (s.full_start as usize) <= offset && offset < s.full_end as usize;
+        let above =
+            |s: &Symbol| crate::sticky_lines::line_start(text, s.full_start as usize) < line;
+        let knot = symbols
+            .iter()
+            .filter(|s| s.kind == SymbolKind::Knot)
+            .find(holds)
+            .filter(|k| above(k));
+        let stitch = knot.and_then(|k| {
+            k.children
+                .iter()
+                .filter(|s| s.kind == SymbolKind::Stitch)
+                .find(holds)
+                .filter(|s| above(s))
+        });
+        1 + usize::from(knot.is_some()) + usize::from(stitch.is_some())
     }
 
     /// Keep the title bar's crumb over the text: `cell` gets the window x
@@ -476,6 +541,14 @@ impl ContinuousView {
     pub fn row_height(&self, path: &str, cx: &App) -> Option<f32> {
         let (editor, _) = self.editors.borrow().get(path).cloned()?;
         editor.read(cx).line_height().map(f32::from)
+    }
+
+    /// The file at the top of the view, for the tests.
+    #[cfg(test)]
+    pub fn current_or_top_file(&self) -> Option<String> {
+        self.files
+            .get(self.list.logical_scroll_top().item_ix)
+            .cloned()
     }
 
     /// The list's visible area in window coordinates, for the tests.
@@ -619,14 +692,24 @@ impl ContinuousView {
         if into_text <= px(0.) {
             return None;
         }
-        let Some(symbols) = self.outlines.get(&path) else {
+        if !self.outlines.contains_key(&path) {
             self.request_outline(&path, cx);
-            return None;
-        };
+        }
+        let symbols = self.outlines.get(&path).map_or(&[][..], Vec::as_slice);
         let (editor, _) = self.editors.borrow().get(&path).cloned()?;
         let state = editor.read(cx);
         let len = state.value().len();
-        let (pinned, pushes) = crate::sticky_lines::pin(state, symbols, into_text, 0..len)?;
+        // The file's own row, on top: its chapter break, pinned once that
+        // has scrolled away, and pushed off by the next file's.
+        let file = crate::sticky_lines::PinnedLine {
+            offset: 0,
+            line: 0,
+            text: path.clone(),
+            kind: crate::sticky_lines::PinKind::File,
+            end: len,
+        };
+        let (pinned, pushes) =
+            crate::sticky_lines::pin(state, symbols, into_text, 0..len, Some(file))?;
         Some((path, pinned, pushes))
     }
 
@@ -634,10 +717,14 @@ impl ContinuousView {
     /// in the sections' own rows.
     fn pinned_geometry(&self, path: &str, cx: &App) -> Option<crate::sticky_lines::Geometry> {
         let (editor, _) = self.editors.borrow().get(path).cloned()?;
-        let text_left = editor.read(cx).range_to_bounds(&(0..0))?.left();
+        let state = editor.read(cx);
+        let text_left = state.range_to_bounds(&(0..0))?.left();
+        let column = state.input_bounds();
+        let view_left = self.list.viewport_bounds().left();
         let theme = cx.theme();
         Some(crate::sticky_lines::Geometry {
-            text_left: text_left - self.list.viewport_bounds().left(),
+            text_left: text_left - view_left,
+            column: (column.left() - view_left, column.size.width),
             line_height: px(self
                 .measured_line_height
                 .unwrap_or_else(|| f32::from(theme.mono_font_size) * LINE_HEIGHT_FACTOR)),
@@ -1091,15 +1178,34 @@ impl Render for ContinuousView {
             top.and_then(|top| {
                 let geometry = self.pinned_geometry(&top, cx)?;
                 let me = self.me.clone();
+                let app: &App = cx;
+                let file_row = |pin: &crate::sticky_lines::PinnedLine| {
+                    let project = self.project.read(app);
+                    let marks = FileMarks {
+                        draft: project.is_draft(&pin.text),
+                        entry: project.entry() == Some(pin.text.as_str()),
+                        dirty: project.is_dirty(&pin.text),
+                    };
+                    title_row(&pin.text, marks, app).into_any_element()
+                };
                 crate::sticky_lines::render(
                     &self.pins,
                     &geometry,
-                    move |offset, _, cx| {
+                    move |pin, _, cx| {
                         let top = top.clone();
-                        let _ =
-                            me.update(cx, |this, cx| this.reveal_span(&top, offset..offset, cx));
+                        let at = pin.offset;
+                        let file = pin.kind == crate::sticky_lines::PinKind::File;
+                        let _ = me.update(cx, |this, cx| {
+                            // The file's row goes to its chapter break.
+                            if file {
+                                this.reveal(&top, cx);
+                            } else {
+                                this.reveal_span(&top, at..at, cx);
+                            }
+                        });
                     },
-                    cx,
+                    &file_row,
+                    app,
                 )
             })
         };
@@ -1179,7 +1285,11 @@ impl Render for ContinuousView {
             .child({
                 let editors = self.editors.clone();
                 let anchor = self.crumb_anchor.clone();
+                let last_view = self.last_view.clone();
                 let reveal = self.reveal_caret.clone();
+                // The rows pinned over the top of the view, which a caret
+                // under them is as hidden by as by the edge.
+                let covered = self.pins.shown_rows();
                 let caret = self.caret.clone();
                 let files = self.files.clone();
                 let list = self.list.clone();
@@ -1187,15 +1297,35 @@ impl Render for ContinuousView {
                     .measured_line_height
                     .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
                 gpui::canvas(
-                    move |_, window, cx| {
-                        // Offset 0's left edge in any laid-out section: they
-                        // share the column, so any will do. Passed on only
-                        // when it moves; the bar reads it as it draws, so a
-                        // move asks for one more frame to show it.
+                    move |bounds, window, cx| {
+                        // Where the text starts, this frame: the column is
+                        // centred in this view (as the sections lay it out)
+                        // and the text sits the gutter's width into it. The
+                        // editors only learn their bounds as they paint —
+                        // after this — so theirs are a frame old, which
+                        // would leave the crumb trailing a sliding column;
+                        // but the gutter they give is the same either way.
+                        // The column's left edge in a view of these bounds.
+                        let column_left = |view: gpui::Bounds<gpui::Pixels>| match column {
+                            Some(width) if width < view.size.width => {
+                                view.left() + (view.size.width - width) / 2.
+                            }
+                            _ => view.left(),
+                        };
+                        // Last frame's view, the frame the editors' bounds
+                        // are from: the text's offset into the column is
+                        // read against it, and holds for this one.
+                        let last = last_view.replace(Some(bounds));
                         if let Some(cell) = &anchor {
-                            let left = editors.borrow().values().find_map(|(editor, _)| {
-                                editor.read(cx).range_to_bounds(&(0..0)).map(|b| b.left())
+                            let top = files.get(list.logical_scroll_top().item_ix);
+                            let into = top.zip(last).and_then(|(path, last)| {
+                                let (editor, _) = editors.borrow().get(path).cloned()?;
+                                let state = editor.read(cx);
+                                let at = state.visible_offset_range()?.start;
+                                let text = state.range_to_bounds(&(at..at))?.left();
+                                Some(text - column_left(last))
                             });
+                            let left = into.map(|into| column_left(bounds) + into);
                             if left.is_some() && cell.get() != left {
                                 cell.set(left);
                                 window.refresh();
@@ -1211,6 +1341,7 @@ impl Render for ContinuousView {
                                     path,
                                     *offset,
                                     line_height,
+                                    covered,
                                     cx,
                                 )
                             });
@@ -1227,7 +1358,9 @@ impl Render for ContinuousView {
                     |_, (), _, _| {},
                 )
                 .absolute()
-                .size_0()
+                .top_0()
+                .left_0()
+                .size_full()
             })
             .children(pinned)
             .children(self.signature.render(cx))
@@ -1407,10 +1540,20 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     Some(px(chars * ch + gutter))
 }
 
-/// Scroll so the caret at `offset` in `path` is on screen, with a couple
-/// of rows to spare (and room for the pinned lines at the top). `true` once it is; `false` when its section was not
-/// laid out yet, in which case the list is scrolled to the caret's row as
-/// counted from the text, for the next frame to settle exactly.
+/// Scroll so the caret at `offset` in `path` is on screen: below the
+/// pinned rows covering the top (`covered`, plus one to spare) and a couple
+/// of rows clear of the bottom. `true` once it is; `false` when its section
+/// has never laid out, in which case the list is scrolled to it for the
+/// next frame to settle.
+///
+/// Where the caret sits is counted in display rows — soft wrap and folds
+/// included — from where the list put its section this frame: a line the
+/// section has not laid out has no bounds, or stale ones, and acting on
+/// those scrolled the view far past the caret.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the canvas closure's captures, passed through"
+)]
 fn keep_caret_on_screen(
     list: &ListState,
     files: &[String],
@@ -1418,6 +1561,7 @@ fn keep_caret_on_screen(
     path: &str,
     offset: usize,
     line_height: f32,
+    covered: usize,
     cx: &App,
 ) -> bool {
     let Some(index) = files.iter().position(|f| f == path) else {
@@ -1426,32 +1570,48 @@ fn keep_caret_on_screen(
     let Some((editor, _)) = editors.get(path) else {
         return true;
     };
-    let margin = px(2. * line_height);
-    // Clear of the pinned knot and stitch lines too, which cover the top.
-    let margin_top = margin + px(2. * line_height);
-    if list.bounds_for_item(index).is_some()
-        && let Some(at) = editor.read(cx).range_to_bounds(&(offset..offset))
-    {
-        let view = list.viewport_bounds();
-        if at.top() < view.top() + margin_top {
-            list.scroll_by(at.top() - view.top() - margin_top);
-        } else if at.bottom() > view.bottom() - margin {
-            list.scroll_by(at.bottom() - view.bottom() + margin);
-        }
-        return true;
-    }
     let state = editor.read(cx);
-    let line = state
-        .value()
+    if state.line_height().is_none() {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.),
+        });
+        return false;
+    }
+    let text = state.value();
+    let line = text
         .get(..offset)
         .map_or(0, |before| before.matches('\n').count());
-    list.scroll_to(gpui::ListOffset {
-        item_ix: index,
-        offset_in_item: px(
-            (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.),
-        ),
-    });
-    false
+    let start = crate::sticky_lines::line_start(&text, offset.min(text.len()));
+    // Which wrapped row of its line the caret is on, when the line is laid
+    // out (both bounds from the same layout, so their difference holds).
+    let within = match (
+        state.range_to_bounds(&(offset..offset)),
+        state.range_to_bounds(&(start..start)),
+    ) {
+        (Some(at), Some(line_top)) => f32::from(at.top() - line_top.top()).max(0.),
+        _ => 0.,
+    };
+    let in_item =
+        SEPARATOR_HEIGHT + state.display_row_of_buffer_line(line) as f32 * line_height + within;
+    let Some(item) = list.bounds_for_item(index) else {
+        list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px((in_item - (covered + 1) as f32 * line_height).max(0.)),
+        });
+        return false;
+    };
+    let top = item.top() + px(in_item);
+    let bottom = top + px(line_height);
+    let view = list.viewport_bounds();
+    let margin_top = px((covered + 1) as f32 * line_height);
+    let margin_bottom = px(2. * line_height);
+    if top < view.top() + margin_top {
+        list.scroll_by(top - view.top() - margin_top);
+    } else if bottom > view.bottom() - margin_bottom {
+        list.scroll_by(bottom - view.bottom() + margin_bottom);
+    }
+    true
 }
 
 /// What a file's separator shows about it, read off the project.
@@ -1502,6 +1662,58 @@ fn chapter_title(path: &str) -> String {
     out
 }
 
+/// A file's title as its chapter break draws it — its icon, its name in
+/// tracked capitals, a DRAFT badge, an unsaved dot — and as its pinned row
+/// repeats it.
+fn title_row(path: &str, marks: FileMarks, cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    let draft_colour = brink_gpui_shell::theme::hsla(tokens.draft);
+    let (icon, icon_colour) = if marks.draft {
+        (icons::BrinkIcon::DropDraft, draft_colour)
+    } else if marks.entry {
+        (icons::BrinkIcon::DropEntryOutline, theme.primary)
+    } else {
+        (icons::BrinkIcon::Drop, theme.muted_foreground)
+    };
+    let name_colour = if marks.draft {
+        draft_colour
+    } else {
+        theme.foreground.opacity(0.8)
+    };
+    h_flex()
+        .relative()
+        .items_center()
+        .gap(px(8.))
+        .font_family(theme.font_family.clone())
+        .child(icons::icon(icon, px(13.), icon_colour))
+        .child(
+            div()
+                .text_xs()
+                .text_color(name_colour)
+                .child(chapter_title(path)),
+        )
+        .when(marks.draft, |el| {
+            el.child(
+                div()
+                    .px(px(4.))
+                    .rounded(px(3.))
+                    .bg(draft_colour.opacity(0.14))
+                    .text_size(px(8.5))
+                    .text_color(draft_colour)
+                    .child("D\u{2009}R\u{2009}A\u{2009}F\u{2009}T"),
+            )
+        })
+        .when(marks.dirty, |el| {
+            el.child(
+                div()
+                    .size(px(5.))
+                    .rounded_full()
+                    .bg(theme.foreground.opacity(0.7)),
+            )
+        })
+}
+
 /// The boundary between two files: a chapter break (decision log
 /// 2026-10-07). Space, then the file's icon and its name in tracked
 /// capitals, centred over the column, over a short rule. An unsaved file
@@ -1520,18 +1732,6 @@ fn separator(
     let theme = cx.theme();
     let tokens = brink_gpui_shell::theme::current(cx).tokens;
     let draft_colour = brink_gpui_shell::theme::hsla(tokens.draft);
-    let (icon, icon_colour) = if marks.draft {
-        (icons::BrinkIcon::DropDraft, draft_colour)
-    } else if marks.entry {
-        (icons::BrinkIcon::DropEntryOutline, theme.primary)
-    } else {
-        (icons::BrinkIcon::Drop, theme.muted_foreground)
-    };
-    let name_colour = if marks.draft {
-        draft_colour
-    } else {
-        theme.foreground.opacity(0.8)
-    };
     let rule = if marks.draft {
         draft_colour.opacity(0.45)
     } else {
@@ -1597,37 +1797,8 @@ fn separator(
                 .child(
                     // The title itself, and the menu hung off its right end
                     // out of the flow, so the title centres on its own.
-                    h_flex()
-                        .relative()
+                    title_row(path, marks, cx)
                         .h_full()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(icons::icon(icon, px(13.), icon_colour))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(name_colour)
-                                .child(chapter_title(path)),
-                        )
-                        .when(marks.draft, |el| {
-                            el.child(
-                                div()
-                                    .px(px(4.))
-                                    .rounded(px(3.))
-                                    .bg(draft_colour.opacity(0.14))
-                                    .text_size(px(8.5))
-                                    .text_color(draft_colour)
-                                    .child("D\u{2009}R\u{2009}A\u{2009}F\u{2009}T"),
-                            )
-                        })
-                        .when(marks.dirty, |el| {
-                            el.child(
-                                div()
-                                    .size(px(5.))
-                                    .rounded_full()
-                                    .bg(theme.foreground.opacity(0.7)),
-                            )
-                        })
                         // Shown on hover, so a resting break is only its name.
                         .child(
                             div()

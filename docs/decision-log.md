@@ -5775,3 +5775,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** Write mode's title bar crumb shows a file as its folder path and its name with no extension (`chapters/two › start › second`, not `chapters/two.ink › …`). The file name is drawn brighter than the folder, the knot › stitch and the story title.
 - **WHY:** The extension is noise in a crumb that is about where you are in the story, and every story file carries one. Setting the name apart from its folder makes the part you navigate by easy to pick out of a long path.
+
+## The manuscript pins a file row too, drawn like its chapter break
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Amends the earlier entry from today ("no pinned file band remains"). Once a file's chapter break has scrolled past the top of Write's manuscript, a row standing for the file pins above its knot and stitch lines. It is drawn like the break: icon, name in spaced capitals, DRAFT badge, unsaved dot, centred over the column. The next file's break pushes it off, and a click goes to the file's start. Jumps and the cursor-follow count the pinned rows as covering the top of the view, in both Write and Script.
+- **WHY:** After using the pinned knot/stitch lines, the maintainer wanted the file named there as well. Drawing it as the chapter break keeps the pinned strip reading as the manuscript's own structure rather than a toolbar. Counting the pinned rows as covered space follows from them hiding the text under them: a jump or a cursor that lands under the strip is as lost as one off the edge.

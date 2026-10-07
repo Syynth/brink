@@ -3010,14 +3010,7 @@ mod modes_driven {
         // The structure column starts off, and its toggle widens the
         // sidebar — and the title bar's strip, which is told the width.
         let width = |h: &mut Harness| {
-            h.read(|cx| {
-                studio
-                    .read(cx)
-                    .write
-                    .read(cx)
-                    .sidebar_strip()
-                    .map(|s| s.width)
-            })
+            h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip().map(|s| s.to))
         };
         assert_eq!(width(&mut h), Some(gpui::px(240.)), "Files alone, at first");
         h.dispatch(window, super::ToggleStructureColumn);
@@ -3026,12 +3019,23 @@ mod modes_driven {
             Some(gpui::px(480.)),
             "and Structure beside it"
         );
+        // It slides there from the width the sidebar had: the strip and
+        // the sidebar run from one to the other, not jump.
+        let from = h.read(|cx| {
+            studio
+                .read(cx)
+                .write
+                .read(cx)
+                .sidebar_strip()
+                .map(|s| s.from)
+        });
+        assert_eq!(from, Some(gpui::px(240.)), "from Files alone");
 
         // Closing slides it away: sliding OUT, then gone.
         h.dispatch(window, super::ToggleWritingSidebar);
         let sliding = h.read(|cx| studio.read(cx).write.read(cx).sidebar_strip());
         assert!(
-            sliding.is_none() || sliding.is_some_and(|s| !s.opening),
+            sliding.is_none() || sliding.is_some_and(|s| s.to == gpui::px(0.)),
             "a closing sidebar slides out: {sliding:?}"
         );
         h.advance(brink_gpui_shell::workspace::SLIDE);
@@ -3199,7 +3203,7 @@ mod modes_driven {
             (
                 w.width_of(Pane::Files),
                 w.width_of(Pane::Player),
-                w.sidebar_strip().map(|s| s.width),
+                w.sidebar_strip().map(|s| s.to),
             )
         });
         assert_eq!(files, 300.);
@@ -4003,11 +4007,11 @@ mod modes_driven {
         // Line ~80 of the file: inside `second`.
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5, cx)));
         h.capture(window);
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
-            !pinned(h).is_empty()
-        });
-        assert!(found, "nothing pinned");
-        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        // The file's row comes at once; its knot and stitch once the
+        // outline lands.
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| pinned(h).len() == 3);
+        assert!(found, "the knot and stitch never pinned");
+        assert_eq!(pinned(&mut h), ["story.ink", "=== start ===", "= second"]);
         // Hovered, a pinned row still covers the text under it.
         h.hover(window, 600., 45.);
         let shot = scratch_dir("shot").join("pinned.png");
@@ -4016,6 +4020,9 @@ mod modes_driven {
 
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(0., cx)));
         assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
+        // Past the break but above the first knot: the file's row alone.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 1., cx)));
+        assert_eq!(pinned(&mut h), ["story.ink"]);
     }
 
     /// The next knot's header pushes the pinned strip up as it arrives,
@@ -4039,18 +4046,113 @@ mod modes_driven {
             h.capture(window);
             h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
                 .len()
-                == 2
+                == 3
         });
-        assert!(settled, "the knot and stitch pin");
+        assert!(settled, "the file, knot and stitch pin");
         let pushes = h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_pushes(cx)));
-        assert_eq!(pushes.len(), 2);
+        assert_eq!(pushes.len(), 3);
+        // The file's row stays — the file goes on — while its knot and
+        // stitch slide up behind it, clear of the header coming up.
+        assert!(pushes[0].abs() < 1., "the file's row stays: {pushes:?}");
         assert!(
-            (pushes[0] + 0.5 * row).abs() < 1.,
-            "the strip is half a row up: {pushes:?}"
+            (pushes[1] + 1.5 * row).abs() < 1. && (pushes[2] + 1.5 * row).abs() < 1.,
+            "the knot and stitch are a row and a half up: {pushes:?}"
         );
         let shot = scratch_dir("shot").join("pushed.png");
         h.screenshot(window, &shot);
         eprintln!("pushed screenshot: {}", shot.display());
+    }
+
+    /// A click on a pinned row goes to its header and nowhere else: the
+    /// press must not reach the text under the row first.
+    #[test]
+    fn a_click_on_a_pinned_row_goes_only_to_its_header() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let row = h
+            .read(|cx| manuscript.read(cx).row_height("story.ink", cx))
+            .expect("laid out");
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * row, cx)));
+        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.capture(window);
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+                .len()
+                == 3
+        });
+        assert!(pinned, "the file, knot and stitch pin");
+        let caret = |h: &mut Harness| {
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
+        };
+        let editor = h
+            .read(|cx| manuscript.read(cx).section_editor("story.ink"))
+            .expect("mounted");
+        let cursor = |h: &mut Harness| h.read(|cx| editor.read(cx).cursor());
+        let before = (caret(&mut h), cursor(&mut h));
+        // The knot's row: the second, under the file's.
+        let (x, y) = h.read(|cx| {
+            let view = manuscript.read(cx).viewport();
+            (
+                f32::from(view.center().x),
+                f32::from(view.top()) + row * 1.5,
+            )
+        });
+        h.hover(window, x, y);
+        h.mouse_down(window, x, y);
+        h.capture(window);
+        assert_eq!(
+            (caret(&mut h), cursor(&mut h)),
+            before,
+            "the press stays on the row"
+        );
+        h.mouse_up(window, x, y);
+        h.capture(window);
+        let header = "-> start\n".len();
+        assert_eq!(caret(&mut h), Some(("story.ink".to_owned(), header)));
+    }
+
+    /// A jump lands where the line really is: prose wraps, so counting
+    /// newlines puts a far line well above its true place.
+    #[test]
+    fn a_reveal_finds_its_line_through_wrapped_prose() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("wrapped");
+        let long = "The rain keeps on, and the lamp gutters, and nobody comes; ".repeat(6);
+        let prose: String = (0..80).map(|i| format!("{i} {long}\n")).collect();
+        // Room after it, so the list can scroll it to the top.
+        let story = format!("-> start\n=== start ===\n{prose}=== market ===\n{prose}");
+        std::fs::write(dir.join("story.ink"), &story).expect("writing the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let market = story.find("=== market").expect("the knot");
+        h.update(|cx| {
+            manuscript.update(cx, |m, cx| m.reveal_span("story.ink", market..market, cx))
+        });
+        h.capture(window);
+        h.capture(window);
+        let (at, view) = h.read(|cx| {
+            let m = manuscript.read(cx);
+            let editor = m.section_editor("story.ink").expect("mounted");
+            (
+                editor.read(cx).range_to_bounds(&(market..market)),
+                m.viewport(),
+            )
+        });
+        let at = at.expect("the line is laid out");
+        // Near the top, where a reveal puts it (a few rows down, clear of
+        // the pinned lines) — not dragged in at the bottom edge after
+        // landing a screen short.
+        let rows_down = f32::from(at.top() - view.top()) / f32::from(at.size.height);
+        assert!(
+            (2.0..8.0).contains(&rows_down),
+            "the knot's header is near the top: {rows_down} rows down"
+        );
     }
 
     /// Script's editors pin the same lines, from their own scroll.
@@ -4146,6 +4248,102 @@ mod modes_driven {
         h.press(window, "right");
         h.capture(window);
         assert_eq!(caret(&mut h), Some(("chapter_two.ink".to_owned(), 0)));
+    }
+
+    /// In Script, a cursor that moves under the pinned lines is scrolled
+    /// clear of them, as it would be off the edge.
+    #[test]
+    fn script_keeps_the_cursor_clear_of_the_pinned_lines() {
+        let mut h = Harness::new();
+        let dir = long_outline_project();
+        let story = std::fs::read_to_string(dir.join("story.ink")).expect("the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let document = h
+            .read(|cx| studio.read(cx).code.read(cx).active_document().cloned())
+            .expect("the entry is open");
+        let editor = h.read(|cx| document.read(cx).editor().clone());
+        let row = h
+            .read(|cx| editor.read(cx).line_height())
+            .expect("laid out");
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| {
+                e.set_scroll_offset(gpui::point(gpui::px(0.), -row * 80.), cx)
+            });
+        });
+        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.capture(window);
+            h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
+                .len()
+                == 2
+        });
+        assert!(pinned, "the knot and stitch pin");
+        // The cursor onto line 81, the first in view: under the strip.
+        let line_81: usize = story.split_inclusive('\n').take(80).map(str::len).sum();
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| e.set_selected_range(line_81..line_81, cx));
+        });
+        h.capture(window);
+        h.capture(window);
+        // Measured as the editor counts it — its line's display row, less
+        // how far it has scrolled — not through bounds from its last layout.
+        let rows_down = h.read(|cx| {
+            let state = editor.read(cx);
+            let y = row * state.display_row_of_buffer_line(80) as f32 + state.scroll_offset().y;
+            f32::from(y) / f32::from(row)
+        });
+        assert!(
+            rows_down >= 2. - 0.05,
+            "the cursor is below the two pinned rows: {rows_down} rows down"
+        );
+    }
+
+    /// The title bar's crumb stays over the manuscript's text as the
+    /// structure column slides in and pushes the column across.
+    #[test]
+    fn the_crumb_follows_the_text_as_the_structure_column_opens() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::ToggleWritingSidebar);
+        h.advance(brink_gpui_shell::workspace::SLIDE);
+        h.capture(window);
+        h.capture(window);
+        let (anchor, manuscript) = h.read(|cx| {
+            let s = studio.read(cx);
+            (
+                s.workspace.read(cx).writing_crumb_anchor(),
+                s.manuscript.clone(),
+            )
+        });
+        // Where the text starts in the section at the top of the view.
+        let text_left = |h: &mut Harness| {
+            h.read(|cx| {
+                let m = manuscript.read(cx);
+                let path = m.current_or_top_file().expect("a file");
+                let editor = m.section_editor(&path).expect("mounted");
+                let state = editor.read(cx);
+                let at = state.visible_offset_range().expect("laid out").start;
+                state.range_to_bounds(&(at..at)).map(|b| b.left())
+            })
+        };
+        let before = anchor.get();
+        assert_eq!(before, text_left(&mut h), "over the text, to begin with");
+        h.dispatch(window, super::ToggleStructureColumn);
+        // Halfway: the sidebar is between its two widths, not at either.
+        h.advance(brink_gpui_shell::workspace::SLIDE / 2);
+        let shot = scratch_dir("shot").join("structure-mid.png");
+        h.screenshot(window, &shot);
+        eprintln!("structure mid-slide screenshot: {}", shot.display());
+        h.advance(brink_gpui_shell::workspace::SLIDE);
+        h.capture(window);
+        h.capture(window);
+        let after = anchor.get();
+        assert_ne!(after, before, "the column moved");
+        assert_eq!(after, text_left(&mut h), "and the crumb with it");
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

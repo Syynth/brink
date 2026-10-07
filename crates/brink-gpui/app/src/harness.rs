@@ -182,6 +182,43 @@ impl Harness {
         self.settle();
     }
 
+    /// Press the left mouse button at `(x, y)`, and leave it down.
+    pub fn mouse_down(&mut self, window: AnyWindowHandle, x: f32, y: f32) {
+        self.mouse(
+            window,
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position: gpui::point(px(x), px(y)),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
+    }
+
+    /// Let the left mouse button go at `(x, y)`.
+    pub fn mouse_up(&mut self, window: AnyWindowHandle, x: f32, y: f32) {
+        self.mouse(
+            window,
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position: gpui::point(px(x), px(y)),
+                modifiers: gpui::Modifiers::default(),
+                click_count: 1,
+            }),
+        );
+    }
+
+    fn mouse(&mut self, window: AnyWindowHandle, event: gpui::PlatformInput) {
+        self.app()
+            .update_window(window, |_, window, cx| {
+                window.dispatch_event(event, cx);
+                window.refresh();
+            })
+            .expect("clicking in a window that is open");
+        self.settle();
+    }
+
     /// Move the pointer to `(x, y)` (logical pixels) in `window`, so hover
     /// styles apply, then settle.
     pub fn hover(&mut self, window: AnyWindowHandle, x: f32, y: f32) {

@@ -143,6 +143,14 @@ pub(crate) struct WriteView {
     /// The structure column (W5) — its toggle is in the Files header. Off
     /// until asked for: the files are what a writer reaches for first.
     structure_open: bool,
+    /// The structure column is sliding shut: still drawn, clipped by the
+    /// sidebar's narrowing width, until the slide is over.
+    structure_closing: bool,
+    /// The sidebar's width when the current slide began; it runs from here
+    /// to its target (`sidebar_target`). Nothing to full when it opens,
+    /// full to nothing when it closes, one width to the other when the
+    /// structure column comes or goes.
+    sidebar_from: f32,
     /// Each pane's width: dragged, saved, or its default.
     files_width: f32,
     structure_width: f32,
@@ -202,6 +210,8 @@ impl WriteView {
             slide: 0,
             files,
             structure_open: false,
+            structure_closing: false,
+            sidebar_from: 0.,
             files_width: saved_width(Pane::Files, cx),
             structure_width: saved_width(Pane::Structure, cx),
             player_width: saved_width(Pane::Player, cx),
@@ -251,6 +261,7 @@ impl WriteView {
     /// Slide the sidebar out, or away.
     pub(crate) fn toggle_sidebar(&mut self, cx: &mut Context<Self>) {
         self.slide += 1;
+        self.sidebar_from = f32::from(self.sidebar_target());
         if self.sidebar == Sidebar::Open {
             // Drawn until the slide is over, then gone. A toggle back in
             // meanwhile bumps `slide`, and this finish is then stale.
@@ -287,6 +298,27 @@ impl WriteView {
     }
 
     pub(crate) fn toggle_structure(&mut self, cx: &mut Context<Self>) {
+        // With the sidebar out, the column slides in or out as the sidebar
+        // itself does — from the width it has now to the one it will have
+        // — and the title bar's strip slides with it.
+        if self.sidebar == Sidebar::Open {
+            self.slide += 1;
+            self.sidebar_from = f32::from(self.sidebar_target());
+            if self.structure_open {
+                self.structure_closing = true;
+                let slide = self.slide;
+                cx.spawn(async move |this, cx| {
+                    cx.background_executor().timer(SLIDE).await;
+                    let _ = this.update(cx, |this, cx| {
+                        if this.slide == slide {
+                            this.structure_closing = false;
+                            cx.notify();
+                        }
+                    });
+                })
+                .detach();
+            }
+        }
         self.structure_open = !self.structure_open;
         if self.structure_open
             && let Some(path) = self.current_file(cx)
@@ -305,6 +337,16 @@ impl WriteView {
     }
 
     /// The sidebar's full width.
+    /// The width the sidebar is heading for: its columns' while it is out,
+    /// nothing while it is closing or closed.
+    fn sidebar_target(&self) -> Pixels {
+        if self.sidebar == Sidebar::Open {
+            self.sidebar_width()
+        } else {
+            px(0.)
+        }
+    }
+
     fn sidebar_width(&self) -> Pixels {
         px(self.files_width
             + if self.structure_open {
@@ -374,14 +416,12 @@ impl WriteView {
     /// What the title bar's strip should do: slide with the sidebar.
     #[must_use]
     pub(crate) fn sidebar_strip(&self) -> Option<SidebarStrip> {
-        let opening = match self.sidebar {
-            Sidebar::Closed => return None,
-            Sidebar::Open => true,
-            Sidebar::Closing => false,
-        };
+        if self.sidebar == Sidebar::Closed {
+            return None;
+        }
         Some(SidebarStrip {
-            width: self.sidebar_width(),
-            opening,
+            from: px(self.sidebar_from),
+            to: self.sidebar_target(),
             slide: self.slide,
         })
     }
@@ -523,8 +563,7 @@ impl WriteView {
             .theme()
             .sidebar_border
             .opacity(brink_gpui_shell::workspace::DIVIDER_STRENGTH);
-        let width = f32::from(self.sidebar_width());
-        let opening = self.sidebar == Sidebar::Open;
+        let (from, to) = (self.sidebar_from, f32::from(self.sidebar_target()));
         h_flex()
             .h_full()
             .flex_none()
@@ -540,17 +579,20 @@ impl WriteView {
                     .child(self.files.clone())
                     .child(self.grip(Pane::Files, false, cx)),
             )
-            .when(self.structure_open, |el| {
+            .when(self.structure_open || self.structure_closing, |el| {
                 el.child(self.render_structure(current.as_deref(), cx))
             })
-            // The slide: the width runs from nothing to full (or back), so
-            // the manuscript is pushed, not covered; the columns keep their
-            // own widths and are clipped meanwhile. The title bar's strip
-            // runs the same animation (`SidebarStrip`).
+            // The slide: the width runs from where it was to where it is
+            // going (nothing, full, or full with or without the structure
+            // column), so the manuscript is pushed, not covered; the
+            // columns keep their own widths and are clipped meanwhile. The
+            // title bar's strip runs the same animation (`SidebarStrip`).
+            // Once it is over the width is the target, so dragging a pane
+            // wider follows live.
             .with_animation(
                 SharedString::from(format!("write-sidebar-{}", self.slide)),
                 Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
-                move |el, delta| el.w(px(width * if opening { delta } else { 1. - delta })),
+                move |el, delta| el.w(px(from + (to - from) * delta)),
             )
             .into_any_element()
     }
