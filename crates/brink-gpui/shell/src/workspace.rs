@@ -211,7 +211,7 @@ pub struct Workspace {
     /// slides with the sidebar, so the two never part mid-slide.
     writing_sidebar: Option<SidebarStrip>,
     /// Where the caret is, after the story's name: `file › knot › stitch`.
-    writing_crumb: Option<SharedString>,
+    writing_crumb: Option<WritingCrumb>,
     /// The window x the crumb starts at: where the manuscript's text
     /// starts, so the title reads as the column's own heading. Written by
     /// the manuscript as it lays out (`writing_crumb_anchor`), read here
@@ -715,7 +715,7 @@ impl Workspace {
     }
 
     /// Say where the caret is, for the title bar: `file › knot › stitch`.
-    pub fn set_writing_crumb(&mut self, crumb: Option<SharedString>, cx: &mut Context<Self>) {
+    pub fn set_writing_crumb(&mut self, crumb: Option<WritingCrumb>, cx: &mut Context<Self>) {
         if self.writing_crumb != crumb {
             self.writing_crumb = crumb;
             cx.notify();
@@ -1328,11 +1328,34 @@ impl Workspace {
             .filter(|b| !b.leading)
             .map(|b| self.render_writing_button(b, cx))
             .collect();
-        let title = match &self.writing_crumb {
-            Some(crumb) => SharedString::from(format!("{} \u{b7} {crumb}", self.story_title)),
-            None => self.story_title.clone(),
+        // The story's name, then where the cursor is. The file's name is the
+        // one bright part: its folder and the knot › stitch are context.
+        let foreground = cx.theme().foreground;
+        let (title, highlights) = match &self.writing_crumb {
+            Some(crumb) => {
+                let lead = format!("{} \u{b7} {}", self.story_title, crumb.folder);
+                let name = lead.len()..lead.len() + crumb.file.len();
+                let mut text = lead;
+                text.push_str(&crumb.file);
+                for symbol in &crumb.symbols {
+                    text.push_str(" \u{203a} ");
+                    text.push_str(symbol);
+                }
+                let bright = gpui::HighlightStyle {
+                    color: Some(foreground.opacity(0.85)),
+                    ..Default::default()
+                };
+                (SharedString::from(text), vec![(name, bright)])
+            }
+            None => (self.story_title.clone(), Vec::new()),
         };
-        let text = |title: SharedString| div().truncate().text_sm().text_color(muted).child(title);
+        let text = |title: SharedString| {
+            div()
+                .truncate()
+                .text_sm()
+                .text_color(muted)
+                .child(gpui::StyledText::new(title).with_highlights(highlights.clone()))
+        };
         // Over the manuscript's text, once it has said where that starts —
         // placed in window coordinates, since the column moves with the
         // sidebar and the window and the bar's own layout knows neither.
@@ -1593,6 +1616,49 @@ pub struct SidebarStrip {
     pub slide: usize,
 }
 
+/// Where the cursor is, for Write mode's title bar: the file it is in, as
+/// its folder and its name (no extension — decision log 2026-10-07), and
+/// the knot and stitch around it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WritingCrumb {
+    /// The file's folder with its trailing `/`, or empty at the root.
+    pub folder: String,
+    /// The file's name without its extension.
+    pub file: String,
+    /// The knot, then the stitch, as far as the cursor is inside them.
+    pub symbols: Vec<String>,
+}
+
+impl WritingCrumb {
+    #[must_use]
+    pub fn new(path: &str, symbols: Vec<String>) -> Self {
+        let (folder, name) = path
+            .rsplit_once('/')
+            .map_or(("", path), |(folder, name)| (folder, name));
+        let file = name.rsplit_once('.').map_or(name, |(stem, _)| stem);
+        Self {
+            folder: if folder.is_empty() {
+                String::new()
+            } else {
+                format!("{folder}/")
+            },
+            file: file.to_owned(),
+            symbols,
+        }
+    }
+
+    /// The crumb as one line: `folder/file › knot › stitch`.
+    #[must_use]
+    pub fn text(&self) -> String {
+        let mut text = format!("{}{}", self.folder, self.file);
+        for symbol in &self.symbols {
+            text.push_str(" \u{203a} ");
+            text.push_str(symbol);
+        }
+        text
+    }
+}
+
 /// What the title bar leaves for the window controls at its left end:
 /// the kit's `TitleBar` padding, which it does not export.
 #[cfg(target_os = "macos")]
@@ -1816,7 +1882,17 @@ fn about(window: &mut Window, cx: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use super::Tier;
+    use super::{Tier, WritingCrumb};
+
+    #[test]
+    fn a_crumb_splits_the_folder_from_the_name_and_drops_the_extension() {
+        let crumb = WritingCrumb::new("chapters/act1/two.ink", vec!["start".into()]);
+        assert_eq!(crumb.folder, "chapters/act1/");
+        assert_eq!(crumb.file, "two");
+        assert_eq!(crumb.text(), "chapters/act1/two \u{203a} start");
+        let root = WritingCrumb::new("story.brink", vec![]);
+        assert_eq!((root.folder.as_str(), root.file.as_str()), ("", "story"));
+    }
 
     #[test]
     fn the_tier_follows_the_width_and_says_what_fits() {

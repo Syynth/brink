@@ -217,7 +217,8 @@ pub(crate) fn render(
         theme.muted_foreground,
         theme.background,
     );
-    let hover = theme.muted.opacity(0.35);
+    // Opaque: a pinned row covers the text scrolled under it, hovered too.
+    let hover = surface.blend(theme.muted.opacity(0.35));
     let row = |pin: &PinnedLine| {
         div()
             .relative()

@@ -97,7 +97,7 @@ impl Render for NoGhost {
 
 /// How long a slide takes — the Player's and the sidebar's, and the
 /// title bar's strip above the sidebar, which must move with it.
-use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
+use brink_gpui_shell::workspace::{SLIDE, SidebarStrip, WritingCrumb};
 
 /// How wide a pane's grab strip is, inside its edge.
 const GRIP: f32 = 5.;
@@ -394,22 +394,20 @@ impl WriteView {
     /// `file › knot › stitch` at the caret, for the title bar — as far
     /// down as the caret is inside (decision log 2026-10-07).
     #[must_use]
-    pub(crate) fn crumb(&self, cx: &App) -> Option<SharedString> {
+    pub(crate) fn crumb(&self, cx: &App) -> Option<WritingCrumb> {
         let (path, offset) = self.manuscript.read(cx).caret()?;
-        let mut crumb = path.to_owned();
+        let mut symbols = Vec::new();
         if let Some((knot, stitch)) = self
             .symbols
             .get(path)
             .and_then(|symbols| at_caret(symbols, offset))
         {
-            crumb.push_str(" \u{203a} ");
-            crumb.push_str(&knot.name);
+            symbols.push(knot.name.clone());
             if let Some(stitch) = stitch {
-                crumb.push_str(" \u{203a} ");
-                crumb.push_str(&stitch.name);
+                symbols.push(stitch.name.clone());
             }
         }
-        Some(crumb.into())
+        Some(WritingCrumb::new(path, symbols))
     }
 
     /// A manuscript separator's `⋯` menu, carried out: the file operations

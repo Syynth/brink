@@ -5767,3 +5767,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The title bar crumb names the file as well: story · file › knot › stitch, all at the **cursor**, not at the scroll position. Moving the cursor with the arrow keys scrolls the view to keep it on screen. In Write mode the crumb's left edge lines up with the start of the manuscript's editor column. The pinned knot/stitch lines (previous entry) appear in both Write and Script.
 - **WHY:** The crumb answers "where am I editing?" and the pinned lines answer "what am I looking at?". Keeping the two apart means neither jumps around while you read. A cursor that can move off screen without the view following breaks that link, so the arrow keys bring it back into view. Aligning the crumb with the column makes the title bar read as the manuscript's own heading rather than window chrome.
+
+## The crumb names a file without its extension, the name brighter than its folder
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Write mode's title bar crumb shows a file as its folder path and its name with no extension (`chapters/two › start › second`, not `chapters/two.ink › …`). The file name is drawn brighter than the folder, the knot › stitch and the story title.
+- **WHY:** The extension is noise in a crumb that is about where you are in the story, and every story file carries one. Setting the name apart from its folder makes the part you navigate by easy to pick out of a long path.

@@ -2994,7 +2994,7 @@ mod modes_driven {
         let crumb = |h: &mut Harness| {
             h.read(|cx| {
                 let s = studio.read(cx);
-                s.write.read(cx).crumb(cx)
+                s.write.read(cx).crumb(cx).map(|c| c.text())
             })
         };
         // The file shows at once; the knot and stitch once the outline lands.
@@ -3004,7 +3004,7 @@ mod modes_driven {
         assert!(found, "the outline never arrived");
         assert_eq!(
             crumb(&mut h).as_deref(),
-            Some("story.ink \u{203a} start \u{203a} second")
+            Some("story \u{203a} start \u{203a} second")
         );
 
         // The structure column starts off, and its toggle widens the
@@ -4008,6 +4008,8 @@ mod modes_driven {
         });
         assert!(found, "nothing pinned");
         assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        // Hovered, a pinned row still covers the text under it.
+        h.hover(window, 600., 45.);
         let shot = scratch_dir("shot").join("pinned.png");
         h.screenshot(window, &shot);
         eprintln!("pinned screenshot: {}", shot.display());
