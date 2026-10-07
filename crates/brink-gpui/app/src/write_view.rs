@@ -35,7 +35,7 @@ use gpui_component::{
 };
 
 use crate::binder::{Binder, BinderEvent};
-use crate::continuous::{ContinuousView, ManuscriptEvent};
+use crate::continuous::{ContinuousView, FileAction, ManuscriptEvent};
 use crate::player::Player;
 use crate::project::{Project, ProjectEvent};
 use brink_gpui_shell::icons;
@@ -97,7 +97,7 @@ impl Render for NoGhost {
 
 /// How long a slide takes — the Player's and the sidebar's, and the
 /// title bar's strip above the sidebar, which must move with it.
-use brink_gpui_shell::workspace::{SLIDE, SidebarStrip};
+use brink_gpui_shell::workspace::{SLIDE, SidebarStrip, WritingCrumb};
 
 /// How wide a pane's grab strip is, inside its edge.
 const GRIP: f32 = 5.;
@@ -112,6 +112,8 @@ const HEADER_HEIGHT: f32 = brink_gpui_shell::tool_window::HEADER_HEIGHT;
 pub(crate) enum WriteEvent {
     /// A structural operation, as the Binder would ask for it.
     Outline(BinderEvent),
+    /// Show a file in Script mode — a separator's "Open in Script".
+    OpenInScript { path: String },
 }
 
 /// Where the sidebar is: out, sliding away, or gone.
@@ -167,11 +169,16 @@ impl WriteView {
         files: Entity<Binder>,
         cx: &mut Context<Self>,
     ) -> Self {
-        let on_caret = cx.subscribe(&manuscript, |this, _, event: &ManuscriptEvent, cx| {
-            let ManuscriptEvent::Caret { path, .. } = event;
-            this.request_symbols(&path.clone(), cx);
-            cx.notify();
-        });
+        let on_caret = cx.subscribe(
+            &manuscript,
+            |this, _, event: &ManuscriptEvent, cx| match event {
+                ManuscriptEvent::Caret { path, .. } => {
+                    this.request_symbols(&path.clone(), cx);
+                    cx.notify();
+                }
+                ManuscriptEvent::File { path, action } => this.file_action(path, *action, cx),
+            },
+        );
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
             if matches!(
                 event,
@@ -227,6 +234,12 @@ impl WriteView {
             self.player_open = false;
             cx.notify();
         }
+    }
+
+    /// The Files column's selected row, for the tests.
+    #[cfg(test)]
+    pub(crate) fn files_selected(&self, cx: &App) -> Option<SharedString> {
+        self.files.read(cx).selected_key()
     }
 
     /// Out, or on its way out — not while sliding away.
@@ -378,15 +391,69 @@ impl WriteView {
         self.manuscript.read(cx).current_file().map(str::to_owned)
     }
 
-    /// `knot › stitch` at the caret, for the title bar.
+    /// `file › knot › stitch` at the caret, for the title bar — as far
+    /// down as the caret is inside (decision log 2026-10-07).
     #[must_use]
-    pub(crate) fn crumb(&self, cx: &App) -> Option<SharedString> {
+    pub(crate) fn crumb(&self, cx: &App) -> Option<WritingCrumb> {
         let (path, offset) = self.manuscript.read(cx).caret()?;
-        let (knot, stitch) = at_caret(self.symbols.get(path)?, offset)?;
-        Some(match stitch {
-            Some(stitch) => format!("{} \u{203a} {}", knot.name, stitch.name).into(),
-            None => knot.name.clone().into(),
+        let mut symbols = Vec::new();
+        if let Some((knot, stitch)) = self
+            .symbols
+            .get(path)
+            .and_then(|symbols| at_caret(symbols, offset))
+        {
+            symbols.push(knot.name.clone());
+            if let Some(stitch) = stitch {
+                symbols.push(stitch.name.clone());
+            }
+        }
+        Some(WritingCrumb::new(path, symbols))
+    }
+
+    /// A manuscript separator's `⋯` menu, carried out: the file operations
+    /// go to the studio as the Binder's would, Reveal stays here.
+    fn file_action(&mut self, path: &str, action: FileAction, cx: &mut Context<Self>) {
+        let path = path.to_owned();
+        match action {
+            FileAction::Play => self.play_file(path, cx),
+            FileAction::OpenInScript => cx.emit(WriteEvent::OpenInScript { path }),
+            FileAction::RevealInFiles => {
+                if self.sidebar != Sidebar::Open {
+                    self.toggle_sidebar(cx);
+                }
+                self.files
+                    .update(cx, |files, cx| files.reveal_file(&path, cx));
+            }
+            FileAction::Rename => cx.emit(WriteEvent::Outline(BinderEvent::RenameFile { path })),
+            FileAction::Delete => cx.emit(WriteEvent::Outline(BinderEvent::DeleteFile {
+                paths: vec![path],
+            })),
+        }
+    }
+
+    /// Play from a file: from its first knot, the nearest thing to "its
+    /// start" the runtime can address. A file with no knots plays nothing.
+    fn play_file(&mut self, path: String, cx: &mut Context<Self>) {
+        let query = self
+            .project
+            .read(cx)
+            .query(QueryKind::DocumentSymbols { path }, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(QueryResult::DocumentSymbols(found)) = query.await else {
+                return;
+            };
+            let Some(knot) = found
+                .iter()
+                .find(|s| s.kind == SymbolKind::Knot && !s.is_function)
+            else {
+                return;
+            };
+            let path = knot.name.clone();
+            let _ = this.update(cx, |_, cx| {
+                cx.emit(WriteEvent::Outline(BinderEvent::Play { path }));
+            });
         })
+        .detach();
     }
 
     /// Ask the worker for a file's outline, unless it is held or asked for.

@@ -5751,3 +5751,27 @@
 - **SCOPE:** minor/local
 - **WHAT:** Mocha's sidebar surface is `#181825` (Catppuccin mantle), darker than the editor's `#1e1e2e`, and applies theme-wide (Binder, docks, the Write sidebar). Dividers between panels are one 1px line at reduced strength, never doubled.
 - **WHY:** The old `#252536` gave the sidebar too little contrast with the editor. Of the three shades rendered side by side, the maintainer preferred the darker one. It is Catppuccin's own sidebar pairing, and it sets the sidebars behind the text. The 1px divider looked better than the 2px one, but it still read as too visible at full strength.
+
+## Manuscript file separators: chapter break, peach drafts, file in the crumb, pinned structure lines
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** In the gpui continuous manuscript, the boundary between two files is a **chapter break**: vertical space, then a centred line of the file's icon and its name in small spaced capitals over a short rule. It has no full-width band and no borders. An unsaved file shows a dot after its name. The file menu sits behind a ⋯ button that appears on hover and opens Play from here, Open in Script, Reveal in Files, Rename…, Copy path and Delete…. A **draft** boundary is drawn in peach: a dashed file icon, the name in peach, a small DRAFT badge (smaller than the first mockup's), and a peach rule. No pinned file band remains. The file name moves into the title bar crumb, and the current knot/stitch lines **pin at the top as you scroll past them**, the way JetBrains' sticky lines work.
+- **WHY:** The maintainer judged both the old gpui band and the web's rule–title–rule as not working well, and asked for a design pass on a canvas. From five directions they chose the chapter break, because it reads as a manuscript with the least chrome. The draft treatment that marks only the separator keeps drafts more prominent without tinting or dimming the prose itself. File icons and a hidden-until-hover file menu follow from wanting the separator to carry the file's identity and actions without becoming a toolbar. Pinned structure lines replace the pinned file band because they answer "where am I" at the level the author actually navigates: the knot and stitch.
+
+## Write mode's crumb follows the cursor, shows the file, and lines up with the editor
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** The title bar crumb names the file as well: story · file › knot › stitch, all at the **cursor**, not at the scroll position. Moving the cursor with the arrow keys scrolls the view to keep it on screen. In Write mode the crumb's left edge lines up with the start of the manuscript's editor column. The pinned knot/stitch lines (previous entry) appear in both Write and Script.
+- **WHY:** The crumb answers "where am I editing?" and the pinned lines answer "what am I looking at?". Keeping the two apart means neither jumps around while you read. A cursor that can move off screen without the view following breaks that link, so the arrow keys bring it back into view. Aligning the crumb with the column makes the title bar read as the manuscript's own heading rather than window chrome.
+
+## The crumb names a file without its extension, the name brighter than its folder
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Write mode's title bar crumb shows a file as its folder path and its name with no extension (`chapters/two › start › second`, not `chapters/two.ink › …`). The file name is drawn brighter than the folder, the knot › stitch and the story title.
+- **WHY:** The extension is noise in a crumb that is about where you are in the story, and every story file carries one. Setting the name apart from its folder makes the part you navigate by easy to pick out of a long path.

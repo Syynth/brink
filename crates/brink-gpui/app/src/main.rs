@@ -37,6 +37,7 @@ mod settings_general;
 mod settings_prose;
 mod signature_help;
 mod state_view;
+mod sticky_lines;
 mod story_graph;
 mod structural;
 mod tab_title;
@@ -248,6 +249,9 @@ impl Studio {
         // older program than the one it is showing.
         program.update(cx, |explorer, cx| explorer.watch_player(&player, cx));
         let manuscript = cx.new(|cx| ContinuousView::new(project.clone(), window, cx));
+        // Write mode's crumb sits over the manuscript's text.
+        let anchor = workspace.read(cx).writing_crumb_anchor();
+        manuscript.update(cx, |m, _| m.set_crumb_anchor(anchor));
         // Write mode's Files column: a second Binder, files only, with its
         // own expansion and selection — every file interaction the Binder
         // has, rather than a list that behaves differently.
@@ -1044,6 +1048,12 @@ impl Studio {
             |this, _, event: &crate::write_view::WriteEvent, window, cx| match event {
                 crate::write_view::WriteEvent::Outline(event) => {
                     this.on_outline(event, window, cx);
+                }
+                crate::write_view::WriteEvent::OpenInScript { path } => {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.require_editor_view(EditorView::Script, cx);
+                    });
+                    this.open(path, None, window, cx);
                 }
             },
         );
@@ -2984,12 +2994,18 @@ mod modes_driven {
         let crumb = |h: &mut Harness| {
             h.read(|cx| {
                 let s = studio.read(cx);
-                s.write.read(cx).crumb(cx)
+                s.write.read(cx).crumb(cx).map(|c| c.text())
             })
         };
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| crumb(h).is_some());
+        // The file shows at once; the knot and stitch once the outline lands.
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            crumb(h).is_some_and(|c| c.contains('\u{203a}'))
+        });
         assert!(found, "the outline never arrived");
-        assert_eq!(crumb(&mut h).as_deref(), Some("start \u{203a} second"));
+        assert_eq!(
+            crumb(&mut h).as_deref(),
+            Some("story \u{203a} start \u{203a} second")
+        );
 
         // The structure column starts off, and its toggle widens the
         // sidebar — and the title bar's strip, which is told the width.
@@ -3769,10 +3785,9 @@ mod modes_driven {
     }
 
     /// The header rows across the window end on one line: Script's Binder
-    /// header, editor tab strip and dock header; Write's Files header,
-    /// Structure header and the manuscript's file heading. Each is 1px of
-    /// edge under the title bar's 1px, never 2px, and never a step between
-    /// columns. The x positions are blank stretches of each header in the
+    /// header, editor tab strip and dock header; Write's Files header. Each
+    /// is 1px of edge under the title bar's 1px, never 2px, and never a
+    /// step between columns. The x positions are blank stretches of each header in the
     /// harness's 1280-wide window (2x).
     #[test]
     fn the_header_rows_end_on_one_line() {
@@ -3800,18 +3815,242 @@ mod modes_driven {
         let write = h.capture(window);
         let files = edge_rows(&mut h, &write, 192);
         assert_eq!(files, binder, "Write's Files header vs Script's Binder");
-        assert_eq!(
-            edge_rows(&mut h, &write, 1920),
-            files,
-            "Write: manuscript heading vs Files"
-        );
-        // The Structure column's header draws no edge of its own; only the
-        // title bar's crosses it.
+        // The Structure column's header and the manuscript (whose file
+        // breaks are chapter titles, not bands) draw no edge of their own;
+        // only the title bar's crosses them.
         assert_eq!(
             edge_rows(&mut h, &write, 768),
             files[..2],
             "Write: structure header"
         );
+        assert_eq!(
+            edge_rows(&mut h, &write, 1920),
+            files[..2],
+            "Write: manuscript"
+        );
+    }
+
+    /// Three files for the chapter breaks: the entry, a chapter it
+    /// includes, and a draft nothing includes.
+    fn chapters_project() -> std::path::PathBuf {
+        let dir = scratch_dir("chapters");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\ndrafts = [\"alternate_*.ink\"]\n",
+        )
+        .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE chapter_two.ink\n-> start\n=== start ===\nThe lamp gutters.\nThe rain keeps on.\n-> chapter_two\n",
+        )
+        .expect("writing the story");
+        std::fs::write(
+            dir.join("chapter_two.ink"),
+            "=== chapter_two ===\nMorning comes grey.\nSomeone knocks, twice.\n-> DONE\n",
+        )
+        .expect("writing the chapter");
+        std::fs::write(
+            dir.join("alternate_ending.ink"),
+            "=== alternate_ending ===\nThe door stays shut.\n-> END\n",
+        )
+        .expect("writing the draft");
+        dir
+    }
+
+    /// The picture: the chapter breaks — the entry, an unsaved chapter and
+    /// a draft.
+    #[test]
+    fn the_chapter_break_picture() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.update(|cx| {
+            let project = studio.read(cx).project.clone();
+            project.update(cx, |p, cx| {
+                p.edit(
+                    "chapter_two.ink",
+                    "=== chapter_two ===\nMorning comes grey.\nSomeone knocks, twice.\n-> DONE\n\n"
+                        .into(),
+                    None,
+                    cx,
+                );
+            });
+        });
+        h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .project
+                    .read(cx)
+                    .is_draft("alternate_ending.ink")
+            })
+        });
+        // Over chapter_two's title, so its `⋯` shows.
+        h.hover(window, 640., 256.);
+        let shot = scratch_dir("shot").join("chapters.png");
+        h.screenshot(window, &shot);
+        eprintln!("chapters screenshot: {}", shot.display());
+    }
+
+    /// A separator's "Reveal in Files" opens the sidebar on that file.
+    #[test]
+    fn a_separator_reveals_its_file_in_the_sidebar() {
+        let mut h = Harness::new();
+        let window = h.open(&chapters_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.update(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            manuscript.update(cx, |_, cx| {
+                cx.emit(crate::continuous::ManuscriptEvent::File {
+                    path: "chapter_two.ink".into(),
+                    action: crate::continuous::FileAction::RevealInFiles,
+                });
+            });
+        });
+        h.settle();
+        let (open, selected) = h.read(|cx| {
+            let write = studio.read(cx).write.read(cx);
+            (
+                write.is_sidebar_open(),
+                write.files_selected(cx).map(|k| k.to_string()),
+            )
+        });
+        assert!(open, "the sidebar opened");
+        assert_eq!(selected.as_deref(), Some("chapter_two.ink"));
+    }
+
+    /// The arrow keys bring the caret back on screen: the manuscript's
+    /// sections do not scroll, its list does, so the list has to follow.
+    #[test]
+    fn the_arrow_keys_bring_the_caret_back_into_view() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("long");
+        let long: String = (0..300)
+            .map(|i| format!("Line {i} of the story.\n"))
+            .collect();
+        std::fs::write(dir.join("story.ink"), long).expect("writing the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.settle();
+        let (manuscript, editor, handle) = h.read(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            let m = manuscript.read(cx);
+            (
+                manuscript.clone(),
+                m.section_editor("story.ink").expect("mounted"),
+                m.section_focus("story.ink", cx).expect("mounted"),
+            )
+        });
+        h.app_window(window, |window, cx| window.focus(&handle, cx));
+        // The caret on line 5, put there as navigation does, then the view
+        // scrolled far below it.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.reveal_span("story.ink", 100..100, cx)));
+        h.capture(window);
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(4000., cx)));
+        h.capture(window);
+        let on_screen = |h: &mut Harness| {
+            h.read(|cx| {
+                let m = manuscript.read(cx);
+                let at = editor.read(cx).range_to_bounds(&{
+                    let c = editor.read(cx).cursor();
+                    c..c
+                });
+                let view = m.viewport();
+                at.is_some_and(|at| at.top() >= view.top() && at.bottom() <= view.bottom())
+            })
+        };
+        assert!(!on_screen(&mut h), "scrolled away from the caret first");
+        h.press(window, "down");
+        // The view follows after layout: a frame to see the caret moved,
+        // one to draw where the list went.
+        h.capture(window);
+        h.capture(window);
+        assert!(on_screen(&mut h), "the caret is back in view");
+    }
+
+    /// A long knot with a long stitch, then another knot: room to scroll
+    /// past each header.
+    fn long_outline_project() -> std::path::PathBuf {
+        let dir = scratch_dir("long-outline");
+        let lines =
+            |what: &str| -> String { (0..60).map(|i| format!("{what} line {i}.\n")).collect() };
+        let story = format!(
+            "-> start\n=== start ===\n{}= second\n{}=== market ===\n{}",
+            lines("Start"),
+            lines("Second"),
+            lines("Market"),
+        );
+        std::fs::write(dir.join("story.ink"), story).expect("writing the story");
+        dir
+    }
+
+    /// Scrolled into a stitch, its knot's header and its own stay pinned at
+    /// the top of the manuscript; back at the top, nothing is.
+    #[test]
+    fn the_knot_and_stitch_lines_pin_as_they_scroll_past() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let pinned = |h: &mut Harness| {
+            h.capture(window);
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+        };
+        // Line ~80 of the file: inside `second`.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5, cx)));
+        h.capture(window);
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            !pinned(h).is_empty()
+        });
+        assert!(found, "nothing pinned");
+        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        // Hovered, a pinned row still covers the text under it.
+        h.hover(window, 600., 45.);
+        let shot = scratch_dir("shot").join("pinned.png");
+        h.screenshot(window, &shot);
+        eprintln!("pinned screenshot: {}", shot.display());
+
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(0., cx)));
+        assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
+    }
+
+    /// Script's editors pin the same lines, from their own scroll.
+    #[test]
+    fn script_pins_the_knot_and_stitch_lines_too() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let document = h
+            .read(|cx| studio.read(cx).code.read(cx).active_document().cloned())
+            .expect("the entry is open");
+        let editor = h.read(|cx| document.read(cx).editor().clone());
+        let row = h
+            .read(|cx| editor.read(cx).line_height())
+            .expect("laid out");
+        // Line 80 of the file at the top: inside `second`.
+        h.app_window(window, |_, cx| {
+            editor.update(cx, |e, cx| {
+                e.set_scroll_offset(gpui::point(gpui::px(0.), -row * 80.), cx)
+            });
+        });
+        let pinned = |h: &mut Harness| {
+            h.capture(window);
+            h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
+        };
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
+            !pinned(h).is_empty()
+        });
+        assert!(found, "nothing pinned");
+        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        let shot = scratch_dir("shot").join("script-pinned.png");
+        h.screenshot(window, &shot);
+        eprintln!("script pinned screenshot: {}", shot.display());
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

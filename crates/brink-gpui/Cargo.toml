@@ -23,7 +23,7 @@ publish = false
 [workspace.dependencies]
 # Our fork of longbridge's GPUI Kit, pinned to a commit.
 #
-# Eleven commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
+# Twelve commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
 # a capability the upstream editor lacks rather than a rename: `Editor:
 # Sizable`, the `IntoPlot` crate lookup, in-text inlays, the wrapped row
 # count a content-sized editor needs once soft wrap is on, a minimum
@@ -31,8 +31,10 @@ publish = false
 # and active-line band (Writing mode's Read view), floating pop-ups that
 # no longer narrow the editor (a hover re-wrapped the text), and an
 # app-drawn hover card (`set_hover_renderer`) that also lists every
-# diagnostic under the pointer, and tooltips on the fold chevrons. They are written
-# to be upstreamable; if they land, this goes back to the crates.io version.
+# diagnostic under the pointer, tooltips on the fold chevrons, and the
+# laid-out lines' byte range (pinned structure lines find the top line in
+# it). They are written to be upstreamable; if they land, this goes back to
+# the crates.io version.
 #
 # A FORK REPO, not a vendored tree with a re-patching script. Upstream moves
 # are then `git merge upstream/main` with real three-way merges and real
@@ -41,16 +43,16 @@ publish = false
 # `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
 gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "2cd0569592e0230e7b1482c18b15d93f17363472", features = ["tree-sitter", "tree-sitter-toml"] }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "f5fe5b1dd5011d9c28a862091b8b8238dcf82f37", features = ["tree-sitter", "tree-sitter-toml"] }
 # The foundation under the kit, for the one renderer-trait type the kit does
 # not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
 # is the same crate the kit is built against.
-gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "2cd0569592e0230e7b1482c18b15d93f17363472" }
+gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "f5fe5b1dd5011d9c28a862091b8b8238dcf82f37" }
 gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
 # The kit's icon SVGs (`IconName`), embedded. Without an asset source every
 # `IconName` in the app draws nothing — which is how the fold chevrons went
 # missing while their hitboxes were there all along.
-gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "2cd0569592e0230e7b1482c18b15d93f17363472" }
+gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "f5fe5b1dd5011d9c28a862091b8b8238dcf82f37" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 # Watching the project on disk (`app/src/watch.rs`). The same crate the

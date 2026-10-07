@@ -602,6 +602,32 @@ impl Binder {
 
     /// Rebuild the flat row list. Called on every input that can change it —
     /// mode, collapse, filter, order, or the project's own analysis.
+    /// The selected row's key, for the tests.
+    #[cfg(test)]
+    pub(crate) fn selected_key(&self) -> Option<SharedString> {
+        self.selected.clone()
+    }
+
+    /// Show a file's row: open every folder above it, select it, and
+    /// scroll it into view — a manuscript separator's "Reveal in Files".
+    pub fn reveal_file(&mut self, path: &str, cx: &mut Context<Self>) {
+        let mut folder = String::new();
+        for part in path
+            .split('/')
+            .collect::<Vec<_>>()
+            .split_last()
+            .map_or(&[][..], |(_, dirs)| dirs)
+        {
+            folder.push_str(part);
+            folder.push('/');
+            self.collapsed.remove(&SharedString::from(folder.clone()));
+        }
+        self.rebuild(cx);
+        if let Some(index) = self.rows.iter().position(|r| r.key.as_ref() == path) {
+            self.select_index(index, cx);
+        }
+    }
+
     pub fn rebuild(&mut self, cx: &mut Context<Self>) {
         let (sources, config, artifacts, library, entry, closure, diagnostics, drafts) = {
             let project = self.project.read(cx);
