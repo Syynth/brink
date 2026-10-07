@@ -81,6 +81,9 @@ const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
 const SEPARATOR_HEIGHT: f32 = 92.0;
 const SEPARATOR_SPACE_ABOVE: f32 = 36.0;
 
+/// Frames a caret move may take to be brought on screen (`reveal_caret`).
+const REVEAL_TRIES: u8 = 3;
+
 /// Rows of scroll-past-the-end, on the LAST section only.
 ///
 /// A code editor reserves empty space below its final line —
@@ -173,6 +176,11 @@ pub struct ContinuousView {
     /// Where the title bar's crumb starts: written with the window x the
     /// text starts at, each time that moves (`set_crumb_anchor`).
     crumb_anchor: Option<Rc<std::cell::Cell<Option<gpui::Pixels>>>>,
+    /// The caret moved and the view has yet to check it is on screen: how
+    /// many more frames may try. Set on every caret move; zeroed after
+    /// layout once it is (`render`). Bounded, so a caret that can never be
+    /// placed cannot keep asking for frames.
+    reveal_caret: Rc<std::cell::Cell<u8>>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -248,6 +256,7 @@ impl ContinuousView {
             prose: ProseCache::default(),
             signature: crate::signature_help::SignatureHint::default(),
             crumb_anchor: None,
+            reveal_caret: Rc::default(),
             _subscriptions: vec![watch],
         }
     }
@@ -419,6 +428,22 @@ impl ContinuousView {
         self.crumb_anchor = Some(cell);
     }
 
+    /// Scroll the list to `y` px into the manuscript, for the tests.
+    #[cfg(test)]
+    pub fn scroll_list_to(&mut self, y: f32, cx: &mut Context<Self>) {
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix: 0,
+            offset_in_item: px(y),
+        });
+        cx.notify();
+    }
+
+    /// The list's visible area in window coordinates, for the tests.
+    #[cfg(test)]
+    pub fn viewport(&self) -> gpui::Bounds<gpui::Pixels> {
+        self.list.viewport_bounds()
+    }
+
     /// The parameter hint, for the tests.
     #[cfg(test)]
     pub fn signature_hint(&self) -> &crate::signature_help::SignatureHint {
@@ -516,6 +541,10 @@ impl ContinuousView {
             return;
         }
         self.caret = Some((path.to_owned(), offset));
+        // The arrow keys move it off screen as readily as typing does; the
+        // view follows after layout (decision log 2026-10-07).
+        self.reveal_caret.set(REVEAL_TRIES);
+        cx.notify();
         cx.emit(ManuscriptEvent::Caret {
             path: path.to_owned(),
             offset,
@@ -891,16 +920,25 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
-            // Where the text starts, for the title bar's crumb: offset 0's
-            // left edge in any laid-out section (they share the column, so
-            // any will do). Measured after layout and passed on only when
-            // it moves; the bar reads it as it draws, so a move asks for
-            // one more frame to show it.
-            .when_some(self.crumb_anchor.clone(), |el, cell| {
+            // After layout: where the text starts, for the title bar's
+            // crumb, and whether the caret is still on screen.
+            .child({
                 let editors = self.editors.clone();
-                el.child(
-                    gpui::canvas(
-                        move |_, window, cx| {
+                let anchor = self.crumb_anchor.clone();
+                let reveal = self.reveal_caret.clone();
+                let caret = self.caret.clone();
+                let files = self.files.clone();
+                let list = self.list.clone();
+                let line_height = self
+                    .measured_line_height
+                    .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
+                gpui::canvas(
+                    move |_, window, cx| {
+                        // Offset 0's left edge in any laid-out section: they
+                        // share the column, so any will do. Passed on only
+                        // when it moves; the bar reads it as it draws, so a
+                        // move asks for one more frame to show it.
+                        if let Some(cell) = &anchor {
                             let left = editors.borrow().values().find_map(|(editor, _)| {
                                 editor.read(cx).range_to_bounds(&(0..0)).map(|b| b.left())
                             });
@@ -908,12 +946,34 @@ impl Render for ContinuousView {
                                 cell.set(left);
                                 window.refresh();
                             }
-                        },
-                        |_, (), _, _| {},
-                    )
-                    .absolute()
-                    .size_0(),
+                        }
+                        let tries = reveal.get();
+                        if tries > 0 {
+                            let placed = caret.as_ref().is_none_or(|(path, offset)| {
+                                keep_caret_on_screen(
+                                    &list,
+                                    &files,
+                                    &editors.borrow(),
+                                    path,
+                                    *offset,
+                                    line_height,
+                                    cx,
+                                )
+                            });
+                            if placed {
+                                reveal.set(0);
+                            } else {
+                                // Scrolled to the file; the next frame lays it
+                                // out and places the caret exactly.
+                                reveal.set(tries - 1);
+                                window.refresh();
+                            }
+                        }
+                    },
+                    |_, (), _, _| {},
                 )
+                .absolute()
+                .size_0()
             })
             .children(self.signature.render(cx))
             // Escape puts the parameter hint away, as the web's does.
@@ -1068,6 +1128,51 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     // kit sets either side of the text.
     let gutter = (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch + 24.;
     Some(px(chars * ch + gutter))
+}
+
+/// Scroll so the caret at `offset` in `path` is on screen, with a couple
+/// of rows to spare. `true` once it is; `false` when its section was not
+/// laid out yet, in which case the list is scrolled to the caret's row as
+/// counted from the text, for the next frame to settle exactly.
+fn keep_caret_on_screen(
+    list: &ListState,
+    files: &[String],
+    editors: &HashMap<String, Section>,
+    path: &str,
+    offset: usize,
+    line_height: f32,
+    cx: &App,
+) -> bool {
+    let Some(index) = files.iter().position(|f| f == path) else {
+        return true;
+    };
+    let Some((editor, _)) = editors.get(path) else {
+        return true;
+    };
+    let margin = px(2. * line_height);
+    if list.bounds_for_item(index).is_some()
+        && let Some(at) = editor.read(cx).range_to_bounds(&(offset..offset))
+    {
+        let view = list.viewport_bounds();
+        if at.top() < view.top() + margin {
+            list.scroll_by(at.top() - view.top() - margin);
+        } else if at.bottom() > view.bottom() - margin {
+            list.scroll_by(at.bottom() - view.bottom() + margin);
+        }
+        return true;
+    }
+    let state = editor.read(cx);
+    let line = state
+        .value()
+        .get(..offset)
+        .map_or(0, |before| before.matches('\n').count());
+    list.scroll_to(gpui::ListOffset {
+        item_ix: index,
+        offset_in_item: px(
+            (SEPARATOR_HEIGHT + line as f32 * line_height - 4.0 * line_height).max(0.),
+        ),
+    });
+    false
 }
 
 /// What a file's separator shows about it, read off the project.

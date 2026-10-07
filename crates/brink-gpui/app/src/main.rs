@@ -3920,6 +3920,56 @@ mod modes_driven {
         assert_eq!(selected.as_deref(), Some("chapter_two.ink"));
     }
 
+    /// The arrow keys bring the caret back on screen: the manuscript's
+    /// sections do not scroll, its list does, so the list has to follow.
+    #[test]
+    fn the_arrow_keys_bring_the_caret_back_into_view() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("long");
+        let long: String = (0..300)
+            .map(|i| format!("Line {i} of the story.\n"))
+            .collect();
+        std::fs::write(dir.join("story.ink"), long).expect("writing the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.settle();
+        let (manuscript, editor, handle) = h.read(|cx| {
+            let manuscript = studio.read(cx).manuscript.clone();
+            let m = manuscript.read(cx);
+            (
+                manuscript.clone(),
+                m.section_editor("story.ink").expect("mounted"),
+                m.section_focus("story.ink", cx).expect("mounted"),
+            )
+        });
+        h.app_window(window, |window, cx| window.focus(&handle, cx));
+        // The caret on line 5, put there as navigation does, then the view
+        // scrolled far below it.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.reveal_span("story.ink", 100..100, cx)));
+        h.capture(window);
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(4000., cx)));
+        h.capture(window);
+        let on_screen = |h: &mut Harness| {
+            h.read(|cx| {
+                let m = manuscript.read(cx);
+                let at = editor.read(cx).range_to_bounds(&{
+                    let c = editor.read(cx).cursor();
+                    c..c
+                });
+                let view = m.viewport();
+                at.is_some_and(|at| at.top() >= view.top() && at.bottom() <= view.bottom())
+            })
+        };
+        assert!(!on_screen(&mut h), "scrolled away from the caret first");
+        h.press(window, "down");
+        // The view follows after layout: a frame to see the caret moved,
+        // one to draw where the list went.
+        h.capture(window);
+        h.capture(window);
+        assert!(on_screen(&mut h), "the caret is back in view");
+    }
+
     /// The picture: the sidebar open, the caret in a stitch.
     #[test]
     fn the_writing_sidebar_picture() {
