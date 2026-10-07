@@ -4003,11 +4003,11 @@ mod modes_driven {
         // Line ~80 of the file: inside `second`.
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5, cx)));
         h.capture(window);
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
-            !pinned(h).is_empty()
-        });
-        assert!(found, "nothing pinned");
-        assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
+        // The file's row comes at once; its knot and stitch once the
+        // outline lands.
+        let found = h.settle_until(std::time::Duration::from_secs(10), |h| pinned(h).len() == 3);
+        assert!(found, "the knot and stitch never pinned");
+        assert_eq!(pinned(&mut h), ["story.ink", "=== start ===", "= second"]);
         // Hovered, a pinned row still covers the text under it.
         h.hover(window, 600., 45.);
         let shot = scratch_dir("shot").join("pinned.png");
@@ -4016,6 +4016,9 @@ mod modes_driven {
 
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(0., cx)));
         assert!(pinned(&mut h).is_empty(), "the chapter break is in view");
+        // Past the break but above the first knot: the file's row alone.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 1., cx)));
+        assert_eq!(pinned(&mut h), ["story.ink"]);
     }
 
     /// The next knot's header pushes the pinned strip up as it arrives,
@@ -4039,14 +4042,17 @@ mod modes_driven {
             h.capture(window);
             h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
                 .len()
-                == 2
+                == 3
         });
-        assert!(settled, "the knot and stitch pin");
+        assert!(settled, "the file, knot and stitch pin");
         let pushes = h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_pushes(cx)));
-        assert_eq!(pushes.len(), 2);
+        assert_eq!(pushes.len(), 3);
+        // The file's row stays — the file goes on — while its knot and
+        // stitch slide up behind it, clear of the header coming up.
+        assert!(pushes[0].abs() < 1., "the file's row stays: {pushes:?}");
         assert!(
-            (pushes[0] + 0.5 * row).abs() < 1.,
-            "the strip is half a row up: {pushes:?}"
+            (pushes[1] + 1.5 * row).abs() < 1. && (pushes[2] + 1.5 * row).abs() < 1.,
+            "the knot and stitch are a row and a half up: {pushes:?}"
         );
         let shot = scratch_dir("shot").join("pushed.png");
         h.screenshot(window, &shot);
@@ -4069,10 +4075,11 @@ mod modes_driven {
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * row, cx)));
         let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
             h.capture(window);
-            !h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
-                .is_empty()
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+                .len()
+                == 3
         });
-        assert!(pinned, "the knot pins");
+        assert!(pinned, "the file, knot and stitch pin");
         let caret = |h: &mut Harness| {
             h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
         };
@@ -4081,10 +4088,13 @@ mod modes_driven {
             .expect("mounted");
         let cursor = |h: &mut Harness| h.read(|cx| editor.read(cx).cursor());
         let before = (caret(&mut h), cursor(&mut h));
-        // The knot's row: the first under the top of the manuscript.
+        // The knot's row: the second, under the file's.
         let (x, y) = h.read(|cx| {
             let view = manuscript.read(cx).viewport();
-            (f32::from(view.center().x), f32::from(view.top()) + row / 2.)
+            (
+                f32::from(view.center().x),
+                f32::from(view.top()) + row * 1.5,
+            )
         });
         h.hover(window, x, y);
         h.mouse_down(window, x, y);

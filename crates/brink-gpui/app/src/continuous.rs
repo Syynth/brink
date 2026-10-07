@@ -679,14 +679,24 @@ impl ContinuousView {
         if into_text <= px(0.) {
             return None;
         }
-        let Some(symbols) = self.outlines.get(&path) else {
+        if !self.outlines.contains_key(&path) {
             self.request_outline(&path, cx);
-            return None;
-        };
+        }
+        let symbols = self.outlines.get(&path).map_or(&[][..], Vec::as_slice);
         let (editor, _) = self.editors.borrow().get(&path).cloned()?;
         let state = editor.read(cx);
         let len = state.value().len();
-        let (pinned, pushes) = crate::sticky_lines::pin(state, symbols, into_text, 0..len)?;
+        // The file's own row, on top: its chapter break, pinned once that
+        // has scrolled away, and pushed off by the next file's.
+        let file = crate::sticky_lines::PinnedLine {
+            offset: 0,
+            line: 0,
+            text: path.clone(),
+            kind: crate::sticky_lines::PinKind::File,
+            end: len,
+        };
+        let (pinned, pushes) =
+            crate::sticky_lines::pin(state, symbols, into_text, 0..len, Some(file))?;
         Some((path, pinned, pushes))
     }
 
@@ -694,10 +704,14 @@ impl ContinuousView {
     /// in the sections' own rows.
     fn pinned_geometry(&self, path: &str, cx: &App) -> Option<crate::sticky_lines::Geometry> {
         let (editor, _) = self.editors.borrow().get(path).cloned()?;
-        let text_left = editor.read(cx).range_to_bounds(&(0..0))?.left();
+        let state = editor.read(cx);
+        let text_left = state.range_to_bounds(&(0..0))?.left();
+        let column = state.input_bounds();
+        let view_left = self.list.viewport_bounds().left();
         let theme = cx.theme();
         Some(crate::sticky_lines::Geometry {
-            text_left: text_left - self.list.viewport_bounds().left(),
+            text_left: text_left - view_left,
+            column: (column.left() - view_left, column.size.width),
             line_height: px(self
                 .measured_line_height
                 .unwrap_or_else(|| f32::from(theme.mono_font_size) * LINE_HEIGHT_FACTOR)),
@@ -1151,15 +1165,34 @@ impl Render for ContinuousView {
             top.and_then(|top| {
                 let geometry = self.pinned_geometry(&top, cx)?;
                 let me = self.me.clone();
+                let app: &App = cx;
+                let file_row = |pin: &crate::sticky_lines::PinnedLine| {
+                    let project = self.project.read(app);
+                    let marks = FileMarks {
+                        draft: project.is_draft(&pin.text),
+                        entry: project.entry() == Some(pin.text.as_str()),
+                        dirty: project.is_dirty(&pin.text),
+                    };
+                    title_row(&pin.text, marks, app).into_any_element()
+                };
                 crate::sticky_lines::render(
                     &self.pins,
                     &geometry,
-                    move |offset, _, cx| {
+                    move |pin, _, cx| {
                         let top = top.clone();
-                        let _ =
-                            me.update(cx, |this, cx| this.reveal_span(&top, offset..offset, cx));
+                        let at = pin.offset;
+                        let file = pin.kind == crate::sticky_lines::PinKind::File;
+                        let _ = me.update(cx, |this, cx| {
+                            // The file's row goes to its chapter break.
+                            if file {
+                                this.reveal(&top, cx);
+                            } else {
+                                this.reveal_span(&top, at..at, cx);
+                            }
+                        });
                     },
-                    cx,
+                    &file_row,
+                    app,
                 )
             })
         };
@@ -1593,6 +1626,58 @@ fn chapter_title(path: &str) -> String {
     out
 }
 
+/// A file's title as its chapter break draws it — its icon, its name in
+/// tracked capitals, a DRAFT badge, an unsaved dot — and as its pinned row
+/// repeats it.
+fn title_row(path: &str, marks: FileMarks, cx: &App) -> gpui::Div {
+    let theme = cx.theme();
+    let tokens = brink_gpui_shell::theme::current(cx).tokens;
+    let draft_colour = brink_gpui_shell::theme::hsla(tokens.draft);
+    let (icon, icon_colour) = if marks.draft {
+        (icons::BrinkIcon::DropDraft, draft_colour)
+    } else if marks.entry {
+        (icons::BrinkIcon::DropEntryOutline, theme.primary)
+    } else {
+        (icons::BrinkIcon::Drop, theme.muted_foreground)
+    };
+    let name_colour = if marks.draft {
+        draft_colour
+    } else {
+        theme.foreground.opacity(0.8)
+    };
+    h_flex()
+        .relative()
+        .items_center()
+        .gap(px(8.))
+        .font_family(theme.font_family.clone())
+        .child(icons::icon(icon, px(13.), icon_colour))
+        .child(
+            div()
+                .text_xs()
+                .text_color(name_colour)
+                .child(chapter_title(path)),
+        )
+        .when(marks.draft, |el| {
+            el.child(
+                div()
+                    .px(px(4.))
+                    .rounded(px(3.))
+                    .bg(draft_colour.opacity(0.14))
+                    .text_size(px(8.5))
+                    .text_color(draft_colour)
+                    .child("D\u{2009}R\u{2009}A\u{2009}F\u{2009}T"),
+            )
+        })
+        .when(marks.dirty, |el| {
+            el.child(
+                div()
+                    .size(px(5.))
+                    .rounded_full()
+                    .bg(theme.foreground.opacity(0.7)),
+            )
+        })
+}
+
 /// The boundary between two files: a chapter break (decision log
 /// 2026-10-07). Space, then the file's icon and its name in tracked
 /// capitals, centred over the column, over a short rule. An unsaved file
@@ -1611,18 +1696,6 @@ fn separator(
     let theme = cx.theme();
     let tokens = brink_gpui_shell::theme::current(cx).tokens;
     let draft_colour = brink_gpui_shell::theme::hsla(tokens.draft);
-    let (icon, icon_colour) = if marks.draft {
-        (icons::BrinkIcon::DropDraft, draft_colour)
-    } else if marks.entry {
-        (icons::BrinkIcon::DropEntryOutline, theme.primary)
-    } else {
-        (icons::BrinkIcon::Drop, theme.muted_foreground)
-    };
-    let name_colour = if marks.draft {
-        draft_colour
-    } else {
-        theme.foreground.opacity(0.8)
-    };
     let rule = if marks.draft {
         draft_colour.opacity(0.45)
     } else {
@@ -1688,37 +1761,8 @@ fn separator(
                 .child(
                     // The title itself, and the menu hung off its right end
                     // out of the flow, so the title centres on its own.
-                    h_flex()
-                        .relative()
+                    title_row(path, marks, cx)
                         .h_full()
-                        .items_center()
-                        .gap(px(8.))
-                        .child(icons::icon(icon, px(13.), icon_colour))
-                        .child(
-                            div()
-                                .text_xs()
-                                .text_color(name_colour)
-                                .child(chapter_title(path)),
-                        )
-                        .when(marks.draft, |el| {
-                            el.child(
-                                div()
-                                    .px(px(4.))
-                                    .rounded(px(3.))
-                                    .bg(draft_colour.opacity(0.14))
-                                    .text_size(px(8.5))
-                                    .text_color(draft_colour)
-                                    .child("D\u{2009}R\u{2009}A\u{2009}F\u{2009}T"),
-                            )
-                        })
-                        .when(marks.dirty, |el| {
-                            el.child(
-                                div()
-                                    .size(px(5.))
-                                    .rounded_full()
-                                    .bg(theme.foreground.opacity(0.7)),
-                            )
-                        })
                         // Shown on hover, so a resting break is only its name.
                         .child(
                             div()

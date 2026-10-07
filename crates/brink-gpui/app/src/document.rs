@@ -1782,7 +1782,7 @@ impl Document {
             return (Vec::new(), Vec::new());
         };
         let top = -state.scroll_offset().y;
-        crate::sticky_lines::pin(state, outline, top, within).unwrap_or_default()
+        crate::sticky_lines::pin(state, outline, top, within, None).unwrap_or_default()
     }
 
     /// The pinned lines' text, for the tests.
@@ -1852,14 +1852,18 @@ impl Document {
             font: cx.theme().mono_font_family.clone(),
             font_size: cx.theme().mono_font_size,
             folds: true,
+            // Script pins no file row: the tab names the file.
+            column: (gpui::px(0.), gpui::px(0.)),
         };
         let me = cx.weak_entity();
         crate::sticky_lines::render(
             &self.pins,
             &geometry,
-            move |offset, window, cx| {
-                let _ = me.update(cx, |this, cx| this.reveal(offset..offset, window, cx));
+            move |pin, window, cx| {
+                let at = pin.offset;
+                let _ = me.update(cx, |this, cx| this.reveal(at..at, window, cx));
             },
+            &|_| gpui::Empty.into_any_element(),
             cx,
         )
     }

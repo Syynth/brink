@@ -1,7 +1,8 @@
 //! Pinned structure lines: the knot and stitch you are inside, held at the
 //! top of the view once their header lines have scrolled past it — the
 //! JetBrains "sticky lines" (decision log 2026-10-07). Write's manuscript
-//! and Script's editors both draw them.
+//! and Script's editors both draw them; the manuscript adds a row for the
+//! file itself above them, drawn like its chapter break.
 //!
 //! What to pin is read off the file's outline, not its text, so a `.brink`
 //! file's structure pins the same way an `.ink` file's does. Where the top
@@ -20,17 +21,28 @@ use gpui_component::{ActiveTheme as _, input::EditorState};
 use brink_gpui_model::query::Symbol;
 use brink_ir::SymbolKind;
 
-/// One pinned header line.
+/// What a pinned row stands for.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PinKind {
+    /// The file itself: the manuscript's chapter break, pinned.
+    File,
+    Knot,
+    /// A stitch's header, under its knot's.
+    Stitch,
+}
+
+/// One pinned row.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PinnedLine {
-    /// Where the header line starts: what a click goes to.
+    /// Where the header line starts: what a click goes to. The file's
+    /// start, for the file's row.
     pub offset: usize,
     /// Its line number, from zero.
     pub line: usize,
-    /// The line as written, trailing whitespace trimmed.
+    /// The line as written, trailing whitespace trimmed; the file's path,
+    /// for the file's row (which its host draws).
     pub text: String,
-    /// A stitch's header, under its knot's.
-    pub stitch: bool,
+    pub kind: PinKind,
     /// Where its knot or stitch ends: the next one's header, which pushes
     /// this row up out of its way as it arrives.
     pub end: usize,
@@ -43,14 +55,14 @@ pub(crate) fn line_start(text: &str, offset: usize) -> usize {
         .map_or(0, |at| at + 1)
 }
 
-fn header(text: &str, symbol: &Symbol, stitch: bool) -> PinnedLine {
+fn header(text: &str, symbol: &Symbol, kind: PinKind) -> PinnedLine {
     let start = line_start(text, symbol.full_start as usize);
     let end = text[start..].find('\n').map_or(text.len(), |at| start + at);
     PinnedLine {
         offset: start,
         line: text[..start].matches('\n').count(),
         text: text[start..end].trim_end().to_owned(),
-        stitch,
+        kind,
         end: symbol.full_end as usize,
     }
 }
@@ -58,7 +70,8 @@ fn header(text: &str, symbol: &Symbol, stitch: bool) -> PinnedLine {
 /// How far each pinned row is pushed up (zero or less), JetBrains-style:
 /// a row never overlaps the header that ends its knot or stitch, so the
 /// next one slides it out of the way rather than replacing it outright.
-/// The knot's row carries the whole strip; a stitch's row can go sooner.
+/// Each row carries the rows under it (a file its knot, a knot its
+/// stitch), so a row can go sooner than its parent but never later.
 /// `distance(offset)` is how far below the top of the view the line at
 /// `offset` starts — `None` when it is not laid out, which is far enough.
 pub(crate) fn pushes(
@@ -67,11 +80,11 @@ pub(crate) fn pushes(
     distance: impl Fn(usize) -> Option<Pixels>,
 ) -> Vec<Pixels> {
     let mut pushes: Vec<Pixels> = Vec::with_capacity(pinned.len());
-    for (i, pin) in pinned.iter().enumerate() {
-        // The knot clears the whole strip below it; a stitch, itself.
-        let below = if i == 0 { pinned.len() } else { i + 1 };
-        let own = distance(pin.end).map_or(px(0.), |d| (d - row * below as f32).min(px(0.)));
-        pushes.push(pushes.first().map_or(own, |strip| own.min(*strip)));
+    let strip = row * pinned.len() as f32;
+    for pin in pinned {
+        // A row and every row under it clear the header that ends it.
+        let own = distance(pin.end).map_or(px(0.), |d| (d - strip).min(px(0.)));
+        pushes.push(pushes.last().map_or(own, |parent| own.min(*parent)));
     }
     pushes
 }
@@ -102,7 +115,7 @@ pub(crate) fn pinned_at(
     if !above(knot, top) {
         return pinned;
     }
-    pinned.push(header(text, knot, false));
+    pinned.push(header(text, knot, PinKind::Knot));
     let stitch_at = |at: usize| {
         knot.children
             .iter()
@@ -114,7 +127,7 @@ pub(crate) fn pinned_at(
     // the top line is still inside — which the next header then pushes
     // out of the way rather than replacing outright.
     if let Some(stitch) = stitch_at(under).or_else(|| stitch_at(top)) {
-        pinned.push(header(text, stitch, true));
+        pinned.push(header(text, stitch, PinKind::Stitch));
     }
     pinned
 }
@@ -158,18 +171,23 @@ pub(crate) fn content_top(state: &EditorState, offset: usize) -> Option<Pixels> 
 }
 
 /// What to pin with the top of the view at `top` in the editor's content,
-/// looking at lines in `within`, and how far each row is pushed.
+/// looking at lines in `within`, and how far each row is pushed. `file`
+/// is the host's row for the file itself, which goes on top; the knot and
+/// stitch are then judged a row lower, under it.
 pub(crate) fn pin(
     state: &EditorState,
     symbols: &[Symbol],
     top: Pixels,
     within: Range<usize>,
+    file: Option<PinnedLine>,
 ) -> Option<(Vec<PinnedLine>, Vec<Pixels>)> {
     let row = state.line_height()?;
-    let line = line_at(state, top, within.clone())?;
-    let under = line_at(state, top + row, within).unwrap_or(line);
+    let lead = row * usize::from(file.is_some()) as f32;
+    let line = line_at(state, top + lead, within.clone())?;
+    let under = line_at(state, top + lead + row, within).unwrap_or(line);
     let text = state.value();
-    let pinned = pinned_at(symbols, &text, line, under);
+    let mut pinned: Vec<PinnedLine> = file.into_iter().collect();
+    pinned.extend(pinned_at(symbols, &text, line, under));
     let pushes = pushes(&pinned, row, |offset| {
         content_top(state, line_start(&text, offset)).map(|y| y - top)
     });
@@ -187,6 +205,9 @@ pub(crate) struct Geometry {
     /// Whether the editor's gutter has a fold column between the numbers
     /// and the text (Script's does; the manuscript's sections do not).
     pub folds: bool,
+    /// The text column's left edge and width, for the file's row to centre
+    /// over, as the chapter break does.
+    pub column: (Pixels, Pixels),
 }
 
 impl Geometry {
@@ -239,7 +260,11 @@ impl Pins {
         let same_file = self.path.as_deref() == path;
         let mut released = false;
         for (index, pin) in self.shown.iter().enumerate() {
-            if !same_file || !next.iter().any(|n| n.offset == pin.offset) {
+            if !same_file
+                || !next
+                    .iter()
+                    .any(|n| n.offset == pin.offset && n.kind == pin.kind)
+            {
                 let pushed = self.push.get(index).copied().unwrap_or(px(0.));
                 // Pushed clean out of view, it has already gone: fading it
                 // at its row would bring it back for a moment.
@@ -276,11 +301,14 @@ impl Pins {
 /// header on the editor's surface, in its colour, with its line number,
 /// with a soft shadow below. A line fades and drops in as it pins and
 /// fades out as it lets go; the strip itself fades in and out with its
-/// shadow. A click goes to the header. `None` when nothing is drawn.
+/// shadow. A click goes to the header (`on_click` gets the row). The
+/// file's row, which only the host knows how to draw, comes from
+/// `file_row`. `None` when nothing is drawn.
 pub(crate) fn render(
     pins: &Pins,
     geometry: &Geometry,
-    on_click: impl Fn(usize, &mut Window, &mut App) + Clone + 'static,
+    on_click: impl Fn(&PinnedLine, &mut Window, &mut App) + Clone + 'static,
+    file_row: &dyn Fn(&PinnedLine) -> AnyElement,
     cx: &App,
 ) -> Option<AnyElement> {
     if pins.is_empty() {
@@ -298,30 +326,50 @@ pub(crate) fn render(
     // Opaque: a pinned row covers the text scrolled under it, hovered too.
     let hover = surface.blend(theme.muted.opacity(0.35));
     let row = |pin: &PinnedLine| {
-        div()
+        let base = div()
             .relative()
             .w_full()
             .h(geometry.line_height)
-            .bg(surface)
-            .child(
+            .bg(surface);
+        match pin.kind {
+            // Centred over the column, as the chapter break it stands for.
+            PinKind::File => base.child(
                 div()
                     .absolute()
-                    .left(px(0.))
-                    .w(geometry.number_right())
-                    .text_right()
-                    .text_color(number)
-                    .child((pin.line + 1).to_string()),
-            )
-            .child(
-                div()
-                    .absolute()
-                    .left(geometry.text_left)
-                    .right(px(0.))
-                    .truncate()
-                    .text_color(if pin.stitch { stitch } else { knot })
-                    .child(pin.text.clone()),
-            )
+                    .left(geometry.column.0)
+                    .w(geometry.column.1)
+                    .h_full()
+                    .flex()
+                    .justify_center()
+                    .items_center()
+                    .child(file_row(pin)),
+            ),
+            PinKind::Knot | PinKind::Stitch => base
+                .child(
+                    div()
+                        .absolute()
+                        .left(px(0.))
+                        .w(geometry.number_right())
+                        .text_right()
+                        .text_color(number)
+                        .child((pin.line + 1).to_string()),
+                )
+                .child(
+                    div()
+                        .absolute()
+                        .left(geometry.text_left)
+                        .right(px(0.))
+                        .truncate()
+                        .text_color(if pin.kind == PinKind::Stitch {
+                            stitch
+                        } else {
+                            knot
+                        })
+                        .child(pin.text.clone()),
+                ),
+        }
     };
+    let key = |pin: &PinnedLine| format!("{:?}-{}", pin.kind, pin.offset);
     // The strip moves with the knot's push; a stitch row's own push is on
     // top of that.
     let strip_push = pins.push.first().copied().unwrap_or(px(0.));
@@ -330,37 +378,42 @@ pub(crate) fn render(
     let line_height = geometry.line_height;
     let shown = pins.shown.iter().enumerate().rev().map(|(index, pin)| {
         let on_click = on_click.clone();
-        let offset = pin.offset;
+        let target = pin.clone();
         let at = line_height * index as f32 + pins.push.get(index).copied().unwrap_or(px(0.))
             - strip_push;
         row(pin)
             .absolute()
-            .id(SharedString::from(format!("pinned-{offset}")))
+            .id(SharedString::from(format!("pinned-{}", key(pin))))
             .cursor_pointer()
             .hover(|s| s.bg(hover))
-            .on_click(move |_, window, cx| on_click(offset, window, cx))
+            .on_click(move |_, window, cx| on_click(&target, window, cx))
             .with_animation(
-                SharedString::from(format!("pin-in-{offset}")),
+                SharedString::from(format!("pin-in-{}", key(pin))),
                 Animation::new(PIN_IN).with_easing(gpui::ease_out_quint()),
                 move |el, delta| el.opacity(delta).top(at - px(4. * (1. - delta))),
             )
             .into_any_element()
     });
-    let rows = shown.len().max(
-        pins.leaving
-            .iter()
-            .map(|(_, row, _, _)| row + 1)
-            .max()
-            .unwrap_or(0),
-    );
+    // Where the strip ends: its lowest row's bottom, pushes counted, so
+    // its shadow follows a row pushed up behind its parent rather than
+    // falling across the text coming up under it.
+    let bottom = pins
+        .push
+        .iter()
+        .enumerate()
+        .map(|(index, pushed)| line_height * (index + 1) as f32 + *pushed - strip_push)
+        .chain(pins.leaving.iter().map(|(_, at_row, pushed, _)| {
+            line_height * (*at_row + 1) as f32 + *pushed - strip_push
+        }))
+        .fold(px(0.), Pixels::max);
     let released = pins.released;
     let leaving = pins.leaving.iter().map(|(pin, at_row, pushed, _)| {
         row(pin)
-            .id(SharedString::from(format!("unpinned-{}", pin.offset)))
+            .id(SharedString::from(format!("unpinned-{}", key(pin))))
             .absolute()
             .top(geometry.line_height * *at_row as f32 + *pushed - strip_push)
             .with_animation(
-                SharedString::from(format!("pin-out-{}-{released}", pin.offset)),
+                SharedString::from(format!("pin-out-{}-{released}", key(pin))),
                 Animation::new(PIN_OUT),
                 |el, delta| el.opacity(1. - delta),
             )
@@ -376,7 +429,7 @@ pub(crate) fn render(
         .when(!pins.shown.is_empty(), |el| el.block_mouse_except_scroll())
         .left_0()
         .right_0()
-        .h(geometry.line_height * rows as f32)
+        .h(bottom)
         .shadow(vec![gpui::BoxShadow {
             color: gpui::black().opacity(0.35),
             offset: gpui::point(px(0.), px(2.)),
@@ -416,7 +469,7 @@ pub(crate) fn render(
             .top_0()
             .left_0()
             .right_0()
-            .h(geometry.line_height * rows as f32 + px(SHADOW_ROOM))
+            .h((strip_push + bottom).max(px(0.)) + px(SHADOW_ROOM))
             .overflow_hidden()
             .child(strip)
             .into_any_element(),
@@ -514,10 +567,16 @@ mod tests {
         );
         // Its header has slid under the knot's row: it pins there.
         let pinned = pinned_at(&outline(), TEXT, at("= second"), next("= second"));
-        let texts: Vec<_> = pinned.iter().map(|p| (p.text.as_str(), p.stitch)).collect();
+        let texts: Vec<_> = pinned
+            .iter()
+            .map(|p| (p.text.as_str(), p.kind == PinKind::Stitch))
+            .collect();
         assert_eq!(texts, [("=== start ===", false), ("= second", true)]);
         let pinned = pinned_at(&outline(), TEXT, at("Run."), at("Fast."));
-        let texts: Vec<_> = pinned.iter().map(|p| (p.text.as_str(), p.stitch)).collect();
+        let texts: Vec<_> = pinned
+            .iter()
+            .map(|p| (p.text.as_str(), p.kind == PinKind::Stitch))
+            .collect();
         assert_eq!(texts, [("=== start ===", false), ("= second", true)]);
     }
 
