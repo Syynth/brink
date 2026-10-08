@@ -5783,3 +5783,20 @@
 - **SCOPE:** minor/local
 - **WHAT:** Amends the earlier entry from today ("no pinned file band remains"). Once a file's chapter break has scrolled past the top of Write's manuscript, a row standing for the file pins above its knot and stitch lines. It is drawn like the break: icon, name in spaced capitals, DRAFT badge, unsaved dot, centred over the column. The next file's break pushes it off, and a click goes to the file's start. Jumps and the cursor-follow count the pinned rows as covering the top of the view, in both Write and Script.
 - **WHY:** After using the pinned knot/stitch lines, the maintainer wanted the file named there as well. Drawing it as the chapter break keeps the pinned strip reading as the manuscript's own structure rather than a toolbar. Counting the pinned rows as covered space follows from them hiding the text under them: a jump or a cursor that lands under the strip is as lost as one off the edge.
+
+## Pinned lines cover every nested block: choices, conditionals and their branches
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** The pinned structure lines in Write and Script now pin every block the top of the view is inside, as JetBrains does: knot, stitch, choice, a conditional or sequence's opening line, and its current branch's `- …` line. They nest outermost first under Write's file row. Each level is judged at the line under the rows already pinned, and is pushed off by the next block's opening line. Gathers don't pin. At most ten block rows pin, keeping the outermost (the maintainer raised the first cap of five).
+- **WHY:** The maintainer asked for choices and conditional branches like JetBrains, after using the knot/stitch version. The scopes come from the structural projection rather than the text, so `.brink` and `.ink` pin alike. Gathers are left out because a `-` continuation isn't a block anything opens. Keeping the outermost rows is a default, since deeply nested pins crowd the text they are meant to locate. Five rows proved too few for real nesting.
+- **STATUS:** tentative
+
+## A conditional's or sequence's `{` line pins only if it says something
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** A conditional's or sequence's opening line pins only if something is left on it once the `{` is removed: a condition (`{ x > 1:`), a switch's subject (`{ visits:`), or a sequence's kind (`{ stopping:`, `{&`). A bare `{` line never pins. Its branches' `- …` lines pin instead. One consequence is accepted: under a bare `{`, the `- else:` branch pins alone, without the sibling condition it's the else of, as JetBrains shows `} else {` alone.
+- **WHY:** The maintainer found the bare `{` row useless in conditionals and a waste of space. In the other shapes the brace line carries information nothing else shows: it is the only header for a first branch written on it, it is what an `- else:` is the else of, it names a switch's subject, and it says a sequence's `- …` lines are steps rather than conditions. Pinning the sibling condition as well, to give the else context, would have cost the row this saves.
