@@ -84,7 +84,12 @@ gpui::actions!(
 /// Give `editor` our menu.
 pub(crate) fn install(editor: Editor, site: EditorSite) -> Editor {
     editor.context_menu(move |_, window, cx| {
-        open(&site, window.mouse_position(), window, cx);
+        // The kit calls this while it still holds the editor, and `open`
+        // reads and focuses that editor — so it runs once the kit lets go.
+        // Run here, it is a double lease: a panic on every right-click.
+        let site = site.clone();
+        let position = window.mouse_position();
+        window.defer(cx, move |window, cx| open(&site, position, window, cx));
         NativeMenu::new()
     })
 }

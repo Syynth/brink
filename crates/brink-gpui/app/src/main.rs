@@ -4861,6 +4861,44 @@ mod modes_driven {
         assert!(paused, "Play ran past the write to gold");
     }
 
+    /// A right-click in the editor opens our menu without taking the
+    /// window down. The kit asks for the menu while it still holds the
+    /// editor, and the first version read and focused that same editor
+    /// there — a double lease, and a crash on every right-click.
+    #[test]
+    fn a_right_click_in_the_editor_does_not_crash() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // Line 7, "The lamp gutters.", a little way in.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) + 40., f32::from(at.top()) + row * 6.5)
+        });
+        h.right_click(window, x, y);
+        h.settle();
+        h.capture(window);
+        // And again on a header line, which takes the symbol menu's road.
+        let header_y = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            f32::from(at.top()) + row * 5.5
+        });
+        h.right_click(window, x, header_y);
+        h.settle();
+        h.capture(window);
+    }
+
     /// The editor menu's Fold and Unfold reach the editor they were asked
     /// from, as the gutter's chevron does.
     #[test]
