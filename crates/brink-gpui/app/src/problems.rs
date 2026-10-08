@@ -43,7 +43,6 @@ use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
-use rowan::TextSize;
 
 use brink_gpui_model::fixes::{FixPlan, FixScope};
 use brink_gpui_model::query::{QueryKind, QueryResult};
@@ -281,7 +280,8 @@ pub fn build_rows<'a>(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     for (path, found) in diagnostics {
-        let index = source_of(path).map(|source| LineIndex::new(&source));
+        let source = source_of(path);
+        let index = source.as_deref().map(LineIndex::new);
         let mut file_rows: Vec<Row> = found
             .iter()
             .map(|d| Row {
@@ -290,10 +290,14 @@ pub fn build_rows<'a>(
                 bucket: Bucket::of(d),
                 code: d.code.clone(),
                 message: d.message.clone(),
-                line_col: index.as_ref().map(|index| {
-                    let (line, col) = index.line_col(TextSize::from(d.start));
-                    (line + 1, col + 1)
-                }),
+                line_col: index
+                    .as_ref()
+                    .zip(source.as_deref())
+                    .map(|(index, source)| {
+                        // The analysis can be a keystroke behind the text.
+                        let (line, col) = crate::document::line_col_in(index, source, d.start);
+                        (line + 1, col + 1)
+                    }),
             })
             .collect();
         file_rows.sort_by_key(|row| (row.span.start, row.bucket.rank()));

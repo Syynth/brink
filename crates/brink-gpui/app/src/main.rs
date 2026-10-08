@@ -4990,6 +4990,51 @@ mod modes_driven {
         h.capture(window);
     }
 
+    /// The crash (2026-10-08): typing newlines into prose full of
+    /// em-dashes while the prose checker answers for older text. Every
+    /// newline moves the offsets after it; a stale lint inside a dash used
+    /// to be sliced and take the window down.
+    #[test]
+    fn typing_newlines_while_prose_is_checked_does_not_crash() {
+        let dir = scratch_dir("newlines");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        let line = "The tide\u{2014}out\u{2014}was teh lowest\u{2014}in yeers.\n";
+        let story = format!("-> shore\n=== shore ===\n{}-> END\n", line.repeat(12));
+        std::fs::write(dir.join("story.ink"), &story).expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // The caret just after `=== shore ===`, then newline after newline,
+        // each one before the last check has answered.
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_cursor_position(gpui_component::input::Position::new(2, 0), window, cx);
+            });
+        });
+        for _ in 0..40 {
+            h.press(window, "enter");
+            h.advance(std::time::Duration::from_millis(7));
+        }
+        let settled = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).value().matches('\n').count())
+                >= story.matches('\n').count() + 40
+        });
+        assert!(settled, "the newlines never all landed");
+        // A few more rounds of analysis and prose, against the final text.
+        h.advance(std::time::Duration::from_millis(500));
+        h.capture(window);
+    }
+
     /// The editor menu's Fold and Unfold reach the editor they were asked
     /// from, as the gutter's chevron does.
     #[test]
