@@ -14,6 +14,7 @@ mod document;
 mod files;
 mod fixes;
 mod graph_layout;
+mod gutter;
 #[cfg(test)]
 mod harness;
 mod hover_card;
@@ -2574,6 +2575,13 @@ impl Render for Studio {
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
+            // The gutter's ▶ (and any surface's "Play from here" that lets
+            // the action reach the root): a session entered at that path.
+            .on_action(
+                cx.listener(|this, action: &crate::binder::PlayFromHere, window, cx| {
+                    this.play_at(Some(action.path.clone()), window, cx);
+                }),
+            )
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
             .on_action(cx.listener(Self::debug_step_line))
@@ -4393,6 +4401,208 @@ mod modes_driven {
         let after = anchor.get();
         assert_ne!(after, before, "the column moved");
         assert_eq!(after, text_left(&mut h), "and the crumb with it");
+    }
+
+    /// The gutter's breakpoint column: a press there sets a breakpoint on
+    /// that line, and another takes it away.
+    #[test]
+    fn a_press_in_the_gutter_toggles_a_breakpoint() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let (project, document) = h.read(|cx| {
+            let s = studio.read(cx);
+            (
+                s.project.clone(),
+                s.code.read(cx).active_document().cloned(),
+            )
+        });
+        let editor = h.read(|cx| {
+            document
+                .expect("the entry is open")
+                .read(cx)
+                .editor()
+                .clone()
+        });
+        // Line 7, "The lamp gutters.": the column's middle, the row's middle.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (
+                f32::from(state.input_bounds().left()) + 8.,
+                f32::from(at.top()) + row * 6.5,
+            )
+        });
+        let marks = |h: &mut Harness| h.read(|cx| project.read(cx).breakpoints_in("story.ink"));
+        assert!(marks(&mut h).is_empty());
+        h.hover(window, x, y);
+        h.mouse_down(window, x, y);
+        h.mouse_up(window, x, y);
+        assert_eq!(
+            marks(&mut h)
+                .iter()
+                .map(|(line, _)| *line)
+                .collect::<Vec<_>>(),
+            [7],
+            "set on the line pressed"
+        );
+        // Over line 6's fold button, just left of the text: the ghost
+        // button lights under the pointer.
+        let (fx, fy) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        h.hover(window, fx, fy);
+        let shot = scratch_dir("shot").join("gutter.png");
+        h.screenshot(window, &shot);
+        eprintln!("gutter screenshot: {}", shot.display());
+        h.mouse_down(window, x, y);
+        h.mouse_up(window, x, y);
+        assert!(marks(&mut h).is_empty(), "and taken away again");
+    }
+
+    /// A knot's header line plays from there: its gutter cell starts a
+    /// session at the knot, and sets no breakpoint.
+    #[test]
+    fn a_press_on_a_knots_gutter_plays_from_there() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let (project, player, editor) = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            (
+                s.project.clone(),
+                s.player.clone(),
+                document.read(cx).editor().clone(),
+            )
+        });
+        // Line 6, "=== start ===", once the outline has marked it.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (
+                f32::from(state.input_bounds().left()) + 8.,
+                f32::from(at.top()) + row * 5.5,
+            )
+        });
+        let started = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.read(|cx| player.read(cx).started_at().is_some())
+        });
+        assert!(started, "the press started a session");
+        assert_eq!(
+            h.read(|cx| player.read(cx).started_at().map(str::to_owned))
+                .as_deref(),
+            Some("start")
+        );
+        assert!(
+            h.read(|cx| project.read(cx).breakpoints_in("story.ink"))
+                .is_empty(),
+            "a header line plays, it does not take a breakpoint"
+        );
+    }
+
+    /// The fold button folds: a press on line 6's chevron folds the knot.
+    #[test]
+    fn a_press_on_the_fold_button_folds() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        let folded = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.capture(window);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.capture(window);
+            // Line 14, "=== market ===", moves up once the knot above it
+            // is folded away.
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+        });
+        assert!(folded, "the knot folded");
+        // All of it: lines 7–12 hidden, through its last, "-> DONE" — the
+        // knot's header stays (row 5), the blank after it is row 6, and
+        // the next knot comes straight after.
+        assert_eq!(
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13)),
+            7,
+            "the fold hides the knot through its last line"
+        );
+    }
+
+    /// Write's sections fold too, and a folded section shrinks to the rows
+    /// it still shows, so no gap is left where the folded text was.
+    #[test]
+    fn a_section_folds_and_shrinks_to_fit() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let editor = h
+            .read(|cx| manuscript.read(cx).section_editor("story.ink"))
+            .expect("mounted");
+        let height = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx);
+                f32::from(state.input_bounds().size.height)
+            })
+        };
+        let before = height(&mut h);
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        let folded = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.capture(window);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.capture(window);
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+        });
+        assert!(folded, "the knot folded");
+        h.capture(window);
+        h.capture(window);
+        let after = height(&mut h);
+        assert!(after < before, "the section shrank: {before} -> {after}");
+        let shown = h.read(|cx| editor.read(cx).display_row_count());
+        let row = h.read(|cx| f32::from(editor.read(cx).line_height().expect("laid out")));
+        // The last section carries its scroll-past-the-end rows.
+        let trailing = 8.;
+        assert!(
+            (after - (shown as f32 + trailing) * row).abs() < 1.,
+            "sized to the rows it shows: {after} for {shown} rows"
+        );
     }
 
     /// The picture: the sidebar open, the caret in a stitch.
