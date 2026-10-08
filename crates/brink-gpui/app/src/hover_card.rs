@@ -28,8 +28,8 @@ use brink_gpui_model::prose::ProseFix;
 use brink_gpui_model::query::HoverTarget;
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, App, Font, FontWeight, Global, InteractiveText, SharedString, StrikethroughStyle,
-    StyleRefinement, StyledText, TextRun, UnderlineStyle, Window, div, px,
+    AnyElement, App, Font, FontWeight, Global, SharedString, StyleRefinement, StyledText, TextRun,
+    Window, div, px,
 };
 use gpui_component::{
     ActiveTheme as _, h_flex,
@@ -286,8 +286,14 @@ fn render(card: &HoverCard, window: &mut Window, cx: &mut App) -> AnyElement {
     if !card.diagnostics.is_empty() {
         sections.push(problems_section(card, window, cx));
     }
+    // The web's card has a hairline edge; the kit's card style is fixed at
+    // install, before any theme, so the edge is drawn here, on the theme.
+    let edge = palette(cx).solid_border.opacity(0.8);
     v_flex()
         .font_family(ui)
+        .rounded(px(8.))
+        .border_1()
+        .border_color(edge)
         .children(sections.into_iter().enumerate().map(|(ix, section)| {
             div()
                 .when(ix > 0, |el| el.border_t_1().border_color(rule))
@@ -306,6 +312,8 @@ fn palette(cx: &App) -> Colours {
         accent: hsla(tokens.accent),
         info: hsla(tokens.info),
         chip: hsla(tokens.surface_bg),
+        // A shade lighter than the card, as the web's code chips are.
+        code: hsla(tokens.fg).opacity(0.08),
         error: hsla(tokens.error),
         warning: hsla(tokens.warning),
         panel: hsla(tokens.panel_bg),
@@ -349,33 +357,21 @@ fn hover_section(hover: &lsp_types::Hover, cx: &mut App) -> AnyElement {
     let rows = lines.iter().enumerate().map(|(ix, line)| {
         let first = ix == 0;
         let base = if first { &mono } else { &ui };
-        let (text, runs, targets) = layout(line, base, &mono, &colours, &links);
-        let styled = StyledText::new(text).with_runs(runs);
-        let clickable: Vec<Range<usize>> = targets.iter().map(|(r, _)| r.clone()).collect();
-        let line_el = InteractiveText::new(SharedString::from(format!("hover-line-{ix}")), styled)
-            .on_click(clickable, move |which, window, cx| {
-                if let Some((_, target)) = targets.get(which) {
-                    window.dispatch_action(
-                        Box::new(GoToHoverTarget {
-                            path: target.path.clone(),
-                            start: target.start as usize,
-                            end: target.end as usize,
-                        }),
-                        cx,
-                    );
-                }
-            });
         div()
             .when_first(first, colours.border)
-            .child(line_el)
+            .child(line_row(line, base, &mono, &colours, &links))
             .into_any_element()
     });
     v_flex()
+        // The kit lays a card out at its narrowest, and a row of words and
+        // chips is narrowest one chip wide: the section asks for the width
+        // its longest line wants, up to the card's cap, and wraps past it.
+        .min_w(px(natural_width(&lines)))
         .px(px(12.))
         .py(px(9.))
         .gap(px(5.))
         .text_sm()
-        .line_height(gpui::relative(1.55))
+        .line_height(gpui::relative(1.45))
         .children(rows)
         .into_any_element()
 }
@@ -558,9 +554,6 @@ fn problem_row(
         .into_any_element()
 }
 
-/// A chip's padding: a thin space either side, on the chip's colour.
-const PAD: &str = "\u{2009}";
-
 /// The colours a card draws with, from the studio theme.
 struct Colours {
     fg: gpui::Hsla,
@@ -568,6 +561,7 @@ struct Colours {
     accent: gpui::Hsla,
     info: gpui::Hsla,
     chip: gpui::Hsla,
+    code: gpui::Hsla,
     error: gpui::Hsla,
     warning: gpui::Hsla,
     panel: gpui::Hsla,
@@ -576,63 +570,118 @@ struct Colours {
     solid_border: gpui::Hsla,
 }
 
-/// A line ready to draw: its characters, a style per stretch, and the
-/// byte ranges that are links with where they go.
-type LaidOutLine = (String, Vec<TextRun>, Vec<(Range<usize>, HoverTarget)>);
+/// About how wide the card wants to be for `lines` laid out unwrapped: the
+/// longest line's characters at the code face's advance, its chips'
+/// padding, and the section's own — kept between a sensible floor and the
+/// card's 460px cap (less the section's padding).
+fn natural_width(lines: &[&str]) -> f32 {
+    const ADVANCE: f32 = 7.4;
+    const CHIP: f32 = 10.;
+    let widest = lines
+        .iter()
+        .map(|line| {
+            let mut chars = 0usize;
+            let mut chips = 0usize;
+            for piece in pieces(line) {
+                match piece {
+                    Piece::Code(s) => {
+                        chars += s.chars().count();
+                        chips += 1;
+                    }
+                    Piece::Link { label, code, .. } => {
+                        chars += label.chars().count();
+                        chips += usize::from(code);
+                    }
+                    Piece::Text(s) | Piece::Strong(s) | Piece::Em(s) => {
+                        chars += s.chars().count();
+                        chips += s.matches('`').count() / 2;
+                    }
+                }
+            }
+            chars as f32 * ADVANCE + chips as f32 * CHIP
+        })
+        .fold(0.0_f32, f32::max);
+    widest.clamp(120., 460. - 24.)
+}
 
-/// A line as one run of text: its characters, a style per stretch, and the
-/// byte ranges that are links with where they go.
-fn layout(
+/// A line as the web draws it: words that wrap, and code as chips — a
+/// small rounded box a shade lighter than the card, its own height rather
+/// than the line's (a text run's background is the line's height, so a
+/// run-drawn chip was a slab) — with punctuation tight against them. A
+/// link to a file is a chip that goes there.
+fn line_row(
     line: &str,
     base: &Font,
     mono: &Font,
     colours: &Colours,
     links: &[Option<HoverTarget>],
-) -> LaidOutLine {
-    let mut text = String::new();
-    let mut runs = Vec::new();
-    let mut targets = Vec::new();
-    let run = |len: usize, font: Font, color: gpui::Hsla| TextRun {
-        len,
-        font,
-        color,
-        background_color: None,
-        underline: None,
-        strikethrough: None::<StrikethroughStyle>,
+) -> AnyElement {
+    let words = |text: &str, font: &Font, weight: FontWeight, color: gpui::Hsla| {
+        // A word keeps the space after it, so wrapping breaks between
+        // words and a comma stays with the chip before it.
+        text.split_inclusive(' ')
+            .map(|word| {
+                div()
+                    .font(Font {
+                        weight,
+                        ..font.clone()
+                    })
+                    .text_color(color)
+                    .whitespace_nowrap()
+                    .child(word.replace(' ', "\u{a0}"))
+                    .into_any_element()
+            })
+            .collect::<Vec<_>>()
     };
-    // A chip: the code in the monospace face on the surface colour, with a
-    // thin space either side standing in for its padding.
-    let chip = |s: &str| format!("{PAD}{s}{PAD}");
+    let chip = |text: String, weight: FontWeight, color: gpui::Hsla| {
+        div()
+            .px(px(4.))
+            .rounded(px(4.))
+            .bg(colours.code)
+            .font(Font {
+                weight,
+                ..mono.clone()
+            })
+            .text_size(px(12.))
+            .line_height(px(18.))
+            .text_color(color)
+            .whitespace_nowrap()
+            .child(text)
+    };
+    let mut out: Vec<AnyElement> = Vec::new();
     for piece in pieces(line) {
         match piece {
-            Piece::Text(s) => {
-                runs.push(run(s.len(), base.clone(), colours.fg));
-                text.push_str(&s);
-            }
-            Piece::Code(s) => {
-                let s = chip(&s);
-                let mut r = run(s.len(), mono.clone(), colours.fg);
-                r.background_color = Some(colours.chip);
-                runs.push(r);
-                text.push_str(&s);
-            }
+            Piece::Text(s) => out.extend(words(&s, base, FontWeight::NORMAL, colours.fg)),
+            Piece::Code(s) => out.push(chip(s, FontWeight::NORMAL, colours.fg).into_any_element()),
             Piece::Strong(s) => {
-                let font = Font {
-                    weight: FontWeight::SEMIBOLD,
-                    ..base.clone()
-                };
-                runs.push(run(s.len(), font, colours.accent));
-                text.push_str(&s);
+                // Bold may hold code (`**`x = 1`**`, the member under the
+                // pointer): a chip in the accent, among accented words.
+                for inner in pieces(&s) {
+                    match inner {
+                        Piece::Code(code) => out.push(
+                            chip(code, FontWeight::SEMIBOLD, colours.accent).into_any_element(),
+                        ),
+                        Piece::Text(t) | Piece::Strong(t) | Piece::Em(t) => {
+                            out.extend(words(&t, base, FontWeight::SEMIBOLD, colours.accent));
+                        }
+                        Piece::Link { label, .. } => {
+                            out.extend(words(&label, base, FontWeight::SEMIBOLD, colours.accent));
+                        }
+                    }
+                }
             }
-            Piece::Em(s) => {
-                // The web's `em` is muted, not slanted: "Defined in" is a
-                // caption, not emphasis.
-                runs.push(run(s.len(), base.clone(), colours.muted));
-                text.push_str(&s);
-            }
+            // A caption, muted and slanted as the web's `em`.
+            Piece::Em(s) => out.extend(s.split_inclusive(' ').map(|word| {
+                div()
+                    .font(base.clone())
+                    .italic()
+                    .text_color(colours.muted)
+                    .whitespace_nowrap()
+                    .child(word.replace(' ', "\u{a0}"))
+                    .into_any_element()
+            })),
             Piece::Link { label, code, index } => {
                 let target = links.get(index).cloned().flatten();
-                let font = if code { mono.clone() } else { base.clone() };
                 // No target the studio can open: plain, as the web draws
                 // an unresolved link.
                 let color = if target.is_some() {
@@ -640,38 +689,47 @@ fn layout(
                 } else {
                     colours.fg
                 };
-                let pad = |r: &mut Vec<TextRun>, text: &mut String| {
-                    let mut space = run(PAD.len(), mono.clone(), color);
-                    space.background_color = Some(colours.chip);
-                    r.push(space);
-                    text.push_str(PAD);
+                let el = if code {
+                    chip(label, FontWeight::NORMAL, color)
+                } else {
+                    div()
+                        .font(base.clone())
+                        .text_color(color)
+                        .whitespace_nowrap()
+                        .child(label)
                 };
-                // The chip's padding is not underlined: only the path is.
-                if code {
-                    pad(&mut runs, &mut text);
-                }
-                let mut r = run(label.len(), font, color);
-                if code {
-                    r.background_color = Some(colours.chip);
-                }
-                let start = text.len();
-                if let Some(target) = target {
-                    r.underline = Some(UnderlineStyle {
-                        thickness: px(1.),
-                        color: Some(colours.info.opacity(0.45)),
-                        wavy: false,
-                    });
-                    targets.push((start..start + label.len(), target));
-                }
-                runs.push(r);
-                text.push_str(&label);
-                if code {
-                    pad(&mut runs, &mut text);
-                }
+                let el = match target {
+                    Some(target) => el
+                        .id(SharedString::from(format!(
+                            "hover-link-{}-{}",
+                            target.path, target.start
+                        )))
+                        .underline()
+                        .text_decoration_color(colours.info.opacity(0.45))
+                        .cursor_pointer()
+                        .on_click(move |_, window, cx| {
+                            window.dispatch_action(
+                                Box::new(GoToHoverTarget {
+                                    path: target.path.clone(),
+                                    start: target.start as usize,
+                                    end: target.end as usize,
+                                }),
+                                cx,
+                            );
+                        })
+                        .into_any_element(),
+                    None => el.into_any_element(),
+                };
+                out.push(el);
             }
         }
     }
-    (text, runs, targets)
+    h_flex()
+        .flex_wrap()
+        .items_center()
+        .gap_y(px(3.))
+        .children(out)
+        .into_any_element()
 }
 
 /// The first line's rule, as the web draws it: a border under it.
