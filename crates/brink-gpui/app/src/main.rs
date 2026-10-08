@@ -153,7 +153,7 @@ actions!(
         OpenCompiledOutput,
         /// The story graph — knots and diverts as a picture.
         OpenStoryGraph,
-        /// Go to a file, knot or stitch by name.
+        /// Go to a file, knot, stitch or label by name — `cmd-k`.
         QuickOpenGoTo,
         /// Choose a story file or a `brink.toml` and open its project in a
         /// new window (the two doors: `landing::anchor_for`).
@@ -654,13 +654,9 @@ impl Studio {
             );
             workspace.register_command("Program", "Compiled Output", OpenCompiledOutput, None, cx);
             workspace.register_command("Program", "Story Graph", OpenStoryGraph, None, cx);
-            workspace.register_command(
-                "Go",
-                "Go to File\u{2026}",
-                QuickOpenGoTo,
-                Some("cmd-p"),
-                cx,
-            );
+            // ⌘K, not cmd-p (decision log 2026-10-08): one go-to over
+            // files, knots, stitches and labels.
+            workspace.register_command("Go", "Go to\u{2026}", QuickOpenGoTo, Some("cmd-k"), cx);
             workspace.register_command(
                 "View",
                 "Maximize Editor",
@@ -1817,15 +1813,23 @@ impl Studio {
         }
         let project = self.project.clone();
         let picker = cx.new(|cx| QuickOpen::new(project, window, cx));
+        // Where the keys were, to give them back on a dismiss: closing the
+        // overlay otherwise leaves nothing focused, and the next ⌘K — or
+        // any key — goes nowhere until something is clicked.
+        let before = window.focused(cx);
         let subscription = cx.subscribe_in(
             &picker,
             window,
-            |this, _, event: &QuickOpenEvent, window, cx| {
+            move |this, _, event: &QuickOpenEvent, window, cx| {
                 match event {
                     QuickOpenEvent::Open { path, span } => {
                         this.show(path, span.clone().unwrap_or(0..0), window, cx);
                     }
-                    QuickOpenEvent::Dismiss => {}
+                    QuickOpenEvent::Dismiss => {
+                        if let Some(before) = &before {
+                            before.focus(window, cx);
+                        }
+                    }
                 }
                 this.quick_open = None;
                 cx.notify();
@@ -4794,6 +4798,218 @@ mod modes_driven {
             "the author's unsaved work was not saved for them"
         );
         assert!(!dir.join("two.ink").exists(), "gone from its old path");
+    }
+
+    /// In Write, ⌘K works from inside the manuscript — the keys reach it
+    /// past a section's editor — and going somewhere puts the
+    /// manuscript's caret on the place, in whichever file it is.
+    #[test]
+    fn cmd_k_goes_to_a_label_in_write() {
+        let dir = scratch_dir("goto-write");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE harbour.ink\n-> start\n=== start ===\nThe lamp gutters.\n-> harbour\n",
+        )
+        .expect("writing the story");
+        let harbour = "=== harbour ===\nThe boats.\n= night_watch\nSomebody keeps the lamp.\n- (oath) You promise.\n-> END\n";
+        std::fs::write(dir.join("harbour.ink"), harbour).expect("writing harbour");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeWrite);
+        // The caret in story.ink's section, so a section's editor has the
+        // keys when ⌘K is pressed.
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| {
+            manuscript.update(cx, |m, cx| m.reveal_span("story.ink", 30..30, cx));
+        });
+        let placed = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, _)| p.to_owned()))
+                .is_some_and(|p| p == "story.ink")
+        });
+        assert!(placed, "the caret never reached story.ink");
+
+        h.press(window, "cmd-k");
+        let picker = h
+            .read(|cx| studio.read(cx).quick_open.as_ref().map(|(p, _)| p.clone()))
+            .expect("cmd-k opened the go-to from inside the manuscript");
+        h.type_text(window, "oath");
+        let found = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| picker.read(cx).ranked_titles().first().cloned())
+                .is_some_and(|t| t == "harbour.night_watch.oath")
+        });
+        assert!(found, "{:?}", h.read(|cx| picker.read(cx).ranked_titles()));
+        h.press(window, "enter");
+        let oath = harbour.find("oath").expect("the label");
+        let arrived = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
+                .is_some_and(|(p, o)| p == "harbour.ink" && (oath..=oath + 4).contains(&o))
+        });
+        assert!(
+            arrived,
+            "the manuscript caret is at {:?}",
+            h.read(|cx| manuscript.read(cx).caret().map(|(p, o)| (p.to_owned(), o)))
+        );
+        assert!(
+            h.read(|cx| studio.read(cx).quick_open.is_none()),
+            "and it closed"
+        );
+        assert_eq!(
+            h.read(|cx| studio.read(cx).workspace.read(cx).editor_view(cx)),
+            EditorView::Write,
+            "still in Write"
+        );
+    }
+
+    /// ⌘K opens from a fresh Write window, before anything has been
+    /// clicked — and again after Escape, which hands the keys back.
+    #[test]
+    fn cmd_k_opens_in_write_with_nothing_clicked_and_again_after_escape() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let open = |h: &mut Harness| h.read(|cx| studio.read(cx).quick_open.is_some());
+        h.press(window, "cmd-k");
+        assert!(open(&mut h), "cmd-k did nothing in a fresh Write window");
+        h.press(window, "escape");
+        assert!(!open(&mut h), "escape closes it");
+        h.press(window, "cmd-k");
+        assert!(open(&mut h), "and cmd-k opens it again");
+    }
+
+    /// The go-to as drawn — direction B — for a look against the design.
+    #[test]
+    fn the_go_to_picture() {
+        let dir = scratch_dir("goto-picture");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::create_dir_all(dir.join("chapters")).expect("chapters");
+        std::fs::create_dir_all(dir.join("side")).expect("side");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE chapters/harbour.ink\nINCLUDE chapters/coast.ink\nINCLUDE side/watchers.ink\n-> harbour\n",
+        )
+        .expect("story");
+        std::fs::write(
+            dir.join("chapters/harbour.ink"),
+            "=== harbour ===\nThe boats knock against the pier.\n* [Walk to the end] -> harbour.night_watch\n\n= night_watch\nSomebody has to keep the lamp.\n- (oath) You promise the old keeper.\n-> watchtower\n\n= flood\n- (water_rising) The sea comes in.\n-> END\n",
+        )
+        .expect("harbour");
+        std::fs::write(
+            dir.join("chapters/coast.ink"),
+            "=== watchtower ===\nThe stairs turn and turn.\n= keep_watch\n- (watched) Nothing moves.\n-> END\n",
+        )
+        .expect("coast");
+        std::fs::write(
+            dir.join("side/watchers.ink"),
+            "=== the_watchers ===\nThey wait.\n-> END\n",
+        )
+        .expect("watchers");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+        h.press(window, "cmd-k");
+        h.type_text(window, "wat");
+        let picker = h
+            .read(|cx| studio.read(cx).quick_open.as_ref().map(|(p, _)| p.clone()))
+            .expect("open");
+        let labels = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| {
+                picker
+                    .read(cx)
+                    .ranked_titles()
+                    .iter()
+                    .any(|t| t.ends_with(".watched"))
+            })
+        });
+        assert!(labels, "the places never arrived");
+        let shot = scratch_dir("shot").join("go-to.png");
+        h.screenshot(window, &shot);
+        eprintln!("go-to screenshot: {}", shot.display());
+
+        // And over Write's manuscript.
+        h.press(window, "escape");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        h.press(window, "cmd-k");
+        h.type_text(window, "wat");
+        let picker = h
+            .read(|cx| studio.read(cx).quick_open.as_ref().map(|(p, _)| p.clone()))
+            .expect("open in Write");
+        let labels = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| {
+                picker
+                    .read(cx)
+                    .ranked_titles()
+                    .iter()
+                    .any(|t| t.ends_with(".watched"))
+            })
+        });
+        assert!(labels, "the places never arrived in Write");
+        let shot = scratch_dir("shot").join("go-to-write.png");
+        h.screenshot(window, &shot);
+        eprintln!("go-to write screenshot: {}", shot.display());
+    }
+
+    /// ⌘K finds a label by its own name, ranks it first, and Enter goes
+    /// to its declaration — the go-to's whole job, through the keys.
+    #[test]
+    fn cmd_k_finds_a_label_and_goes_there() {
+        let dir = scratch_dir("goto");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        let story = "-> harbour\n=== harbour ===\nThe boats.\n= night_watch\nSomebody keeps the lamp.\n- (oath) You promise.\n-> END\n";
+        std::fs::write(dir.join("story.ink"), story).expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+
+        h.press(window, "cmd-k");
+        let picker = h
+            .read(|cx| studio.read(cx).quick_open.as_ref().map(|(p, _)| p.clone()))
+            .expect("cmd-k opened the go-to");
+        h.type_text(window, "oath");
+        let found = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| picker.read(cx).ranked_titles().first().cloned())
+                .is_some_and(|t| t == "harbour.night_watch.oath")
+        });
+        assert!(found, "{:?}", h.read(|cx| picker.read(cx).ranked_titles()));
+
+        h.press(window, "enter");
+        h.settle();
+        assert!(
+            h.read(|cx| studio.read(cx).quick_open.is_none()),
+            "going closes it"
+        );
+        let caret = h.read(|cx| {
+            let s = studio.read(cx);
+            let doc = s.code.read(cx).active_document().cloned()?;
+            let state = doc.read(cx).editor().read(cx);
+            Some((doc.read(cx).site().path.to_string(), state.selected_range()))
+        });
+        let oath = story.find("oath").expect("the label");
+        assert_eq!(
+            caret,
+            Some(("story.ink".to_owned(), oath..oath + 4)),
+            "the label's name, revealed"
+        );
     }
 
     /// The symbol menu's moves, run the way a click on one runs them:
