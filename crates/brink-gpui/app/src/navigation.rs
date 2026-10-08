@@ -34,7 +34,7 @@ pub type Navigate = Rc<dyn Fn(&str, Range<usize>, &mut Window, &mut App)>;
 /// the caret: after a jump the target's name is selected and the caret
 /// sits one past it, where nothing resolves — so F12-then-Shift-F12 found
 /// no references and said nothing.
-fn caret(state: &EditorState) -> usize {
+pub(crate) fn caret(state: &EditorState) -> usize {
     let selection = state.selected_range();
     if selection.is_empty() {
         state.cursor()

@@ -1858,12 +1858,13 @@ impl gpui::Render for Document {
                     cx.notify();
                 }
             }))
-            .child(
+            .child(crate::editor_menu::install(
                 gpui_component::input::Editor::new(&self.editor)
                     .readonly(readonly)
                     .flex_1()
                     .bordered(false),
-            )
+                self.site(),
+            ))
             .children(pinned)
             // This view's left edge, for the next frame's pinned lines; a
             // move asks for that frame.

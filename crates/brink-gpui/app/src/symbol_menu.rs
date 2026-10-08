@@ -247,7 +247,7 @@ impl Target {
     }
 
     /// The event an item asks for.
-    fn event(&self, key: &EventKey) -> BinderEvent {
+    pub(crate) fn event(&self, key: &EventKey) -> BinderEvent {
         let path = self.path.clone();
         let knot = self.knot.clone();
         match key.clone() {

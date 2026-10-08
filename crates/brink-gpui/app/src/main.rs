@@ -11,6 +11,7 @@ mod code_view;
 mod compiled_output;
 mod continuous;
 mod document;
+mod editor_menu;
 mod file_menu;
 mod files;
 mod fixes;
@@ -2654,6 +2655,46 @@ impl Render for Studio {
                     this.play_at(Some(action.path.clone()), window, cx);
                 }),
             )
+            // The editor menu's items (`editor_menu`).
+            .on_action(
+                cx.listener(|this, action: &editor_menu::Outline, window, cx| {
+                    this.on_outline(&action.event, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ApplyFix, window, cx| {
+                    let site = this.focused_site(window, cx);
+                    fixes::apply_fix(
+                        &this.project,
+                        &action.plan,
+                        site.as_ref().map(|s| (&s.editor, &s.path)),
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::OpenFile, window, cx| {
+                    this.open(&action.path, None, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ToggleFold, window, cx| {
+                    if let Some(site) = this.focused_site(window, cx) {
+                        site.editor.update(cx, |state, cx| {
+                            state.toggle_fold_at(action.line, cx);
+                        });
+                    }
+                }),
+            )
+            .on_action(cx.listener(|this, _: &editor_menu::ShowTodos, window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.open_tool_window("todos", window, cx);
+                });
+            }))
+            .on_action(cx.listener(|_, _: &editor_menu::ToggleGutters, _, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.show_gutters = !s.show_gutters);
+            }))
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
             .on_action(cx.listener(Self::debug_step_line))
@@ -4721,6 +4762,37 @@ mod modes_driven {
             "start demoted into market:\n{}",
             source(&mut h)
         );
+    }
+
+    /// The editor menu's Fold and Unfold reach the editor they were asked
+    /// from, as the gutter's chevron does.
+    #[test]
+    fn the_editor_menus_fold_folds_the_knot() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // Line 6 (0-based 5), "=== start ===", once its fold is known.
+        let foldable = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).fold_at(5).is_some())
+        });
+        assert!(foldable, "the knot's fold never arrived");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| state.focus(window, cx));
+        });
+        h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
+        h.settle();
+        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(true));
+        h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
+        h.settle();
+        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(false));
     }
 
     /// The fold button folds: a press on line 6's chevron folds the knot.

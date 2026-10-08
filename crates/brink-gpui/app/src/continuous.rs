@@ -1358,18 +1358,28 @@ impl Render for ContinuousView {
                         .child(
                             // The column: centred in the room there is,
                             // never wider than the window allows.
-                            h_flex().w_full().justify_center().child(
-                                Editor::new(&editor)
-                                    .bordered(false)
-                                    .appearance(false)
-                                    .with_size(SECTION_SIZE)
-                                    .when_some(read_font.clone(), |editor, font| {
-                                        editor.font_family(font)
-                                    })
-                                    .when_some(column, |editor, width| editor.w(width).max_w_full())
-                                    .when(column.is_none(), |editor| editor.w_full())
-                                    .h(px(height)),
-                            ),
+                            h_flex()
+                                .w_full()
+                                .justify_center()
+                                .child(crate::editor_menu::install(
+                                    Editor::new(&editor)
+                                        .bordered(false)
+                                        .appearance(false)
+                                        .with_size(SECTION_SIZE)
+                                        .when_some(read_font.clone(), |editor, font| {
+                                            editor.font_family(font)
+                                        })
+                                        .when_some(column, |editor, width| {
+                                            editor.w(width).max_w_full()
+                                        })
+                                        .when(column.is_none(), |editor| editor.w_full())
+                                        .h(px(height)),
+                                    crate::navigation::EditorSite {
+                                        editor: editor.clone(),
+                                        project: project.clone(),
+                                        path: path.clone().into(),
+                                    },
+                                )),
                         )
                         .into_any_element()
                 })
