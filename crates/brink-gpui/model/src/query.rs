@@ -98,6 +98,18 @@ pub enum QueryKind {
         stitch: Option<String>,
         up: bool,
     },
+    /// Move a file to a new path, rewriting every `INCLUDE` that points
+    /// at it and its own relative ones (#3656).
+    MoveFile {
+        from: String,
+        to: String,
+    },
+    /// Move a folder, every file in it with it, rewriting the `INCLUDE`s
+    /// the move affects against one pre-move snapshot.
+    MoveFolder {
+        from: String,
+        to: String,
+    },
     /// Lift the selected lines into a new knot (or function), replacing
     /// them with a call. `start`/`end` are byte offsets, snapped to whole
     /// lines by the op itself.
@@ -231,6 +243,8 @@ pub enum QueryResult {
     /// A structural move — promote or demote — as a plan the studio
     /// applies, or a refusal with the reason.
     Structural(StructuralOutcome),
+    /// A file or folder move as a plan the studio applies, or a refusal.
+    Move(MoveOutcome),
     /// A single text edit, or `None` when the conversion makes no sense
     /// for the line asked about (a knot header, or the type it already
     /// is).
@@ -247,6 +261,43 @@ pub enum StructuralOutcome {
     /// stitches of its own, nothing above it to demote into. Said rather
     /// than silently skipped: an author who asked deserves the reason.
     Refused(String),
+}
+
+/// The answer to [`QueryKind::MoveFile`] / [`QueryKind::MoveFolder`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MoveOutcome {
+    Plan(Box<MovePlan>),
+    /// The destination is taken, or nothing is there to move.
+    Refused(String),
+}
+
+/// One file a move relocates: where it was, where it goes, and its text
+/// there — its own relative `INCLUDE`s already rewritten for the new
+/// directory.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovedFile {
+    pub from: String,
+    pub to: String,
+    pub text: String,
+}
+
+/// A file or folder move, ready to apply: the files that relocate, and
+/// the `INCLUDE` rewrites in files that stay put. `introduced` empty means
+/// safe — anything else is the breakage report's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MovePlan {
+    /// "Moved acts/ to parts/" — for the notice.
+    pub summary: String,
+    pub moved: Vec<MovedFile>,
+    pub edits: Vec<TextEdit>,
+    pub introduced: Vec<Introduced>,
+}
+
+impl MovePlan {
+    #[must_use]
+    pub fn is_safe(&self) -> bool {
+        self.introduced.is_empty()
+    }
 }
 
 /// A structural move, ready to apply. `new_source` replaces the primary
@@ -608,6 +659,8 @@ pub(crate) fn answer(
             stitch,
             up,
         } => QueryResult::Structural(reorder(session, path, knot, stitch.as_deref(), *up)),
+        QueryKind::MoveFile { from, to } => QueryResult::Move(move_file(session, from, to)),
+        QueryKind::MoveFolder { from, to } => QueryResult::Move(move_folder(session, from, to)),
         QueryKind::ConvertLine {
             path,
             offset,
@@ -1278,6 +1331,87 @@ fn demote(
     }
 }
 
+/// The IDE's edits as the studio's: paths rather than file ids.
+fn text_edits(
+    session: &brink_ide::session::IdeSession,
+    edits: &[brink_ide::rename::FileEdit],
+) -> Vec<TextEdit> {
+    edits
+        .iter()
+        .filter_map(|e| {
+            Some(TextEdit {
+                path: session.db().file_path(e.file)?.to_owned(),
+                start: e.range.start().into(),
+                end: e.range.end().into(),
+                new_text: e.new_text.clone(),
+            })
+        })
+        .collect()
+}
+
+fn introduced(found: Vec<brink_ide::structural_result::IntroducedDiagnostic>) -> Vec<Introduced> {
+    found
+        .into_iter()
+        .map(|d| Introduced {
+            severity: d.severity,
+            code: d.code.as_str().to_owned(),
+            message: d.message,
+            path: d.path,
+            line: d.line,
+            col: d.col,
+        })
+        .collect()
+}
+
+/// Move one file: `brink_ide::file_rename`, which rewrites the inbound
+/// `INCLUDE`s and the file's own relative ones, and gates the result.
+fn move_file(session: &brink_ide::session::IdeSession, from: &str, to: &str) -> MoveOutcome {
+    match brink_ide::file_rename::rename_file(session, from, to) {
+        Ok(result) => {
+            let Some(text) = result.new_source else {
+                return MoveOutcome::Refused(format!("{from} could not be read"));
+            };
+            MoveOutcome::Plan(Box::new(MovePlan {
+                summary: format!("Moved {from} to {to}"),
+                moved: vec![MovedFile {
+                    from: from.to_owned(),
+                    to: to.to_owned(),
+                    text,
+                }],
+                edits: text_edits(session, &result.cross_file_edits),
+                introduced: introduced(result.introduced),
+            }))
+        }
+        Err(e) => MoveOutcome::Refused(e.to_string()),
+    }
+}
+
+/// Move a folder: `brink_ide::dir_rename`, every rewrite computed against
+/// one pre-move snapshot so sibling `INCLUDE`s stay consistent.
+fn move_folder(session: &brink_ide::session::IdeSession, from: &str, to: &str) -> MoveOutcome {
+    match brink_ide::dir_rename::rename_dir(session, from, to) {
+        Ok(result) => {
+            let from = from.trim_end_matches('/');
+            let to = to.trim_end_matches('/');
+            MoveOutcome::Plan(Box::new(MovePlan {
+                summary: format!("Moved {from}/ to {to}/"),
+                moved: result
+                    .moved_files
+                    .into_iter()
+                    .map(|m| MovedFile {
+                        from: m.old_path,
+                        to: m.new_path,
+                        text: m.new_source,
+                    })
+                    .collect(),
+                edits: text_edits(session, &result.cross_file_edits),
+                introduced: introduced(result.introduced),
+            }))
+        }
+        Err(e) => MoveOutcome::Refused(e.to_string()),
+    }
+}
+
 /// Move `knot.stitch` into `dest`, its references rewritten.
 fn move_stitch(
     session: &brink_ide::session::IdeSession,
@@ -1656,6 +1790,68 @@ mod tests {
             panic!("the first knot must refuse");
         };
         assert!(why.contains("nothing above it"), "{why}");
+    }
+
+    /// #3656: a move rewrites the INCLUDEs that point at what moved, and
+    /// the moved files' own — a folder's against one snapshot, so a
+    /// sibling include stays sibling-relative.
+    #[test]
+    fn a_move_rewrites_the_includes_it_affects() {
+        use super::{MoveOutcome, move_file, move_folder};
+        use brink_ide::session::IdeSession;
+        let mut session = IdeSession::new();
+        session.update_source(
+            "story.ink",
+            "INCLUDE acts/one.ink\nINCLUDE acts/two.ink\n-> one\n".to_owned(),
+        );
+        session.update_source(
+            "acts/one.ink",
+            "INCLUDE two.ink\n=== one ===\nOne.\n-> two\n".to_owned(),
+        );
+        session.update_source("acts/two.ink", "=== two ===\nTwo.\n-> END\n".to_owned());
+        session.refresh_analysis();
+
+        let MoveOutcome::Plan(plan) = move_file(&session, "acts/two.ink", "acts/2.ink") else {
+            panic!("the file move refused");
+        };
+        assert!(plan.is_safe(), "{:?}", plan.introduced);
+        assert_eq!(plan.moved.len(), 1);
+        let mut targets: Vec<(&str, &str)> = plan
+            .edits
+            .iter()
+            .map(|e| (e.path.as_str(), e.new_text.as_str()))
+            .collect();
+        targets.sort_unstable();
+        assert_eq!(
+            targets,
+            [("acts/one.ink", "2.ink"), ("story.ink", "acts/2.ink")],
+            "both includers re-pointed, each relative to itself"
+        );
+
+        let MoveOutcome::Plan(plan) = move_folder(&session, "acts", "parts") else {
+            panic!("the folder move refused");
+        };
+        assert!(plan.is_safe(), "{:?}", plan.introduced);
+        assert_eq!(plan.summary, "Moved acts/ to parts/");
+        let one = plan
+            .moved
+            .iter()
+            .find(|m| m.from == "acts/one.ink")
+            .expect("one moved");
+        assert_eq!(one.to, "parts/one.ink");
+        assert!(
+            one.text.starts_with("INCLUDE two.ink"),
+            "a sibling include is still a sibling: {}",
+            one.text
+        );
+        let rewritten: Vec<&str> = plan.edits.iter().map(|e| e.new_text.as_str()).collect();
+        assert!(rewritten.contains(&"parts/one.ink"), "{rewritten:?}");
+        assert!(rewritten.contains(&"parts/two.ink"), "{rewritten:?}");
+
+        let MoveOutcome::Refused(why) = move_file(&session, "acts/one.ink", "story.ink") else {
+            panic!("moving onto a file must refuse");
+        };
+        assert!(why.contains("already exists"), "{why}");
     }
 
     #[test]
