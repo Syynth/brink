@@ -5843,3 +5843,16 @@
 - **SCOPE:** moderate
 - **WHAT:** Renaming or moving a file or folder in the native studio rewrites the `INCLUDE`s the move affects: the ones in other files that point at what moved, and the moved files' own relative ones. Folder moves compute every rewrite against one pre-move snapshot. The edits come from `brink_ide::file_rename` and `brink_ide::dir_rename`, as the web studio's do. A move that would still introduce diagnostics shows the breakage report with "Move anyway". `brink.toml`'s `entry` is still not rewritten. This reverses the earlier native rule that moves left `INCLUDE`s alone for the analysis to report (#3656).
 - **WHY:** The menus now match the web, so Rename… and Rename folder… looked the same on both surfaces. On native, though, they silently broke every story that included the moved files. Web parity for the native studio means the same outcome for the author, not just the same menu item.
+
+## Native studio prose checking on macOS: OS spelling, Harper grammar while typing, Apple Intelligence grammar on request
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** On macOS the native (gpui) studio splits prose checking three ways:
+  - **Spelling** comes from the operating system's checker (`NSSpellChecker`). The project words go to it as a per-check ignore list, which matches **case-insensitively**. That is accepted, which amends "casing stays literal" for this checker.
+  - **Grammar while typing** comes from Harper by default, with its spelling findings left out. A setting picks the grammar used while typing: Harper, macOS's own quick grammar, or none.
+  - **Apple Intelligence grammar** (macOS 27's on-device model) runs only when the author asks: "Check Grammar" in the editor's context menu, on a selection. It never runs in the background. Where Apple Intelligence is unavailable, the menu item is not offered and nothing else changes.
+
+  On other platforms Harper still does everything. The web studio keeps Harper. Everything else in the prose rulings is unchanged: prose only, project words from symbols plus `[prose] dictionary` in `brink.toml`, and `[prose] dialect`. This narrows "Prose checking uses Harper" for macOS builds of the native studio. Design: `docs/gpui-prose-checker-spec.md`.
+- **WHY:** The rationale comes from the investigation the maintainer chose from (2026-10-08); the maintainer stated no reasons beyond picking these options. The OS spell checker honours words the author has taught macOS, and keeps project words out of the user's own dictionary. Case-insensitive matching is the OS's behaviour, and accepting it avoids a second filter. A probe of 53 grammar errors and 21 fiction passages found Apple's model the strongest grammar checker (45/53 caught, with no false flags on fiction), but it costs 2–5 s per new sentence in on-device compute. Running it only on request keeps that cost the author's choice. Without it, macOS's quick grammar is weak (10/53, against Harper's 30/53), so Harper stays the grammar while typing, and the setting lets an author drop Harper's false flags on dialogue (`goin'`, `...`, `OK`).
