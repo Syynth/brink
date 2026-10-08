@@ -210,9 +210,22 @@ pub struct Project {
 /// else: once the file is gone, this is the only copy.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FileOp {
-    Created { path: String },
-    Renamed { from: String, to: String },
-    Deleted { path: String, text: String },
+    Created {
+        path: String,
+    },
+    Renamed {
+        from: String,
+        to: String,
+    },
+    /// A folder and everything in it, moved as one.
+    RenamedFolder {
+        from: String,
+        to: String,
+    },
+    Deleted {
+        path: String,
+        text: String,
+    },
 }
 
 impl FileOp {
@@ -222,6 +235,7 @@ impl FileOp {
         match self {
             Self::Created { path } => format!("creating {path}"),
             Self::Renamed { from, to } => format!("renaming {from} to {to}"),
+            Self::RenamedFolder { from, to } => format!("renaming {from}/ to {to}/"),
             Self::Deleted { path, .. } => format!("deleting {path}"),
         }
     }
@@ -648,6 +662,12 @@ impl Project {
                 }
                 self.rename_file(to, from, cx)
             }
+            FileOp::RenamedFolder { from, to } => {
+                if let Some(dirty) = self.files_under(to).into_iter().find(|f| self.is_dirty(f)) {
+                    anyhow::bail!("{dirty} has unsaved edits — save or revert it first");
+                }
+                self.rename_folder(to, from, cx).map(|_| ())
+            }
             FileOp::Deleted { path, text } => self.create_file(path, text, cx),
         };
         match result {
@@ -720,6 +740,84 @@ impl Project {
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
+    }
+
+    /// The project's files under folder `folder` (no trailing slash),
+    /// however deep.
+    #[must_use]
+    pub fn files_under(&self, folder: &str) -> Vec<String> {
+        let prefix = format!("{}/", folder.trim_end_matches('/'));
+        self.files
+            .iter()
+            .filter(|f| f.starts_with(&prefix))
+            .cloned()
+            .collect()
+    }
+
+    /// Make an empty folder, on disk and in the Binder's sidecar — a tree
+    /// built from files has no other way to show a folder with nothing in
+    /// it (the web studio's `registerBinderFolder`).
+    pub fn create_folder(&mut self, path: &str, cx: &mut Context<Self>) -> Result<()> {
+        let path = normalise_path(path.trim_end_matches('/'))?;
+        let id = format!("{path}/");
+        if self.sources.contains_key(&path)
+            || !self.files_under(&path).is_empty()
+            || self.binder_order.folders.contains(&id)
+        {
+            anyhow::bail!("{path} already exists");
+        }
+        std::fs::create_dir_all(self.root.join(&path))?;
+        self.binder_order.folders.push(id);
+        self.binder_order.folders.sort();
+        self.write_binder_order(cx);
+        cx.emit(ProjectEvent::FilesChanged);
+        cx.notify();
+        Ok(())
+    }
+
+    /// Move folder `from` to `to` (neither with a trailing slash), every
+    /// file under it with it — one operation, undone as one. Returns how
+    /// many files moved. Refused before anything moves if any destination
+    /// is taken.
+    pub fn rename_folder(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<usize> {
+        let from = from.trim_end_matches('/').to_owned();
+        let to = normalise_path(to.trim_end_matches('/'))?;
+        if from == to {
+            return Ok(0);
+        }
+        if to.starts_with(&format!("{from}/")) {
+            anyhow::bail!("{from}/ cannot move inside itself");
+        }
+        let moves: Vec<(String, String)> = self
+            .files_under(&from)
+            .into_iter()
+            .map(|f| {
+                let rest = f[from.len() + 1..].to_owned();
+                (f, format!("{to}/{rest}"))
+            })
+            .collect();
+        if moves.is_empty() {
+            anyhow::bail!("{from}/ has no files to move");
+        }
+        if let Some((_, taken)) = moves
+            .iter()
+            .find(|(_, t)| self.sources.contains_key(t) || self.root.join(t).exists())
+        {
+            anyhow::bail!("{taken} already exists");
+        }
+        for (a, b) in &moves {
+            self.rename_file(a, b, cx)?;
+            // One undo for the whole folder, not one per file.
+            self.file_ops.pop();
+        }
+        // The arrangement and any empty sub-folders follow it; the old
+        // directory goes if nothing else is in it.
+        self.binder_order =
+            binder_order::rekey(&self.binder_order, &format!("{from}/"), &format!("{to}/"));
+        self.write_binder_order(cx);
+        let _ = std::fs::remove_dir(self.root.join(&from));
+        self.remember(FileOp::RenamedFolder { from, to });
+        Ok(moves.len())
     }
 
     /// Delete `path` from the project and from disk.

@@ -226,6 +226,9 @@ pub enum ManuscriptEvent {
     Caret { path: String, offset: usize },
     /// A file separator's `⋯` menu asked for something.
     File { path: String, action: FileAction },
+    /// A file operation from the same menu — the Binder's, run by the
+    /// studio the same way.
+    Outline(crate::binder::BinderEvent),
 }
 
 impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
@@ -1736,8 +1739,6 @@ pub enum FileAction {
     Play,
     OpenInScript,
     RevealInFiles,
-    Rename,
-    Delete,
 }
 
 /// The file's name as a chapter title: its path without the extension, in
@@ -1841,6 +1842,12 @@ fn separator(
             .xsmall()
             .icon(IconName::Ellipsis)
             .dropdown_menu(move |menu, _, _| {
+                let emit: crate::symbol_menu::Emit = {
+                    let me = me.clone();
+                    std::rc::Rc::new(move |event, _, cx| {
+                        let _ = me.update(cx, |_, cx| cx.emit(ManuscriptEvent::Outline(event)));
+                    })
+                };
                 let act = |action: FileAction| {
                     let me = me.clone();
                     let path = path.clone();
@@ -1857,7 +1864,8 @@ fn separator(
                         cx.write_to_clipboard(gpui::ClipboardItem::new_string(path.clone()));
                     }
                 };
-                menu.item(PopupMenuItem::new("Play from here").on_click(act(FileAction::Play)))
+                let menu = menu
+                    .item(PopupMenuItem::new("Play from here").on_click(act(FileAction::Play)))
                     .item(
                         PopupMenuItem::new("Open in Script")
                             .on_click(act(FileAction::OpenInScript)),
@@ -1866,11 +1874,14 @@ fn separator(
                         PopupMenuItem::new("Reveal in Files")
                             .on_click(act(FileAction::RevealInFiles)),
                     )
-                    .separator()
-                    .item(PopupMenuItem::new("Rename\u{2026}").on_click(act(FileAction::Rename)))
                     .item(PopupMenuItem::new("Copy path").on_click(copy))
-                    .separator()
-                    .item(PopupMenuItem::new("Delete\u{2026}").on_click(act(FileAction::Delete)))
+                    .separator();
+                // Then what the Binder offers on the same file.
+                crate::file_menu::build(
+                    menu,
+                    &crate::file_menu::Target::File { path: path.clone() },
+                    &emit,
+                )
             })
     };
     v_flex()

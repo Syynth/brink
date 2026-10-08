@@ -187,6 +187,7 @@ impl WriteView {
                     cx.notify();
                 }
                 ManuscriptEvent::File { path, action } => this.file_action(path, *action, cx),
+                ManuscriptEvent::Outline(event) => cx.emit(WriteEvent::Outline(event.clone())),
             },
         );
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
@@ -466,10 +467,6 @@ impl WriteView {
                 self.files
                     .update(cx, |files, cx| files.reveal_file(&path, cx));
             }
-            FileAction::Rename => cx.emit(WriteEvent::Outline(BinderEvent::RenameFile { path })),
-            FileAction::Delete => cx.emit(WriteEvent::Outline(BinderEvent::DeleteFile {
-                paths: vec![path],
-            })),
         }
     }
 

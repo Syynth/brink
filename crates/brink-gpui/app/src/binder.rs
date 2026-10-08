@@ -52,6 +52,7 @@ use gpui_component::{
     v_flex,
 };
 
+use crate::file_menu;
 use crate::project::{Project, ProjectEvent};
 use crate::symbol_menu;
 use brink_gpui_shell::icons;
@@ -169,7 +170,7 @@ struct DraggedRow {
     kind: RowKind,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BinderEvent {
     /// Open a file, optionally revealing a byte offset within it.
     Open {
@@ -191,6 +192,19 @@ pub enum BinderEvent {
     /// Delete these files — the row's own, or the whole selection when
     /// the row is part of one.
     DeleteFile {
+        paths: Vec<String>,
+    },
+    /// Make an empty folder in `folder`.
+    NewFolder {
+        folder: String,
+    },
+    /// Move folder `folder` (no trailing slash) and everything in it.
+    RenameFolder {
+        folder: String,
+    },
+    /// Delete folder `folder` — `paths`, every file in it.
+    DeleteFolder {
+        folder: String,
         paths: Vec<String>,
     },
     /// Write a new knot at the end of `path`.
@@ -245,49 +259,8 @@ pub struct PlayFromHere {
     pub path: String,
 }
 
-/// Rename a file from the Binder's menu. Files only: a knot's name is
-/// `f2`'s business, which is cross-file and safe-by-default, and a menu
-/// item that renamed one by text alone would quietly break its diverts.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct RenameFile {
-    pub path: String,
-}
-
-/// Delete a file from the Binder's menu, after a confirmation naming it.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct DeleteFile {
-    pub path: String,
-}
-
-/// Create a file in `folder` — the folder of the row the menu was opened
-/// on, so a new file lands beside the one you were looking at.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct NewFile {
-    /// Root-relative, and empty for the project root.
-    pub folder: String,
-}
-
-/// Create a knot at the end of a file, from a file row's menu.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct NewKnot {
-    pub path: String,
-}
-
 /// A row's menu, shared by its right-click and its `⋯`.
 type RowMenu = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
-
-/// The folder a path sits in, root-relative and possibly empty — where a
-/// new file made from this row's menu goes.
-fn folder_of(path: &str) -> String {
-    match path.rfind('/') {
-        Some(at) => path[..at].to_owned(),
-        None => String::new(),
-    }
-}
 
 impl Row {
     /// What a structural move would act on, read off the row's key
@@ -358,8 +331,17 @@ struct Folder {
     files: Vec<String>,
 }
 
-fn build_folder_tree(files: &[String]) -> Folder {
+/// The tree of folders and files. `empty` are folders made in the app
+/// with nothing in them yet (`BinderOrder::folders`, trailing slash): a
+/// tree read off files alone would not show them.
+fn build_folder_tree(files: &[String], empty: &[String]) -> Folder {
     let mut root = Folder::default();
+    for folder in empty {
+        let mut cursor = &mut root;
+        for segment in folder.trim_end_matches('/').split('/') {
+            cursor = cursor.folders.entry(segment.to_owned()).or_default();
+        }
+    }
     for path in files {
         let mut cursor = &mut root;
         let segments: Vec<&str> = path.split('/').collect();
@@ -674,8 +656,11 @@ impl Binder {
 
         // Read once per rebuild: the authored order lives in the project,
         // which owns the sidecar on disk.
-        let order = self.project.read(cx).binder_order().order.clone();
-        let tree = build_folder_tree(&files);
+        let (order, empty) = {
+            let sidecar = self.project.read(cx).binder_order();
+            (sidecar.order.clone(), sidecar.folders.clone())
+        };
+        let tree = build_folder_tree(&files, &empty);
         let mut rows = Vec::new();
         self.walk(
             &tree,
@@ -1245,7 +1230,7 @@ impl Binder {
                 })
         });
 
-        div()
+        let element = div()
             .id(("binder-row", index))
             .relative()
             .w_full()
@@ -1276,15 +1261,15 @@ impl Binder {
                             .child(row.label.clone()),
                     )
                     .children(marks)
-                    .child(
+                    .children(dots_menu.map(|dots_menu| {
                         div().invisible().group_hover("", |s| s.visible()).child(
                             Button::new(("row-actions", index))
                                 .ghost()
                                 .xsmall()
                                 .icon(IconName::Ellipsis)
                                 .dropdown_menu(move |menu, window, cx| dots_menu(menu, window, cx)),
-                        ),
-                    ),
+                        )
+                    })),
             )
             .group("")
             // The insertion line — 2px, drawn at the row edge the pointer is
@@ -1359,18 +1344,40 @@ impl Binder {
             .on_drop(cx.listener(move |this, dragged: &DraggedRow, _window, cx| {
                 let dragged = dragged.clone();
                 this.apply_drop(&dragged, cx);
-            }))
-            .context_menu(move |menu, window, cx| row_menu(menu, window, cx))
-            .into_any_element()
+            }));
+        match row_menu {
+            Some(row_menu) => element
+                .context_menu(move |menu, window, cx| row_menu(menu, window, cx))
+                .into_any_element(),
+            None => element.into_any_element(),
+        }
     }
 
     /// The menu a row opens. A knot or stitch row's is the shared symbol
     /// menu ([`symbol_menu`]); a file's and a folder's are the file
     /// operations.
-    fn menu_for(&self, row: &Row, cx: &mut Context<Self>) -> RowMenu {
+    fn menu_for(&self, row: &Row, cx: &mut Context<Self>) -> Option<RowMenu> {
         let me = cx.entity().downgrade();
         let emit: symbol_menu::Emit = Rc::new(move |event, _, cx| {
-            let _ = me.update(cx, |_, cx| cx.emit(event));
+            let _ = me.update(cx, |this, cx| {
+                // A menu opened on a row that is part of a selection deletes
+                // the SELECTION: the rows are lit up, and deleting one of
+                // them while the rest stayed would be a surprise.
+                let event = match event {
+                    BinderEvent::DeleteFile { paths } => {
+                        let selected = this.selected_files();
+                        BinderEvent::DeleteFile {
+                            paths: if paths.iter().all(|p| selected.contains(p)) {
+                                selected
+                            } else {
+                                paths
+                            },
+                        }
+                    }
+                    event => event,
+                };
+                cx.emit(event);
+            });
         });
         let library = self.project.read(cx).is_library(&row.path);
         if let Some(structural) = row.structural() {
@@ -1390,67 +1397,62 @@ impl Binder {
                 library,
                 outline: Rc::new(outline),
             };
-            return Rc::new(move |menu, window, cx| {
+            return Some(Rc::new(move |menu, window, cx| {
                 symbol_menu::build(menu, &target, &emit, window, cx)
-            });
+            }));
         }
-        let row = row.clone();
-        let focus = self.focus.clone();
-        Rc::new(move |menu, _, _| {
+        let project = self.project.read(cx);
+        let target = match row.kind {
+            RowKind::File => file_menu::Target::File {
+                path: row.path.clone(),
+            },
+            RowKind::Folder => {
+                let path = row.path.trim_end_matches('/').to_owned();
+                // The mounted library's folder: nothing in it is the
+                // author's, so it offers nothing at all.
+                let mounted = project
+                    .library()
+                    .iter()
+                    .any(|(key, _)| key.starts_with(&row.path));
+                let files = project.files_under(&path);
+                if mounted && files.is_empty() {
+                    return None;
+                }
+                file_menu::Target::Folder { path, files }
+            }
+            RowKind::Knot | RowKind::Stitch => return None,
+        };
+        let open = (row.kind == RowKind::File).then(|| row.path.clone());
+        Some(Rc::new(move |menu, _, _| {
             let click = |event: BinderEvent| {
                 let emit = emit.clone();
                 move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
                     emit(event.clone(), window, cx);
                 }
             };
-            let menu = menu.action_context(focus.clone());
-            match row.kind {
-                RowKind::File => {
+            // The Binder's own items first: Open, and — the Binder's only
+            // way to make one — New Knot….
+            let menu = match &open {
+                Some(path) => {
                     let menu = menu.item(PopupMenuItem::new("Open").on_click(click(
                         BinderEvent::Open {
-                            path: row.path.clone(),
+                            path: path.clone(),
                             offset: None,
                         },
                     )));
                     if library {
                         return menu;
                     }
-                    menu.separator()
-                        .menu(
-                            "New File\u{2026}",
-                            Box::new(NewFile {
-                                folder: folder_of(&row.path),
-                            }),
-                        )
-                        .menu(
-                            "New Knot\u{2026}",
-                            Box::new(NewKnot {
-                                path: row.path.clone(),
-                            }),
-                        )
-                        .separator()
-                        .menu(
-                            "Rename\u{2026}",
-                            Box::new(RenameFile {
-                                path: row.path.clone(),
-                            }),
-                        )
-                        .menu(
-                            "Delete\u{2026}",
-                            Box::new(DeleteFile {
-                                path: row.path.clone(),
-                            }),
-                        )
+                    menu.item(
+                        PopupMenuItem::new("New Knot\u{2026}")
+                            .on_click(click(BinderEvent::NewKnot { path: path.clone() })),
+                    )
+                    .separator()
                 }
-                // A folder's new file goes in the folder itself.
-                _ => menu.menu(
-                    "New File\u{2026}",
-                    Box::new(NewFile {
-                        folder: row.path.clone(),
-                    }),
-                ),
-            }
-        })
+                None => menu,
+            };
+            file_menu::build(menu, &target, &emit)
+        }))
     }
 
     /// A header affordance: our own SVG, tinted, with an active state.
@@ -1624,31 +1626,6 @@ impl Render for Binder {
                     path: action.path.clone(),
                 });
             }))
-            .on_action(cx.listener(|_, action: &NewFile, _, cx| {
-                cx.emit(BinderEvent::NewFile {
-                    folder: action.folder.clone(),
-                });
-            }))
-            .on_action(cx.listener(|_, action: &RenameFile, _, cx| {
-                cx.emit(BinderEvent::RenameFile {
-                    path: action.path.clone(),
-                });
-            }))
-            .on_action(cx.listener(|this, action: &DeleteFile, _, cx| {
-                // A menu opened on a row that is part of a selection acts
-                // on the SELECTION: the rows are lit up, and deleting one
-                // of them while the rest stayed would be a surprise.
-                let mut paths = this.selected_files();
-                if !paths.contains(&action.path) {
-                    paths = vec![action.path.clone()];
-                }
-                cx.emit(BinderEvent::DeleteFile { paths });
-            }))
-            .on_action(cx.listener(|_, action: &NewKnot, _, cx| {
-                cx.emit(BinderEvent::NewKnot {
-                    path: action.path.clone(),
-                });
-            }))
             .size_full()
             .bg(sidebar)
             // A docked Binder draws its own edge. A files-only one is a
@@ -1785,6 +1762,20 @@ impl gpui_component::dock::Panel for Binder {
 #[cfg(test)]
 mod driven {
     use crate::harness::{Harness, scratch_dir};
+
+    /// A folder made in the app, with nothing in it yet, is still a
+    /// folder in the tree — and a file-derived one is not doubled.
+    #[test]
+    fn an_empty_folder_from_the_sidecar_is_in_the_tree() {
+        let tree = super::build_folder_tree(
+            &["acts/one.ink".to_owned()],
+            &["acts/drafts/".to_owned(), "acts/".to_owned()],
+        );
+        let acts = tree.folders.get("acts").expect("acts");
+        assert_eq!(acts.files, ["acts/one.ink"]);
+        assert!(acts.folders.contains_key("drafts"));
+        assert_eq!(tree.folders.len(), 1);
+    }
 
     #[test]
     fn nested_folders_render_with_their_guides() {

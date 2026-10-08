@@ -11,6 +11,7 @@ mod code_view;
 mod compiled_output;
 mod continuous;
 mod document;
+mod file_menu;
 mod files;
 mod fixes;
 mod graph_layout;
@@ -1663,6 +1664,21 @@ impl Studio {
                     }
                 });
                 files::delete_files(self.project.clone(), paths.clone(), window, cx);
+            }
+            BinderEvent::NewFolder { folder } => {
+                files::new_folder(self.project.clone(), folder.clone(), window, cx);
+            }
+            BinderEvent::RenameFolder { folder } => {
+                files::rename_folder(self.project.clone(), folder.clone(), window, cx);
+            }
+            BinderEvent::DeleteFolder { folder, paths } => {
+                // As for a file: their editors would write them back.
+                self.code.update(cx, |code, cx| {
+                    for path in paths {
+                        code.close_document(path, window, cx);
+                    }
+                });
+                files::delete_folder(self.project.clone(), folder, paths.clone(), window, cx);
             }
             BinderEvent::NewKnot { path } => {
                 let reveal = self.reveal_fn(cx);
@@ -4567,6 +4583,64 @@ mod modes_driven {
             h.read(|cx| project.read(cx).breakpoints_in("story.ink"))
                 .is_empty(),
             "a header line plays, it does not take a breakpoint"
+        );
+    }
+
+    /// The folder menu's operations: a new folder exists on disk and in
+    /// the sidecar; a folder rename moves every file in it; and one undo
+    /// moves them all back.
+    #[test]
+    fn a_folder_is_made_renamed_and_put_back() {
+        let dir = scratch_dir("folders");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE acts/one.ink\nINCLUDE acts/two.ink\n-> one\n",
+        )
+        .expect("writing the story");
+        std::fs::create_dir_all(dir.join("acts")).expect("the folder");
+        std::fs::write(dir.join("acts/one.ink"), "=== one ===\nOne.\n-> two\n")
+            .expect("writing one");
+        std::fs::write(dir.join("acts/two.ink"), "=== two ===\nTwo.\n-> END\n")
+            .expect("writing two");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+
+        let made = h.update(|cx| project.update(cx, |p, cx| p.create_folder("acts/drafts", cx)));
+        assert!(made.is_ok(), "{made:?}");
+        assert!(dir.join("acts/drafts").is_dir(), "made on disk");
+        assert!(
+            h.read(|cx| project.read(cx).binder_order().folders.clone())
+                .contains(&"acts/drafts/".to_owned()),
+            "and recorded, so the Binder shows it empty"
+        );
+
+        let moved = h.update(|cx| project.update(cx, |p, cx| p.rename_folder("acts", "parts", cx)));
+        assert_eq!(moved.ok(), Some(2), "both files moved");
+        let files = h.read(|cx| project.read(cx).files().to_vec());
+        assert!(
+            files.contains(&"parts/one.ink".to_owned())
+                && files.contains(&"parts/two.ink".to_owned())
+                && !files.iter().any(|f| f.starts_with("acts/")),
+            "{files:?}"
+        );
+        assert!(
+            h.read(|cx| project.read(cx).binder_order().folders.clone())
+                .contains(&"parts/drafts/".to_owned()),
+            "the empty sub-folder came along"
+        );
+
+        let undone = h.update(|cx| project.update(cx, |p, cx| p.undo_file_op(cx)));
+        assert!(undone.is_ok(), "{undone:?}");
+        let files = h.read(|cx| project.read(cx).files().to_vec());
+        assert!(
+            files.contains(&"acts/one.ink".to_owned())
+                && files.contains(&"acts/two.ink".to_owned())
+                && !files.iter().any(|f| f.starts_with("parts/")),
+            "one undo put the whole folder back: {files:?}"
         );
     }
 
