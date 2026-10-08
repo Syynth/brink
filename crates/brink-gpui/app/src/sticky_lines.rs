@@ -54,7 +54,7 @@ impl PinKind {
 pub(crate) const MAX_SCOPE_ROWS: usize = 10;
 
 /// One pinned row.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct PinnedLine {
     /// Where the header line starts: what a click goes to. The file's
     /// start, for the file's row.
@@ -65,6 +65,10 @@ pub(crate) struct PinnedLine {
     /// for the file's row (which its host draws).
     pub text: String,
     pub kind: PinKind,
+    /// The editor's highlighting of the line, as runs over `text`: drawn as
+    /// the line is drawn below. Empty until the host fills it, and for a
+    /// file's row.
+    pub styles: Vec<(Range<usize>, gpui::HighlightStyle)>,
     /// Where its knot or stitch ends: the next one's header, which pushes
     /// this row up out of its way as it arrives.
     pub end: usize,
@@ -85,6 +89,7 @@ fn header(text: &str, scope: &Scope) -> PinnedLine {
         line: text[..start].matches('\n').count(),
         text: text[start..end].trim_end().to_owned(),
         kind: PinKind::of(scope.kind),
+        styles: Vec::new(),
         end: scope.end as usize,
     }
 }
@@ -230,7 +235,20 @@ pub(crate) fn pin(
     }
     let text = state.value();
     let mut pinned: Vec<PinnedLine> = file.into_iter().collect();
-    pinned.extend(pinned_at(scopes, &text, &rows));
+    pinned.extend(pinned_at(scopes, &text, &rows).into_iter().map(|mut pin| {
+        // The line's own highlighting, as the editor paints it.
+        let end = pin.offset + pin.text.len();
+        pin.styles = state
+            .highlight_styles(&(pin.offset..end))
+            .into_iter()
+            .filter_map(|(range, style)| {
+                let start = range.start.max(pin.offset) - pin.offset;
+                let end = range.end.min(end).saturating_sub(pin.offset);
+                (start < end).then_some((start..end, style))
+            })
+            .collect();
+        pin
+    }));
     let pushes = pushes(&pinned, row, |offset| {
         content_top(state, line_start(&text, offset)).map(|y| y - top)
     });
@@ -406,8 +424,10 @@ pub(crate) fn render(
                         .right(px(0.))
                         .truncate()
                         .text_color(match kind {
-                            PinKind::Knot => knot,
-                            PinKind::Stitch => stitch,
+                            // Without the editor's highlighting, a colour
+                            // per kind; with it, the text's own.
+                            PinKind::Knot if pin.styles.is_empty() => knot,
+                            PinKind::Stitch if pin.styles.is_empty() => stitch,
                             _ => prose,
                         })
                         .child(line_text(pin, marker)),
@@ -521,10 +541,14 @@ pub(crate) fn render(
     )
 }
 
-/// A pinned line's text, its leading markers (`*`, `+`, `-`, `{`) in the
-/// marker colour for a choice or a block's line, as the editor draws them.
+/// A pinned line's text, in the editor's own highlighting of it. Without
+/// that (no highlighter), its leading markers (`*`, `+`, `-`, `{`) in the
+/// marker colour for a choice or a block's line.
 fn line_text(pin: &PinnedLine, marker: gpui::Hsla) -> gpui::StyledText {
     let text = SharedString::from(pin.text.clone());
+    if !pin.styles.is_empty() {
+        return gpui::StyledText::new(text).with_highlights(pin.styles.clone());
+    }
     if matches!(pin.kind, PinKind::Knot | PinKind::Stitch | PinKind::File) {
         return gpui::StyledText::new(text);
     }

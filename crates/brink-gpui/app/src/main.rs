@@ -4197,6 +4197,8 @@ mod modes_driven {
             texts,
             ["story.ink", "=== start ===", "* [Hide]", "{", "- x > 1:"]
         );
+        // Each line in the editor's own colours, not one per kind.
+        assert!(h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_lines_highlighted(cx))));
         let shot = scratch_dir("shot").join("nested.png");
         h.screenshot(window, &shot);
         eprintln!("nested screenshot: {}", shot.display());

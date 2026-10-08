@@ -513,6 +513,18 @@ impl ContinuousView {
             .unwrap_or_default()
     }
 
+    /// Whether every pinned line but the file's carries the editor's
+    /// highlighting of it, for the tests.
+    #[cfg(test)]
+    pub fn pinned_lines_highlighted(&mut self, cx: &mut Context<Self>) -> bool {
+        self.pinned_lines(cx).is_some_and(|(_, lines, _)| {
+            lines
+                .iter()
+                .filter(|l| l.kind != crate::sticky_lines::PinKind::File)
+                .all(|l| l.styles.iter().any(|(_, style)| style.color.is_some()))
+        })
+    }
+
     /// The pinned rows' pushes, for the tests.
     #[cfg(test)]
     pub fn pinned_pushes(&mut self, cx: &mut Context<Self>) -> Vec<f32> {
@@ -691,6 +703,7 @@ impl ContinuousView {
             line: 0,
             text: path.clone(),
             kind: crate::sticky_lines::PinKind::File,
+            styles: Vec::new(),
             end: len,
         };
         let (pinned, pushes) =
