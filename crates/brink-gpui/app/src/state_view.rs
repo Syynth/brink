@@ -33,6 +33,7 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, TabGroup};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
 use crate::player::{Player, SessionState};
@@ -56,6 +57,9 @@ enum Row {
         /// Drawn in the accent: the innermost call frame, which is where
         /// the story actually is.
         accent: bool,
+        /// A global: its row offers "Break on write", and shows a dot
+        /// while one is set.
+        global: bool,
     },
     Text {
         text: SharedString,
@@ -224,6 +228,7 @@ impl StateView {
                         (true, false) => SharedString::from("no code on this line"),
                     },
                     accent: bound,
+                    global: false,
                 });
             }
         }
@@ -265,6 +270,7 @@ impl StateView {
                 key: "status".into(),
                 value: state.status.clone().into(),
                 accent: false,
+                global: false,
             });
             rows.push(Row::Pair {
                 key: "location".into(),
@@ -274,11 +280,13 @@ impl StateView {
                     .unwrap_or_else(|| "(unresolved)".to_owned())
                     .into(),
                 accent: true,
+                global: false,
             });
             rows.push(Row::Pair {
                 key: "turn".into(),
                 value: state.turn.to_string().into(),
                 accent: false,
+                global: false,
             });
             rows.push(Row::Pair {
                 key: "position".into(),
@@ -292,6 +300,7 @@ impl StateView {
                     None => SharedString::from("(no open container)"),
                 },
                 accent: false,
+                global: false,
             });
             rows.push(Row::Pair {
                 key: "rng".into(),
@@ -300,6 +309,7 @@ impl StateView {
                 // the second number as much as the first.
                 value: format!("seed {} · previous {}", state.rng.0, state.rng.1).into(),
                 accent: false,
+                global: false,
             });
         }
 
@@ -319,6 +329,7 @@ impl StateView {
                     key: name.clone().into(),
                     value: value.clone().into(),
                     accent: false,
+                    global: true,
                 });
             }
         }
@@ -344,6 +355,7 @@ impl StateView {
                     // Innermost first, and the innermost frame is where
                     // the story is.
                     accent: i == 0,
+                    global: false,
                 });
             }
         }
@@ -364,6 +376,7 @@ impl StateView {
                     key: format!("{}", i + 1).into(),
                     value: text.clone().into(),
                     accent: false,
+                    global: false,
                 });
             }
         }
@@ -384,6 +397,7 @@ impl StateView {
                     key: path.clone().into(),
                     value: count.to_string().into(),
                     accent: false,
+                    global: false,
                 });
             }
         }
@@ -392,11 +406,12 @@ impl StateView {
 
     fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> AnyElement {
         let theme = cx.theme();
-        let (fg, muted, accent, hover) = (
+        let (fg, muted, accent, hover, danger) = (
             theme.foreground,
             theme.muted_foreground,
             theme.primary,
             theme.muted.opacity(0.5),
+            theme.danger,
         );
         let Some(row) = self.rows.get(ix) else {
             return div().into_any_element();
@@ -438,24 +453,48 @@ impl StateView {
                 key,
                 value,
                 accent: on,
-            } => base
-                .pl(px(20.))
-                .child(
-                    div()
-                        .w(px(120.))
-                        .flex_none()
-                        .truncate()
-                        .text_color(muted)
-                        .child(key.clone()),
-                )
-                .child(
-                    div()
-                        .flex_1()
-                        .truncate()
-                        .text_color(if *on { accent } else { fg })
-                        .child(value.clone()),
-                )
-                .into_any_element(),
+                global,
+            } => {
+                let watched = *global && self.project.read(cx).is_watched(key);
+                let pair = base
+                    .pl(px(20.))
+                    .child(
+                        div()
+                            .w(px(120.))
+                            .flex_none()
+                            .truncate()
+                            .text_color(muted)
+                            .child(key.clone()),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .truncate()
+                            .text_color(if *on { accent } else { fg })
+                            .child(value.clone()),
+                    )
+                    // Break on write is set: the breakpoint's own dot.
+                    .when(watched, |el| {
+                        el.child(div().size(px(7.)).rounded_full().bg(danger))
+                    });
+                if !*global {
+                    return pair.into_any_element();
+                }
+                // The web Debugger's verb on a variable row (W18/#3311).
+                let name = key.to_string();
+                pair.context_menu(move |menu, _, _| {
+                    let label = if watched {
+                        format!("Remove break on write \u{2014} {name}")
+                    } else {
+                        format!("Break on write \u{2014} {name}")
+                    };
+                    menu.menu(
+                        label,
+                        Box::new(crate::editor_menu::ToggleWatch { name: name.clone() }),
+                    )
+                })
+                .into_any_element()
+            }
             Row::Text { text, dim } => base
                 .pl(px(20.))
                 .child(

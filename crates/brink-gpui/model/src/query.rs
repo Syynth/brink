@@ -79,6 +79,24 @@ pub enum QueryKind {
     Demote {
         path: String,
         knot: String,
+        /// Into this knot instead of the one above (the menu's "Demote
+        /// into ▸").
+        into: Option<String>,
+    },
+    /// Move a stitch out of `knot` into `dest`, its references following.
+    MoveStitch {
+        path: String,
+        knot: String,
+        stitch: String,
+        dest: String,
+    },
+    /// Move a knot — or, with `stitch`, one of its stitches — one place up
+    /// or down among its siblings.
+    Reorder {
+        path: String,
+        knot: String,
+        stitch: Option<String>,
+        up: bool,
     },
     /// Lift the selected lines into a new knot (or function), replacing
     /// them with a call. `start`/`end` are byte offsets, snapped to whole
@@ -575,7 +593,21 @@ pub(crate) fn answer(
         QueryKind::Promote { path, knot, stitch } => {
             QueryResult::Structural(promote(session, path, knot, stitch))
         }
-        QueryKind::Demote { path, knot } => QueryResult::Structural(demote(session, path, knot)),
+        QueryKind::Demote { path, knot, into } => {
+            QueryResult::Structural(demote(session, path, knot, into.as_deref()))
+        }
+        QueryKind::MoveStitch {
+            path,
+            knot,
+            stitch,
+            dest,
+        } => QueryResult::Structural(move_stitch(session, path, knot, stitch, dest)),
+        QueryKind::Reorder {
+            path,
+            knot,
+            stitch,
+            up,
+        } => QueryResult::Structural(reorder(session, path, knot, stitch.as_deref(), *up)),
         QueryKind::ConvertLine {
             path,
             offset,
@@ -1217,12 +1249,20 @@ fn promote(
     }
 }
 
-/// Fold `knot` into the knot above it. The destination is resolved here.
-fn demote(session: &brink_ide::session::IdeSession, path: &str, knot: &str) -> StructuralOutcome {
+/// Fold `knot` into `into`, or the knot above it — resolved here.
+fn demote(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    knot: &str,
+    into: Option<&str>,
+) -> StructuralOutcome {
     let Some((id, source, analysis)) = structural_parts(session, path) else {
         return StructuralOutcome::Refused(format!("{path} is not in this project."));
     };
-    let Some(dest) = preceding_knot(&source, knot) else {
+    let Some(dest) = into
+        .map(str::to_owned)
+        .or_else(|| preceding_knot(&source, knot))
+    else {
         return StructuralOutcome::Refused(format!(
             "`{knot}` is the first knot in {path} — there is nothing above it to demote into."
         ));
@@ -1235,6 +1275,58 @@ fn demote(session: &brink_ide::session::IdeSession, path: &str, knot: &str) -> S
             result,
         ),
         Err(e) => StructuralOutcome::Refused(format!("{e:?}")),
+    }
+}
+
+/// Move `knot.stitch` into `dest`, its references rewritten.
+fn move_stitch(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    knot: &str,
+    stitch: &str,
+    dest: &str,
+) -> StructuralOutcome {
+    let Some((id, source, analysis)) = structural_parts(session, path) else {
+        return StructuralOutcome::Refused(format!("{path} is not in this project."));
+    };
+    match brink_ide::structural_move::move_stitch(&source, analysis, id, knot, stitch, dest) {
+        Ok(result) => plan(
+            session,
+            path,
+            format!("Moved `{stitch}` into `{dest}`"),
+            result,
+        ),
+        Err(e) => StructuralOutcome::Refused(e.to_string()),
+    }
+}
+
+/// Move a knot, or one of its stitches, one place up or down. A reorder
+/// changes no qualified name, so nothing else moves with it.
+fn reorder(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    knot: &str,
+    stitch: Option<&str>,
+    up: bool,
+) -> StructuralOutcome {
+    use brink_ide::structural_move::{Direction, reorder_knot, reorder_stitch};
+    let Some((_, source, _)) = structural_parts(session, path) else {
+        return StructuralOutcome::Refused(format!("{path} is not in this project."));
+    };
+    let direction = if up { Direction::Up } else { Direction::Down };
+    let moved = match stitch {
+        Some(stitch) => reorder_stitch(&source, knot, stitch, direction),
+        None => reorder_knot(&source, knot, direction),
+    };
+    let what = stitch.unwrap_or(knot);
+    match moved {
+        Ok(new_source) => plan(
+            session,
+            path,
+            format!("Moved `{what}` {}", if up { "up" } else { "down" }),
+            brink_ide::structural_result::StructuralResult::safe_source(new_source),
+        ),
+        Err(e) => StructuralOutcome::Refused(e.to_string()),
     }
 }
 
@@ -1548,7 +1640,7 @@ mod tests {
         );
         assert_eq!(plan.summary, "Promoted `linger` to a knot");
 
-        let StructuralOutcome::Plan(plan) = demote(&session, "main.ink", "lighthouse") else {
+        let StructuralOutcome::Plan(plan) = demote(&session, "main.ink", "lighthouse", None) else {
             panic!("demote refused");
         };
         assert!(
@@ -1560,7 +1652,7 @@ mod tests {
 
         // The FIRST knot has nothing above it, and is told so rather than
         // silently doing nothing.
-        let StructuralOutcome::Refused(why) = demote(&session, "main.ink", "shore") else {
+        let StructuralOutcome::Refused(why) = demote(&session, "main.ink", "shore", None) else {
             panic!("the first knot must refuse");
         };
         assert!(why.contains("nothing above it"), "{why}");

@@ -19,7 +19,9 @@
 //! Compile-bound like the Program Explorer: it re-asks after an analysis
 //! while it is the shown tab, and marks itself stale while hidden.
 
+use std::collections::HashMap;
 use std::ops::Range;
+use std::rc::Rc;
 
 use brink_gpui_model::graph::{GraphEdge, GraphNode, StoryGraphReport};
 use brink_gpui_model::query::{QueryKind, QueryResult};
@@ -31,10 +33,13 @@ use gpui::{
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup};
+use gpui_component::menu::ContextMenuExt as _;
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
 
+use crate::binder::BinderEvent;
 use crate::graph_layout::{self, Layout};
 use crate::project::{Project, ProjectEvent};
+use crate::symbol_menu;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
 use gpui::WeakEntity;
 
@@ -52,11 +57,17 @@ const MAX_ZOOM: f32 = 1.6;
 pub enum StoryGraphEvent {
     /// Open a node's declaration.
     Navigate { path: String, span: Range<usize> },
+    /// Something a node's menu asked for — the Binder's vocabulary, run
+    /// by the studio the same way.
+    Outline(BinderEvent),
 }
 
 pub struct StoryGraphView {
     project: Entity<Project>,
     report: Option<StoryGraphReport>,
+    /// Each declaring file's knots, for the node menu: where a move can
+    /// go, and what it would collide with. Read after each report.
+    outlines: HashMap<String, Rc<Vec<symbol_menu::KnotEntry>>>,
     layout: Layout,
     busy: bool,
     stale: bool,
@@ -89,6 +100,7 @@ impl StoryGraphView {
         Self {
             project,
             report: None,
+            outlines: HashMap::new(),
             layout: Layout::default(),
             busy: false,
             stale: true,
@@ -135,6 +147,7 @@ impl StoryGraphView {
                 this.busy = false;
                 if let Ok(QueryResult::StoryGraph(report)) = result {
                     this.layout = graph_layout::layout(&report);
+                    this.request_outlines(&report, cx);
                     this.report = Some(*report);
                 }
                 cx.notify();
@@ -142,6 +155,51 @@ impl StoryGraphView {
         })
         .detach();
         cx.notify();
+    }
+
+    /// Read the outline of every file a node is declared in.
+    fn request_outlines(&mut self, report: &StoryGraphReport, cx: &mut Context<Self>) {
+        let mut files: Vec<String> = report.nodes.iter().filter_map(|n| n.file.clone()).collect();
+        files.sort();
+        files.dedup();
+        for path in files {
+            let query = self
+                .project
+                .read(cx)
+                .query(QueryKind::DocumentSymbols { path: path.clone() }, cx);
+            cx.spawn(async move |this, cx| {
+                let Ok(QueryResult::DocumentSymbols(symbols)) = query.await else {
+                    return;
+                };
+                let _ = this.update(cx, |this, _| {
+                    let outline = symbol_menu::outline_from_symbols(&symbols);
+                    this.outlines.insert(path, Rc::new(outline));
+                });
+            })
+            .detach();
+        }
+    }
+
+    /// The menu target a node stands for: a knot, or a stitch (whose id is
+    /// `knot.stitch`, its knot the parent).
+    fn menu_target(&self, node: &GraphNode, cx: &App) -> Option<symbol_menu::Target> {
+        let path = node.file.clone()?;
+        let outline = self.outlines.get(&path)?.clone();
+        let (knot, stitch) = match (node.kind.as_str(), &node.parent) {
+            ("knot", None) => (node.name.clone(), None),
+            ("stitch", Some(knot)) => (
+                knot.clone(),
+                Some(node.name.strip_prefix(&format!("{knot}."))?.to_owned()),
+            ),
+            _ => return None,
+        };
+        Some(symbol_menu::Target {
+            library: self.project.read(cx).is_library(&path),
+            path,
+            knot,
+            stitch,
+            outline,
+        })
     }
 
     /// The top-left of a node's box, in the drawing's own pixels (before
@@ -288,7 +346,14 @@ impl StoryGraphView {
         let target = node.file.clone().zip(node.range);
         let label: SharedString = node.name.clone().into();
         let kind: SharedString = node.kind.clone().into();
-        div()
+        let menu = self.menu_target(node, cx).map(|target| {
+            let me = cx.entity().downgrade();
+            let emit: symbol_menu::Emit = Rc::new(move |event, _, cx| {
+                let _ = me.update(cx, |_, cx| cx.emit(StoryGraphEvent::Outline(event)));
+            });
+            (target, emit)
+        });
+        let node = div()
             .id(("graph-node", ix))
             .absolute()
             .left(self.pan.x + origin.x)
@@ -327,8 +392,16 @@ impl StoryGraphView {
                             });
                         }
                     }))
-            })
-            .into_any_element()
+            });
+        // The same knot/stitch menu the Binder and Write offer.
+        match menu {
+            Some((target, emit)) => node
+                .context_menu(move |menu, window, cx| {
+                    symbol_menu::build(menu, &target, &emit, window, cx)
+                })
+                .into_any_element(),
+            None => node.into_any_element(),
+        }
     }
 
     fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {

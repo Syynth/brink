@@ -68,32 +68,53 @@ pub struct OpenProblem {
 /// tabs and the settings window.
 #[derive(Debug, Clone)]
 pub enum ProblemsMenu {
-    /// Silence this code on this line, or in this file.
+    /// Silence `code` in `scope` (the narrowest first, as the web orders
+    /// them).
     Suppress {
         path: String,
-        /// `None` for the whole file.
-        line: Option<u32>,
+        scope: Scope,
         code: String,
     },
-    /// Open Settings ▸ Diagnostics — the door the panel has lacked.
-    Configure,
+    /// Open Settings — at Prose for a prose finding, which has nothing in
+    /// `[lints]` to configure, and at Diagnostics for everything else.
+    Configure { prose: bool },
 }
 
-gpui::actions!(
-    problems,
-    [
-        /// Open Settings at the Diagnostics section.
-        ConfigureProblem,
-    ]
-);
+/// Where a suppression applies — each a directive the compiler already
+/// has (#3148).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Scope {
+    /// `// brink-disable <code>` above this 1-based line.
+    Line(u32),
+    /// `// brink-disable-file <code>` at the top.
+    File,
+    /// `// brink-disable-file-all` at the top: every diagnostic in it.
+    AllInFile,
+    /// `[lints] <code> = "allow"` in `brink.toml`.
+    Project,
+}
 
-/// Silence one code, on a line or in a file.
+/// Silence one code, in one scope.
 #[derive(Debug, Clone, PartialEq, gpui::Action)]
 #[action(namespace = problems, no_json)]
 pub struct SuppressProblem {
     pub path: String,
-    pub line: Option<u32>,
+    pub scope: Scope,
     pub code: String,
+}
+
+/// Open the Settings section that configures a row's diagnostic.
+#[derive(Debug, Clone, PartialEq, gpui::Action)]
+#[action(namespace = problems, no_json)]
+pub struct ConfigureProblem {
+    pub prose: bool,
+}
+
+/// Apply one of the fixes offered for a row.
+#[derive(Debug, Clone, PartialEq, gpui::Action)]
+#[action(namespace = problems, no_json)]
+pub struct FixProblem {
+    pub plan: FixPlan,
 }
 
 /// Whether the suppression channel would accept this code.
@@ -430,13 +451,24 @@ impl Problems {
     ) {
         cx.emit(ProblemsMenu::Suppress {
             path: action.path.clone(),
-            line: action.line,
+            scope: action.scope,
             code: action.code.clone(),
         });
     }
 
-    fn on_configure(&mut self, _: &ConfigureProblem, _window: &mut Window, cx: &mut Context<Self>) {
-        cx.emit(ProblemsMenu::Configure);
+    fn on_configure(
+        &mut self,
+        action: &ConfigureProblem,
+        _window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        cx.emit(ProblemsMenu::Configure {
+            prose: action.prose,
+        });
+    }
+
+    fn on_fix(&mut self, action: &FixProblem, window: &mut Window, cx: &mut Context<Self>) {
+        self.fix_row(action.plan.clone(), window, cx);
     }
 }
 impl EventEmitter<PanelEvent> for Problems {}
@@ -675,14 +707,19 @@ impl Problems {
                     u32::try_from(row.span.end).unwrap_or(u32::MAX),
                     row.code.clone(),
                 );
-                // The row's first offered fix; the rest are one `cmd-.`
-                // away in the editor once the row is opened.
-                let fix = self.offers.get(&key).and_then(|f| f.first()).cloned();
+                // The row's button takes the first offered fix; its menu
+                // lists them all.
+                let offered = self.offers.get(&key).cloned().unwrap_or_default();
+                let fix = offered.first().cloned();
                 let menu_focus = self.focus.clone();
-                let path = row.path.clone();
-                let code = SharedString::from(row.code.clone());
-                let line = row.line_col.map(|(l, _)| l);
-                let suppressible = is_suppressible(&row.code);
+                let menu_target = MenuTarget {
+                    path: row.path.clone(),
+                    code: row.code.clone(),
+                    line: row.line_col.map(|(l, _)| l),
+                    prose: row.bucket == Bucket::Prose,
+                    fixes: offered,
+                    has_config: self.project.read(cx).config_path().is_some(),
+                };
                 h_flex()
                     .id(("problem", ix))
                     // Full width and clipped, or a long message pushes the
@@ -737,44 +774,16 @@ impl Problems {
                         cx.emit(open.clone());
                     }))
                     .context_menu(move |menu, _window, _cx| {
-                        let menu = menu.action_context(menu_focus.clone()).label(code.clone());
-                        // Anything but an error can be silenced — warnings
-                        // and Info notes alike. The channel refuses an
-                        // error outright, so offering it there would build
-                        // the silent no-op the Diagnostics section exists
-                        // to prevent.
-                        let menu = if suppressible && line.is_some() {
-                            menu.separator()
-                                .menu(
-                                    "Suppress on this line",
-                                    Box::new(SuppressProblem {
-                                        path: path.clone(),
-                                        line,
-                                        code: code.to_string(),
-                                    }),
-                                )
-                                .menu(
-                                    "Suppress in this file",
-                                    Box::new(SuppressProblem {
-                                        path: path.clone(),
-                                        line: None,
-                                        code: code.to_string(),
-                                    }),
-                                )
-                        } else if suppressible {
-                            menu.separator().menu(
-                                "Suppress in this file",
-                                Box::new(SuppressProblem {
-                                    path: path.clone(),
-                                    line: None,
-                                    code: code.to_string(),
-                                }),
-                            )
-                        } else {
-                            menu
-                        };
-                        menu.separator()
-                            .menu("Configure\u{2026}", Box::new(ConfigureProblem))
+                        let menu = menu.action_context(menu_focus.clone());
+                        row_menu(&menu_target)
+                            .into_iter()
+                            .fold(menu, |menu, item| match item {
+                                MenuItem::Item {
+                                    label,
+                                    disabled,
+                                    action,
+                                } => menu.menu_with_disabled(label, action, disabled),
+                            })
                     })
                     .into_any_element()
             }
@@ -914,6 +923,7 @@ impl Render for Problems {
             .key_context(brink_gpui_shell::tool_window::TOOL_WINDOW_CONTEXT)
             .on_action(cx.listener(Self::on_suppress))
             .on_action(cx.listener(Self::on_configure))
+            .on_action(cx.listener(Self::on_fix))
             .size_full()
             .text_xs()
             .when(self.filter_open, |el| {
@@ -936,6 +946,119 @@ impl Render for Problems {
                 )
             })
     }
+}
+
+/// What a row's menu is built from.
+struct MenuTarget {
+    path: String,
+    code: String,
+    /// 1-based, when known.
+    line: Option<u32>,
+    prose: bool,
+    fixes: Vec<FixPlan>,
+    /// Whether there is a `brink.toml` to record a project-wide allow in.
+    has_config: bool,
+}
+
+/// One entry of a row's menu.
+enum MenuItem {
+    Item {
+        label: String,
+        disabled: bool,
+        action: Box<dyn gpui::Action>,
+    },
+}
+
+/// The web's tier wording (`fixActions.ts` `tierLabel`).
+fn tier_label(tier: brink_gpui_model::fixes::Tier) -> &'static str {
+    use brink_gpui_model::fixes::Tier;
+    match tier {
+        Tier::Safe => "Safe",
+        Tier::Suggested => "Suggested",
+        Tier::Placeholder => "Needs input",
+    }
+}
+
+/// A row's menu, the web's (`ProblemsContextMenu.tsx`): every fix offered
+/// for it, each naming its tier; then the four suppressions, narrowest
+/// first, for a code the compiler lets you silence; then the door to the
+/// setting that configures it.
+fn row_menu(target: &MenuTarget) -> Vec<MenuItem> {
+    let item = |label: String, disabled: bool, action: Box<dyn gpui::Action>| MenuItem::Item {
+        label,
+        disabled,
+        action,
+    };
+    let mut items: Vec<MenuItem> = target
+        .fixes
+        .iter()
+        .map(|plan| {
+            item(
+                format!("{} \u{2014} {}", plan.title, tier_label(plan.tier)),
+                false,
+                Box::new(FixProblem { plan: plan.clone() }),
+            )
+        })
+        .collect();
+    let code = &target.code;
+    if !target.prose && is_suppressible(code) {
+        let suppress = |scope: Scope| {
+            Box::new(SuppressProblem {
+                path: target.path.clone(),
+                scope,
+                code: code.clone(),
+            })
+        };
+        if let Some(line) = target.line {
+            items.push(item(
+                format!("Suppress {code} on this line"),
+                false,
+                suppress(Scope::Line(line)),
+            ));
+        }
+        items.push(item(
+            format!("Suppress {code} in this file"),
+            false,
+            suppress(Scope::File),
+        ));
+        items.push(item(
+            "Suppress all diagnostics in this file".to_owned(),
+            false,
+            suppress(Scope::AllInFile),
+        ));
+        // Disabled rather than hidden without a `brink.toml`: the gesture
+        // exists, the project just has nowhere to record it.
+        items.push(item(
+            format!("Suppress {code} in this project"),
+            !target.has_config,
+            suppress(Scope::Project),
+        ));
+    }
+    items.push(if target.prose {
+        item(
+            "Prose settings\u{2026}".to_owned(),
+            false,
+            Box::new(ConfigureProblem { prose: true }),
+        )
+    } else {
+        item(
+            format!("Configure {code}\u{2026}"),
+            false,
+            Box::new(ConfigureProblem { prose: false }),
+        )
+    });
+    items
+}
+
+/// The blanket form: `// brink-disable-file-all` at the top, or `None`
+/// when the file already has it.
+#[must_use]
+pub fn suppress_all_file_source(source: &str) -> Option<String> {
+    let covered = source.lines().any(|l| {
+        let t = l.trim();
+        t == "// brink-disable-file-all" || t == "// brink-disable-all"
+    });
+    (!covered).then(|| format!("// brink-disable-file-all\n{source}"))
 }
 
 /// Where a suppression comment goes, and what it says.
@@ -973,6 +1096,11 @@ pub fn suppress_line_edit(source: &str, line: u32, code: &str) -> Option<(usize,
 #[must_use]
 pub fn suppress_file_source(source: &str, code: &str) -> Option<String> {
     const DIRECTIVE: &str = "// brink-disable-file";
+    // A blanket directive already covers every code; naming one would
+    // narrow nothing.
+    if source.lines().any(|l| l.trim() == "// brink-disable-all") {
+        return None;
+    }
     let mut at = 0usize;
     for line in source.split_inclusive('\n') {
         let trimmed = line.trim();
@@ -1000,6 +1128,90 @@ pub fn suppress_file_source(source: &str, code: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn menu_labels(target: &MenuTarget) -> Vec<String> {
+        row_menu(target)
+            .into_iter()
+            .map(
+                |MenuItem::Item {
+                     label, disabled, ..
+                 }| {
+                    if disabled {
+                        format!("({label})")
+                    } else {
+                        label
+                    }
+                },
+            )
+            .collect()
+    }
+
+    fn warning_code() -> String {
+        brink_ide::diagnostic_registry::registry()
+            .iter()
+            .find(|info| info.default_severity == brink_ir::Severity::Warning)
+            .map(|info| info.code.as_str().to_owned())
+            .expect("the registry has a warning")
+    }
+
+    /// The web's row menu: fixes, the four suppressions narrowest first,
+    /// then Configure — the project one disabled without a `brink.toml`.
+    #[test]
+    fn a_warnings_menu_is_the_webs() {
+        let code = warning_code();
+        let target = MenuTarget {
+            path: "story.ink".to_owned(),
+            code: code.clone(),
+            line: Some(4),
+            prose: false,
+            fixes: vec![FixPlan {
+                code: code.clone(),
+                title: "Remove it".to_owned(),
+                tier: brink_gpui_model::fixes::Tier::Safe,
+                edits: Vec::new(),
+                caret: None,
+            }],
+            has_config: false,
+        };
+        assert_eq!(
+            menu_labels(&target),
+            [
+                "Remove it \u{2014} Safe".to_owned(),
+                format!("Suppress {code} on this line"),
+                format!("Suppress {code} in this file"),
+                "Suppress all diagnostics in this file".to_owned(),
+                format!("(Suppress {code} in this project)"),
+                format!("Configure {code}\u{2026}"),
+            ]
+        );
+    }
+
+    /// A prose finding has no `[lints]` code: its door is Prose settings,
+    /// and nothing suppresses it.
+    #[test]
+    fn a_prose_findings_menu_opens_prose_settings() {
+        let target = MenuTarget {
+            path: "story.ink".to_owned(),
+            code: "prose.Spelling".to_owned(),
+            line: Some(2),
+            prose: true,
+            fixes: Vec::new(),
+            has_config: true,
+        };
+        assert_eq!(menu_labels(&target), ["Prose settings\u{2026}"]);
+    }
+
+    #[test]
+    fn suppressing_everything_in_a_file_is_one_line_once() {
+        let once = suppress_all_file_source("-> DONE\n").expect("added");
+        assert_eq!(once, "// brink-disable-file-all\n-> DONE\n");
+        assert_eq!(suppress_all_file_source(&once), None, "already there");
+        assert_eq!(
+            suppress_file_source("// brink-disable-all\n-> DONE\n", "E001"),
+            None,
+            "a blanket directive already covers any one code"
+        );
+    }
 
     fn diag(start: u32, severity: Severity, code: &str, message: &str) -> Diagnostic {
         Diagnostic {

@@ -11,6 +11,8 @@ mod code_view;
 mod compiled_output;
 mod continuous;
 mod document;
+mod editor_menu;
+mod file_menu;
 mod files;
 mod fixes;
 mod graph_layout;
@@ -41,6 +43,7 @@ mod state_view;
 mod sticky_lines;
 mod story_graph;
 mod structural;
+mod symbol_menu;
 mod tab_title;
 mod todos;
 mod treemap;
@@ -916,9 +919,13 @@ impl Studio {
         let on_graph = cx.subscribe_in(
             &graph,
             window,
-            |this, _, event: &crate::story_graph::StoryGraphEvent, window, cx| {
-                let crate::story_graph::StoryGraphEvent::Navigate { path, span } = event;
-                this.show(path, span.clone(), window, cx);
+            |this, _, event: &crate::story_graph::StoryGraphEvent, window, cx| match event {
+                crate::story_graph::StoryGraphEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                crate::story_graph::StoryGraphEvent::Outline(event) => {
+                    this.on_outline(event, window, cx);
+                }
             },
         );
         let on_program = cx.subscribe_in(
@@ -944,12 +951,13 @@ impl Studio {
             &problems,
             window,
             |this, _, event: &ProblemsMenu, window, cx| match event {
-                ProblemsMenu::Suppress { path, line, code } => {
-                    this.suppress(path, *line, code, window, cx);
+                ProblemsMenu::Suppress { path, scope, code } => {
+                    this.suppress(path, *scope, code, window, cx);
                 }
-                ProblemsMenu::Configure => {
+                ProblemsMenu::Configure { prose } => {
+                    let section = if *prose { "prose" } else { "diagnostics" };
                     this.workspace.update(cx, |workspace, cx| {
-                        workspace.open_settings(Some("diagnostics"), window, cx);
+                        workspace.open_settings(Some(section), window, cx);
                     });
                 }
             },
@@ -1353,7 +1361,7 @@ impl Studio {
                 return;
             };
             let _ = cx.update(|window, cx| {
-                rename::prompt(site, range.start, current, window, cx);
+                rename::prompt(site.project, site.path, range.start, current, window, cx);
             });
         })
         .detach();
@@ -1659,6 +1667,21 @@ impl Studio {
                 });
                 files::delete_files(self.project.clone(), paths.clone(), window, cx);
             }
+            BinderEvent::NewFolder { folder } => {
+                files::new_folder(self.project.clone(), folder.clone(), window, cx);
+            }
+            BinderEvent::RenameFolder { folder } => {
+                files::rename_folder(self.project.clone(), folder.clone(), window, cx);
+            }
+            BinderEvent::DeleteFolder { folder, paths } => {
+                // As for a file: their editors would write them back.
+                self.code.update(cx, |code, cx| {
+                    for path in paths {
+                        code.close_document(path, window, cx);
+                    }
+                });
+                files::delete_folder(self.project.clone(), folder, paths.clone(), window, cx);
+            }
             BinderEvent::NewKnot { path } => {
                 let reveal = self.reveal_fn(cx);
                 knots::new_knot(self.project.clone(), path.clone(), reveal, window, cx);
@@ -1684,8 +1707,59 @@ impl Studio {
                     cx,
                 );
             }
-            BinderEvent::Demote { path, knot } => {
-                structural::demote(self.project.clone(), path.clone(), knot.clone(), window, cx);
+            BinderEvent::Demote { path, knot, into } => {
+                structural::demote(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    into.clone(),
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::MoveStitch {
+                path,
+                knot,
+                stitch,
+                dest,
+            } => {
+                structural::move_stitch(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    stitch.clone(),
+                    dest.clone(),
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::Reorder {
+                path,
+                knot,
+                stitch,
+                up,
+            } => {
+                structural::reorder(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    stitch.clone(),
+                    *up,
+                    window,
+                    cx,
+                );
+            }
+            // From a row, not a caret: the rename pipeline asks the worker
+            // at the name's own offset, so no editor needs to be open.
+            BinderEvent::RenameSymbol { path, offset, name } => {
+                rename::prompt(
+                    self.project.clone(),
+                    path.clone().into(),
+                    *offset,
+                    name.clone(),
+                    window,
+                    cx,
+                );
             }
             BinderEvent::Open { .. } => {}
         }
@@ -1781,23 +1855,35 @@ impl Studio {
     fn suppress(
         &mut self,
         path: &str,
-        line: Option<u32>,
+        scope: crate::problems::Scope,
         code: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        use crate::problems::Scope;
+        // The project scope is a `brink.toml` key, not a comment: written
+        // through the config editor Settings uses, so it lands as Settings
+        // would write it.
+        if scope == Scope::Project {
+            crate::settings_config::edit_config(&self.project, cx, |doc| {
+                crate::settings_config::set_or_remove(doc, "lints", code, Some("allow"))
+            });
+            return;
+        }
         let Some(source) = self.project.read(cx).loaded_source(path).map(str::to_owned) else {
             return;
         };
-        let next = match line {
-            Some(line) => {
+        let next = match scope {
+            Scope::Line(line) => {
                 crate::problems::suppress_line_edit(&source, line, code).map(|(at, text)| {
                     let mut out = source.clone();
                     out.insert_str(at, &text);
                     out
                 })
             }
-            None => crate::problems::suppress_file_source(&source, code),
+            Scope::File => crate::problems::suppress_file_source(&source, code),
+            Scope::AllInFile => crate::problems::suppress_all_file_source(&source),
+            Scope::Project => None,
         };
         let Some(next) = next else {
             // Already covered, or a line that is no longer there: doing
@@ -2582,6 +2668,53 @@ impl Render for Studio {
                     this.play_at(Some(action.path.clone()), window, cx);
                 }),
             )
+            // The editor menu's items (`editor_menu`).
+            .on_action(
+                cx.listener(|this, action: &editor_menu::Outline, window, cx| {
+                    this.on_outline(&action.event, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ApplyFix, window, cx| {
+                    let site = this.focused_site(window, cx);
+                    fixes::apply_fix(
+                        &this.project,
+                        &action.plan,
+                        site.as_ref().map(|s| (&s.editor, &s.path)),
+                        window,
+                        cx,
+                    );
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::OpenFile, window, cx| {
+                    this.open(&action.path, None, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ToggleFold, window, cx| {
+                    if let Some(site) = this.focused_site(window, cx) {
+                        site.editor.update(cx, |state, cx| {
+                            state.toggle_fold_at(action.line, cx);
+                        });
+                    }
+                }),
+            )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ToggleWatch, _, cx| {
+                    this.project.update(cx, |project, cx| {
+                        project.toggle_watch(&action.name, cx);
+                    });
+                }),
+            )
+            .on_action(cx.listener(|this, _: &editor_menu::ShowTodos, window, cx| {
+                this.workspace.update(cx, |workspace, cx| {
+                    workspace.open_tool_window("todos", window, cx);
+                });
+            }))
+            .on_action(cx.listener(|_, _: &editor_menu::ToggleGutters, _, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.show_gutters = !s.show_gutters);
+            }))
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
             .on_action(cx.listener(Self::debug_step_line))
@@ -4512,6 +4645,289 @@ mod modes_driven {
                 .is_empty(),
             "a header line plays, it does not take a breakpoint"
         );
+    }
+
+    /// The folder menu's operations: a new folder exists on disk and in
+    /// the sidecar; a folder rename moves every file in it; and one undo
+    /// moves them all back.
+    #[test]
+    fn a_folder_is_made_renamed_and_put_back() {
+        let dir = scratch_dir("folders");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "INCLUDE acts/one.ink\nINCLUDE acts/two.ink\n-> one\n",
+        )
+        .expect("writing the story");
+        std::fs::create_dir_all(dir.join("acts")).expect("the folder");
+        std::fs::write(dir.join("acts/one.ink"), "=== one ===\nOne.\n-> two\n")
+            .expect("writing one");
+        std::fs::write(dir.join("acts/two.ink"), "=== two ===\nTwo.\n-> END\n")
+            .expect("writing two");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+
+        let made = h.update(|cx| project.update(cx, |p, cx| p.create_folder("acts/drafts", cx)));
+        assert!(made.is_ok(), "{made:?}");
+        assert!(dir.join("acts/drafts").is_dir(), "made on disk");
+        assert!(
+            h.read(|cx| project.read(cx).binder_order().folders.clone())
+                .contains(&"acts/drafts/".to_owned()),
+            "and recorded, so the Binder shows it empty"
+        );
+
+        let moved = h.update(|cx| project.update(cx, |p, cx| p.rename_folder("acts", "parts", cx)));
+        assert_eq!(moved.ok(), Some(2), "both files moved");
+        let files = h.read(|cx| project.read(cx).files().to_vec());
+        assert!(
+            files.contains(&"parts/one.ink".to_owned())
+                && files.contains(&"parts/two.ink".to_owned())
+                && !files.iter().any(|f| f.starts_with("acts/")),
+            "{files:?}"
+        );
+        assert!(
+            h.read(|cx| project.read(cx).binder_order().folders.clone())
+                .contains(&"parts/drafts/".to_owned()),
+            "the empty sub-folder came along"
+        );
+
+        let undone = h.update(|cx| project.update(cx, |p, cx| p.undo_file_op(cx)));
+        assert!(undone.is_ok(), "{undone:?}");
+        let files = h.read(|cx| project.read(cx).files().to_vec());
+        assert!(
+            files.contains(&"acts/one.ink".to_owned())
+                && files.contains(&"acts/two.ink".to_owned())
+                && !files.iter().any(|f| f.starts_with("parts/")),
+            "one undo put the whole folder back: {files:?}"
+        );
+    }
+
+    /// The symbol menu's moves, run the way a click on one runs them:
+    /// a reorder, a stitch moved into another knot, a knot demoted into a
+    /// chosen one. Each one's text is what the move says.
+    #[test]
+    fn the_symbol_menus_moves_reshape_the_file() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        let source = |h: &mut Harness| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .loaded_source("story.ink")
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        };
+        let run = |h: &mut Harness, event: crate::binder::BinderEvent| {
+            h.app_window(window, |window, cx| {
+                studio.update(cx, |studio, cx| studio.on_outline(&event, window, cx));
+            });
+        };
+        let moved = |h: &mut Harness, check: &dyn Fn(&str) -> bool| {
+            h.settle_until(PINS_WAIT, |h| check(&source(h)))
+        };
+
+        // `market` up above `start`.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::Reorder {
+                path: "story.ink".to_owned(),
+                knot: "market".to_owned(),
+                stitch: None,
+                up: true,
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| s.find("=== market").unwrap_or(usize::MAX)
+                < s.find("=== start").unwrap_or(0)),
+            "market moved up:\n{}",
+            source(&mut h)
+        );
+
+        // `start.second` into `market`, its divert following it.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::MoveStitch {
+                path: "story.ink".to_owned(),
+                knot: "start".to_owned(),
+                stitch: "second".to_owned(),
+                dest: "market".to_owned(),
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| s.contains("-> market.second")),
+            "second moved into market:\n{}",
+            source(&mut h)
+        );
+
+        // `start` — stitchless now — demoted into `market`.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::Demote {
+                path: "story.ink".to_owned(),
+                knot: "start".to_owned(),
+                into: Some("market".to_owned()),
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| !s.contains("=== start")
+                && s.contains("= start")),
+            "start demoted into market:\n{}",
+            source(&mut h)
+        );
+    }
+
+    /// The Problems menu's wider scopes: everything in a file is one
+    /// comment at its top; a project-wide allow is a `[lints]` key.
+    #[test]
+    fn the_problems_menus_wider_suppressions_write_where_they_say() {
+        use crate::problems::Scope;
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let source = |h: &mut Harness, path: &str| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .loaded_source(path)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        };
+        let suppress = |h: &mut Harness, scope: Scope, code: &str| {
+            h.app_window(window, |window, cx| {
+                studio.update(cx, |studio, cx| {
+                    studio.suppress("story.ink", scope, code, window, cx);
+                });
+            });
+            h.settle();
+        };
+
+        suppress(&mut h, Scope::AllInFile, "E001");
+        assert!(
+            source(&mut h, "story.ink").starts_with("// brink-disable-file-all\n"),
+            "{}",
+            source(&mut h, "story.ink")
+        );
+
+        suppress(&mut h, Scope::Project, "E027");
+        let config = source(&mut h, "brink.toml");
+        assert!(
+            config.contains("[lints]") && config.contains("E027 = \"allow\""),
+            "{config}"
+        );
+    }
+
+    /// Break on write, from the menus' action: the watched global pauses
+    /// Play at its write, as a breakpoint would.
+    #[test]
+    fn a_watched_global_pauses_play_at_its_write() {
+        let dir = scratch_dir("watch");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "VAR gold = 0\n-> shore\n=== shore ===\nThe tide was out.\n~ gold = 5\nThe lamp was lit.\n-> END\n",
+        )
+        .expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (project, player) = h.read(|cx| {
+            let s = studio.read(cx);
+            (s.project.clone(), s.player.clone())
+        });
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+
+        h.dispatch(
+            window,
+            crate::editor_menu::ToggleWatch {
+                name: "gold".to_owned(),
+            },
+        );
+        assert!(h.read(|cx| project.read(cx).is_watched("gold")));
+
+        h.dispatch(window, super::Play);
+        let paused = h.settle_until(PINS_WAIT, |h| h.read(|cx| player.read(cx).is_paused()));
+        assert!(paused, "Play ran past the write to gold");
+    }
+
+    /// A right-click in the editor opens our menu without taking the
+    /// window down. The kit asks for the menu while it still holds the
+    /// editor, and the first version read and focused that same editor
+    /// there — a double lease, and a crash on every right-click.
+    #[test]
+    fn a_right_click_in_the_editor_does_not_crash() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // Line 7, "The lamp gutters.", a little way in.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) + 40., f32::from(at.top()) + row * 6.5)
+        });
+        h.right_click(window, x, y);
+        h.settle();
+        h.capture(window);
+        // And again on a header line, which takes the symbol menu's road.
+        let header_y = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            f32::from(at.top()) + row * 5.5
+        });
+        h.right_click(window, x, header_y);
+        h.settle();
+        h.capture(window);
+    }
+
+    /// The editor menu's Fold and Unfold reach the editor they were asked
+    /// from, as the gutter's chevron does.
+    #[test]
+    fn the_editor_menus_fold_folds_the_knot() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // Line 6 (0-based 5), "=== start ===", once its fold is known.
+        let foldable = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).fold_at(5).is_some())
+        });
+        assert!(foldable, "the knot's fold never arrived");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| state.focus(window, cx));
+        });
+        h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
+        h.settle();
+        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(true));
+        h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
+        h.settle();
+        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(false));
     }
 
     /// The fold button folds: a press on line 6's chevron folds the knot.

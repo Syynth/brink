@@ -84,6 +84,95 @@ pub fn new_file(project: Entity<Project>, folder: String, window: &mut Window, c
     prompt("New file", "Create", input, confirm, window, cx);
 }
 
+/// Ask for a name and make an empty folder in `folder`.
+pub fn new_folder(project: Entity<Project>, folder: String, window: &mut Window, cx: &mut App) {
+    let input = cx.new(|cx| {
+        InputState::new(window, cx).placeholder(if folder.is_empty() {
+            "chapter".to_owned()
+        } else {
+            format!("{folder}/chapter")
+        })
+    });
+    let confirm = Rc::new({
+        let project = project.clone();
+        let input = input.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let name = input.read(cx).value().trim().to_owned();
+            window.close_dialog(cx);
+            if name.is_empty() {
+                return;
+            }
+            let path = if name.contains('/') || folder.is_empty() {
+                name
+            } else {
+                format!("{folder}/{name}")
+            };
+            let made = project.update(cx, |project, cx| project.create_folder(&path, cx));
+            match made {
+                Ok(()) => notify(
+                    Severity::Success,
+                    "files",
+                    format!("Created {}/.", path.trim_end_matches('/')),
+                    window,
+                    cx,
+                ),
+                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
+            }
+        }
+    });
+    prompt("New folder", "Create", input, confirm, window, cx);
+}
+
+/// Ask for a new path for folder `folder` and move it, with every file in
+/// it, there. `INCLUDE` lines are not rewritten — the same rule as a
+/// single file's move.
+pub fn rename_folder(project: Entity<Project>, folder: String, window: &mut Window, cx: &mut App) {
+    let input = cx.new(|cx| {
+        let mut state = InputState::new(window, cx).placeholder("New path");
+        state.set_value(folder.clone(), window, cx);
+        state
+    });
+    let confirm = Rc::new({
+        let project = project.clone();
+        let input = input.clone();
+        let from = folder.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let to = input
+                .read(cx)
+                .value()
+                .trim()
+                .trim_end_matches('/')
+                .to_owned();
+            window.close_dialog(cx);
+            if to.is_empty() || to == from {
+                return;
+            }
+            let moved = project.update(cx, |project, cx| project.rename_folder(&from, &to, cx));
+            match moved {
+                Ok(n) => notify(
+                    Severity::Success,
+                    "files",
+                    format!(
+                        "Moved {from}/ to {to}/ ({n} file{}).",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    window,
+                    cx,
+                ),
+                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
+            }
+        }
+    });
+    prompt(
+        &format!("Rename {folder}/"),
+        "Rename",
+        input,
+        confirm,
+        window,
+        cx,
+    );
+}
+
 /// A name with no extension gets `.ink` — the surface a new file in a
 /// story project is overwhelmingly going to be. An explicit extension
 /// (`.brink`, `.toml`, anything) is left exactly as typed.
@@ -155,13 +244,42 @@ pub fn delete_files(
     window: &mut Window,
     cx: &mut App,
 ) {
-    if paths.is_empty() {
-        return;
-    }
     let title = match paths.as_slice() {
         [only] => format!("Delete {only}?"),
         many => format!("Delete {} files?", many.len()),
     };
+    confirm_delete(project, title, paths, window, cx);
+}
+
+/// Confirm, then delete folder `folder` — every file in it. The same
+/// confirmation as [`delete_files`], titled for the folder as the web's
+/// is ("Delete scenes/ and its 3 files?").
+pub fn delete_folder(
+    project: Entity<Project>,
+    folder: &str,
+    paths: Vec<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let n = paths.len();
+    let title = format!(
+        "Delete {}/ and its {n} file{}?",
+        folder.trim_end_matches('/'),
+        if n == 1 { "" } else { "s" }
+    );
+    confirm_delete(project, title, paths, window, cx);
+}
+
+fn confirm_delete(
+    project: Entity<Project>,
+    title: String,
+    paths: Vec<String>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    if paths.is_empty() {
+        return;
+    }
     // Every name, so a selection is never deleted sight unseen; past a
     // handful the list is the count plus what would fit.
     let listed: String = if paths.len() == 1 {

@@ -5819,3 +5819,19 @@
 - **SCOPE:** minor/local
 - **WHAT:** Each file in Write's manuscript folds like a Script tab: the same fold ranges from the worker, the same ghost fold buttons in the gutter. A folded section shrinks to the rows it still shows, so no gap is left. This reverses the earlier choice to keep Write without folding ("the manuscript is a reading surface; folding belongs to the tabs").
 - **WHY:** The maintainer reached for folding in Write and found it missing next to play-from-here, which works there. The earlier reason was technical: a section is sized to exactly its rows, so a fold would have left it taller than its content and scrolling itself. Sizing sections by the rows they show (folds applied), and re-measuring when that count changes, removes the problem.
+
+## Nothing embeds the native (gpui) studio
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The native studio is an application, not a component: nothing will embed it. Web-editor APIs that exist for embedding hosts are not ported to it. The first one this applies to is host gutter markers (`host-gutter.ts`, #343), so the remainder of #3647 was closed without building it.
+- **WHY:** The web editor's host APIs serve apps that embed `@brink-lang/editor` without the studio. The native studio has no such consumer, so porting them would build a contract no one calls. Web parity for the native studio means parity of what an author sees and can do, not of the embedding surface.
+
+## Native studio context menus match the web's, one builder per menu
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Every context menu in the native studio matches the web studio's items, order, and disabled states. Each kind of menu has one builder shared by every surface that opens it: the knot/stitch menu serves the Binder (right-click and ⋯), Write's Structure column, and Story Graph nodes; the file/folder menu serves the Binder and the manuscript's file header. Native-only extras (New Stitch…, Write's Go to) stay. Where a web item needs a capability the native side does not have, an issue is filed instead of showing an item that does nothing. The work goes in this order: symbol and file menus, the editor's text menu, the Problems menu, then "Break on write" on State view globals.
+- **WHY:** The inventory found the native menus had drifted per surface. Binder's "Open" did nothing, its ⋯ menu disagreed with its right-click menu, New File on a folder targeted the folder's parent, and functions and library files were offered moves that cannot apply to them. One builder per menu makes that drift impossible, and the web studio is the reference for what an author expects to find.

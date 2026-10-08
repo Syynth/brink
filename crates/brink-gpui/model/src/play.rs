@@ -41,6 +41,11 @@ pub enum PlayCommand {
     /// nothing — a comment, a blank, or code that folded away — so the
     /// studio can say so instead of arming something that can never hit.
     SetBreakpoints(Vec<(String, u32)>),
+    /// Replace the set of globals watched for writes — break on write
+    /// (W18/#3311). By name, re-resolved against the program on every
+    /// run: a stored slot index would watch the wrong global after a
+    /// recompile.
+    SetWatchpoints(Vec<String>),
     /// Run until a breakpoint, a choice point, or the story ends.
     Continue,
     /// One source line (`step`), or one VM instruction (`stepi`). Both
@@ -277,6 +282,9 @@ pub struct PlaySlot {
     /// sessions because the gutter marks are: a mark set before Play is
     /// pressed must be armed by the Start that follows.
     wanted: Vec<(String, u32)>,
+    /// The globals watched for writes, by name — kept across sessions as
+    /// the breakpoint lines are.
+    watched: Vec<String>,
     /// The state the last fault died in, answered to `Snapshot` while
     /// nothing is running. Cleared by the next Start or Stop.
     fault: Option<PlayState>,
@@ -320,7 +328,7 @@ pub fn run(
                     // any of them armed runs on the DEBUG road, so the
                     // first one hits instead of the story running past it.
                     let unbound = arm(running, &slot.wanted);
-                    let mut outcome = if slot.wanted.is_empty() {
+                    let mut outcome = if slot.wanted.is_empty() && slot.watched.is_empty() {
                         advance(running)
                     } else {
                         debug_command(slot, DebugVerb::Continue)
@@ -358,7 +366,7 @@ pub fn run(
             // DEBUG road: the production `continue_maximally` knows
             // nothing about them, so a breakpoint past a choice could
             // never hit and the mark in the gutter would be a lie.
-            if running.breakpoints.iter().next().is_some() {
+            if running.breakpoints.iter().next().is_some() || !slot.watched.is_empty() {
                 return debug_command(slot, DebugVerb::Continue);
             }
             let outcome = advance(running);
@@ -384,6 +392,10 @@ pub fn run(
                 unbound: unbound.unwrap_or_default(),
                 ..PlayOutcome::default()
             }
+        }
+        PlayCommand::SetWatchpoints(names) => {
+            slot.watched = names;
+            PlayOutcome::default()
         }
         PlayCommand::Continue => debug_command(slot, DebugVerb::Continue),
         PlayCommand::StepLine => debug_command(slot, DebugVerb::StepLine),
@@ -469,7 +481,22 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
     // the production path runs ahead of what it has handed out, and a line
     // it already completed must surface here exactly once (W5/#3298).
     let mut lines = running.story.debug_drain_buffered_lines();
+    // The watched globals, resolved against THIS program; a name it does
+    // not declare stays wanted and simply is not armed this run.
+    let watching: Vec<u32> = slot
+        .watched
+        .iter()
+        .filter_map(|name| running.program.global_index(name))
+        .collect();
     let result = match verb {
+        DebugVerb::Continue if !watching.is_empty() => {
+            let mut observer = brink_runtime::WatchpointObserver::new(watching);
+            running.story.debug_run_watching(
+                &running.breakpoints,
+                &mut observer,
+                DEFAULT_DEBUG_BUDGET,
+            )
+        }
         DebugVerb::Continue => running
             .story
             .debug_run(&running.breakpoints, DEFAULT_DEBUG_BUDGET),
@@ -544,7 +571,7 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
             .map(ToString::to_string)
             .collect(),
         stop: Some(PlayStop {
-            reason: describe(&outcome.reason),
+            reason: describe(&outcome.reason, &running.program),
             at: current_line(running),
         }),
         ..PlayOutcome::default()
@@ -587,10 +614,14 @@ fn current_line(play: &Play) -> Option<(String, u32)> {
     Some((file, line0 + 1))
 }
 
-fn describe(reason: &DebugStopReason) -> String {
+fn describe(reason: &DebugStopReason, program: &brink_runtime::Program) -> String {
     match reason {
         DebugStopReason::Breakpoint { name, .. } => format!("breakpoint {name}"),
-        DebugStopReason::Watchpoint { global_idx } => format!("watchpoint on global {global_idx}"),
+        // By the global's name: the slot index means nothing to an author.
+        DebugStopReason::Watchpoint { global_idx } => match program.global_name(*global_idx) {
+            Some(name) => format!("write to {name}"),
+            None => format!("watchpoint on global {global_idx}"),
+        },
         DebugStopReason::Choices => "a choice point".to_owned(),
         DebugStopReason::Step => "step".to_owned(),
         other => format!("{other:?}").to_lowercase(),
@@ -844,6 +875,33 @@ mod tests {
         let again = d.go(PlayCommand::Snapshot);
         assert_eq!(again.state.as_ref().map(|s| s.turn), Some(1));
         assert_eq!(again.state.map(|s| s.choices), Some(state.choices));
+    }
+
+    /// Break on write: a watched global stops the run at the write, named
+    /// by the global, and the next Continue goes on past it.
+    #[test]
+    fn a_watched_global_stops_the_run_where_it_is_written() {
+        let mut d = Driver::new(
+            "VAR gold = 0\n-> shore\n=== shore ===\nThe tide was out.\n~ gold = 5\nThe lamp was lit.\n-> END\n",
+        );
+        let set = d.go(PlayCommand::SetWatchpoints(vec!["gold".to_owned()]));
+        assert!(set.error.is_none(), "watching needs no session");
+
+        let started = d.go(PlayCommand::Start { at: None });
+        let stop = started.stop.expect("a start with a watch is a debug run");
+        assert_eq!(stop.reason, "write to gold", "{stop:?}");
+
+        let on = d.go(PlayCommand::Continue);
+        assert!(
+            on.stop.as_ref().is_none_or(|s| s.reason != "write to gold"),
+            "one write, one stop: {:?}",
+            on.stop
+        );
+
+        // Unwatched, a fresh start runs straight through.
+        let _ = d.go(PlayCommand::SetWatchpoints(Vec::new()));
+        let plain = d.go(PlayCommand::Start { at: None });
+        assert!(plain.stop.is_none(), "{:?}", plain.stop);
     }
 
     #[test]
