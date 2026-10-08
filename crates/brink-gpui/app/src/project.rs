@@ -215,14 +215,16 @@ pub enum FileOp {
     Created {
         path: String,
     },
-    Renamed {
-        from: String,
-        to: String,
-    },
-    /// A folder and everything in it, moved as one.
-    RenamedFolder {
-        from: String,
-        to: String,
+    /// A file or a folder moved, `INCLUDE`s and all (#3656): every file
+    /// that relocated, the folder when it was one, and every file whose
+    /// `INCLUDE`s it rewrote — each with its text before and after, so the
+    /// undo can put exactly that back, and refuse if it has changed since.
+    Moved {
+        /// "acts/one.ink to parts/one.ink", for the undo's label.
+        what: String,
+        files: Vec<Relocated>,
+        folder: Option<(String, String)>,
+        touched: Vec<Touched>,
     },
     Deleted {
         path: String,
@@ -236,11 +238,30 @@ impl FileOp {
     pub fn describe(&self) -> String {
         match self {
             Self::Created { path } => format!("creating {path}"),
-            Self::Renamed { from, to } => format!("renaming {from} to {to}"),
-            Self::RenamedFolder { from, to } => format!("renaming {from}/ to {to}/"),
+            Self::Moved { what, .. } => format!("moving {what}"),
             Self::Deleted { path, .. } => format!("deleting {path}"),
         }
     }
+}
+
+/// One file a move relocated.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Relocated {
+    pub from: String,
+    pub to: String,
+    /// Its text at `from`, before the move.
+    pub before: String,
+    /// What the move wrote at `to` — `before` with its own relative
+    /// `INCLUDE`s rewritten for the new directory.
+    pub after: String,
+}
+
+/// One file that stayed put but had its `INCLUDE`s rewritten.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Touched {
+    pub path: String,
+    pub before: String,
+    pub after: String,
 }
 
 /// How many operations back the Binder can go.
@@ -659,17 +680,21 @@ impl Project {
                 }
                 self.delete_file(path, cx)
             }
-            FileOp::Renamed { from, to } => {
-                if self.is_dirty(to) {
-                    anyhow::bail!("{to} has unsaved edits — save or revert it first");
-                }
-                self.rename_file(to, from, cx)
-            }
-            FileOp::RenamedFolder { from, to } => {
-                if let Some(dirty) = self.files_under(to).into_iter().find(|f| self.is_dirty(f)) {
-                    anyhow::bail!("{dirty} has unsaved edits — save or revert it first");
-                }
-                self.rename_folder(to, from, cx).map(|_| ())
+            FileOp::Moved {
+                files,
+                folder,
+                touched,
+                ..
+            } => {
+                // Nothing pushes an inverse for a move: it is put back
+                // here, directly, from what the move recorded.
+                return match self.unmove(files, folder.as_ref(), touched, cx) {
+                    Ok(()) => Ok(done),
+                    Err(err) => {
+                        self.remember(op);
+                        Err(err)
+                    }
+                };
             }
             FileOp::Deleted { path, text } => self.create_file(path, text, cx),
         };
@@ -689,24 +714,16 @@ impl Project {
         }
     }
 
-    /// Move `from` to `to`, on disk and in the session.
-    ///
-    /// The text that moves is the text the EDITORS hold, not what is on
-    /// disk: renaming a file with unsaved work must not throw that work
-    /// away, so the move writes the current text to the new path.
-    pub fn rename_file(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<()> {
-        let to = normalise_path(to)?;
-        if from == to {
-            return Ok(());
-        }
-        if !self.sources.contains_key(from) {
-            anyhow::bail!("{from} is not in the project");
-        }
-        if self.sources.contains_key(&to) || self.root.join(&to).exists() {
-            anyhow::bail!("{to} already exists");
-        }
-        let text = self.sources.get(from).cloned().unwrap_or_default();
-        let target = self.root.join(&to);
+    /// Move `from` to `to`, on disk and in the session, writing `text`
+    /// there. Records no undo: the operation that calls it does.
+    fn relocate(
+        &mut self,
+        from: &str,
+        to: &str,
+        text: String,
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        let target = self.root.join(to);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)?;
         }
@@ -715,10 +732,10 @@ impl Project {
         let _ = std::fs::remove_file(self.root.join(from));
         self.sources.remove(from);
         self.saved.remove(from);
-        self.sources.insert(to.clone(), text.clone());
-        self.saved.insert(to.clone(), text.clone());
+        self.sources.insert(to.to_owned(), text.clone());
+        self.saved.insert(to.to_owned(), text.clone());
         self.files.retain(|f| f != from);
-        self.files.push(to.clone());
+        self.files.push(to.to_owned());
         self.files.sort();
         if self.entry.as_deref() == Some(from) {
             // The config still names the old path; the analysis will say
@@ -727,21 +744,186 @@ impl Project {
         }
         // The arrangement follows the file, so a move does not shuffle
         // the manuscript back to its fallback order.
-        self.binder_order = binder_order::rekey(&self.binder_order, from, &to);
+        self.binder_order = binder_order::rekey(&self.binder_order, from, to);
         self.write_binder_order(cx);
         self.worker.send(Request::RemoveFile {
             path: from.to_owned(),
         });
         self.worker.send(Request::AddFile {
-            path: to.clone(),
+            path: to.to_owned(),
             text,
-        });
-        self.remember(FileOp::Renamed {
-            from: from.to_owned(),
-            to,
         });
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
+        Ok(())
+    }
+
+    /// Apply a move the worker planned (#3656): relocate its files with
+    /// their rewritten text, and rewrite the `INCLUDE`s in the files that
+    /// stay put. `folder` is `(from, to)` for a folder move — its other
+    /// files (anything the analysis does not hold) and its arrangement go
+    /// with it.
+    ///
+    /// The relocation is on disk at once, as every file operation is. So
+    /// is a rewritten includer that had no unsaved edits — otherwise the
+    /// disk would point at a path that no longer exists; one that DID
+    /// have unsaved edits is left unsaved, since saving it would save the
+    /// author's work for them. Returns how many files it changed.
+    pub fn apply_move(
+        &mut self,
+        plan: &brink_gpui_model::query::MovePlan,
+        folder: Option<(&str, &str)>,
+        cx: &mut Context<Self>,
+    ) -> Result<usize> {
+        let mut moves: Vec<(String, String, Option<String>)> = plan
+            .moved
+            .iter()
+            .map(|m| {
+                (
+                    m.from.clone(),
+                    normalise_path(&m.to).unwrap_or_default(),
+                    Some(m.text.clone()),
+                )
+            })
+            .collect();
+        if let Some((from, to)) = folder {
+            let to = normalise_path(to.trim_end_matches('/'))?;
+            if to.starts_with(&format!("{}/", from.trim_end_matches('/'))) {
+                anyhow::bail!("{from}/ cannot move inside itself");
+            }
+            for f in self.files_under(from) {
+                if moves.iter().all(|(a, _, _)| *a != f) {
+                    let rest = f[from.trim_end_matches('/').len() + 1..].to_owned();
+                    moves.push((f, format!("{to}/{rest}"), None));
+                }
+            }
+        }
+        if moves.is_empty() {
+            anyhow::bail!("there is nothing there to move");
+        }
+        for (from, to, _) in &moves {
+            if to.is_empty() {
+                anyhow::bail!("{from} has nowhere to go");
+            }
+            if !self.sources.contains_key(from) {
+                anyhow::bail!("{from} is not in the project");
+            }
+            let moving_away = moves.iter().any(|(a, _, _)| a == to);
+            if !moving_away && (self.sources.contains_key(to) || self.root.join(to).exists()) {
+                anyhow::bail!("{to} already exists");
+            }
+        }
+        let mut files = Vec::new();
+        for (from, to, text) in moves {
+            let before = self.sources.get(&from).cloned().unwrap_or_default();
+            let after = text.unwrap_or_else(|| before.clone());
+            self.relocate(&from, &to, after.clone(), cx)?;
+            files.push(Relocated {
+                from,
+                to,
+                before,
+                after,
+            });
+        }
+        let folder = folder.map(|(from, to)| {
+            let (from, to) = (from.trim_end_matches('/'), to.trim_end_matches('/'));
+            // Empty sub-folders and the arrangement follow it; the old
+            // directory goes if nothing else is in it.
+            self.binder_order =
+                binder_order::rekey(&self.binder_order, &format!("{from}/"), &format!("{to}/"));
+            self.write_binder_order(cx);
+            let _ = std::fs::remove_dir(self.root.join(from));
+            (from.to_owned(), to.to_owned())
+        });
+        // The includers that stay put.
+        let mut paths: Vec<&str> = plan.edits.iter().map(|e| e.path.as_str()).collect();
+        paths.sort_unstable();
+        paths.dedup();
+        let before: Vec<(String, String, bool)> = paths
+            .iter()
+            .filter_map(|p| {
+                Some((
+                    (*p).to_owned(),
+                    self.sources.get(*p)?.clone(),
+                    self.is_dirty(p),
+                ))
+            })
+            .collect();
+        self.apply_edits(&plan.edits, cx);
+        let clean: Vec<String> = before
+            .iter()
+            .filter(|(_, _, dirty)| !dirty)
+            .map(|(p, _, _)| p.clone())
+            .collect();
+        self.save_paths(&clean, cx);
+        let touched: Vec<Touched> = before
+            .into_iter()
+            .filter_map(|(path, before, _)| {
+                let after = self.sources.get(&path)?.clone();
+                (after != before).then_some(Touched {
+                    path,
+                    before,
+                    after,
+                })
+            })
+            .collect();
+        let changed = files.len() + touched.len();
+        let what = match (&folder, files.as_slice()) {
+            (Some((from, to)), _) => format!("{from}/ to {to}/"),
+            (None, [only]) => format!("{} to {}", only.from, only.to),
+            (None, _) => format!("{} files", files.len()),
+        };
+        self.remember(FileOp::Moved {
+            what,
+            files,
+            folder,
+            touched,
+        });
+        Ok(changed)
+    }
+
+    /// Put a move back, from what it recorded — refused, before anything
+    /// changes, if any file it wrote has changed since: putting the old
+    /// text back over newer work would lose it.
+    fn unmove(
+        &mut self,
+        files: &[Relocated],
+        folder: Option<&(String, String)>,
+        touched: &[Touched],
+        cx: &mut Context<Self>,
+    ) -> Result<()> {
+        for f in files {
+            if self.sources.get(&f.to) != Some(&f.after) || self.is_dirty(&f.to) {
+                anyhow::bail!("{} has changed since the move — undo would lose that", f.to);
+            }
+            if self.sources.contains_key(&f.from) || self.root.join(&f.from).exists() {
+                anyhow::bail!("{} is taken again", f.from);
+            }
+        }
+        for t in touched {
+            if self.sources.get(&t.path) != Some(&t.after) {
+                anyhow::bail!(
+                    "{} has changed since the move — undo would lose that",
+                    t.path
+                );
+            }
+        }
+        for f in files.iter().rev() {
+            self.relocate(&f.to, &f.from, f.before.clone(), cx)?;
+        }
+        if let Some((from, to)) = folder {
+            self.binder_order =
+                binder_order::rekey(&self.binder_order, &format!("{to}/"), &format!("{from}/"));
+            self.write_binder_order(cx);
+            let _ = std::fs::remove_dir(self.root.join(to));
+        }
+        for t in touched {
+            let was_saved = !self.is_dirty(&t.path);
+            self.edit(&t.path, t.before.clone(), None, cx);
+            if was_saved {
+                self.save_paths(std::slice::from_ref(&t.path), cx);
+            }
+        }
         Ok(())
     }
 
@@ -776,51 +958,6 @@ impl Project {
         cx.emit(ProjectEvent::FilesChanged);
         cx.notify();
         Ok(())
-    }
-
-    /// Move folder `from` to `to` (neither with a trailing slash), every
-    /// file under it with it — one operation, undone as one. Returns how
-    /// many files moved. Refused before anything moves if any destination
-    /// is taken.
-    pub fn rename_folder(&mut self, from: &str, to: &str, cx: &mut Context<Self>) -> Result<usize> {
-        let from = from.trim_end_matches('/').to_owned();
-        let to = normalise_path(to.trim_end_matches('/'))?;
-        if from == to {
-            return Ok(0);
-        }
-        if to.starts_with(&format!("{from}/")) {
-            anyhow::bail!("{from}/ cannot move inside itself");
-        }
-        let moves: Vec<(String, String)> = self
-            .files_under(&from)
-            .into_iter()
-            .map(|f| {
-                let rest = f[from.len() + 1..].to_owned();
-                (f, format!("{to}/{rest}"))
-            })
-            .collect();
-        if moves.is_empty() {
-            anyhow::bail!("{from}/ has no files to move");
-        }
-        if let Some((_, taken)) = moves
-            .iter()
-            .find(|(_, t)| self.sources.contains_key(t) || self.root.join(t).exists())
-        {
-            anyhow::bail!("{taken} already exists");
-        }
-        for (a, b) in &moves {
-            self.rename_file(a, b, cx)?;
-            // One undo for the whole folder, not one per file.
-            self.file_ops.pop();
-        }
-        // The arrangement and any empty sub-folders follow it; the old
-        // directory goes if nothing else is in it.
-        self.binder_order =
-            binder_order::rekey(&self.binder_order, &format!("{from}/"), &format!("{to}/"));
-        self.write_binder_order(cx);
-        let _ = std::fs::remove_dir(self.root.join(&from));
-        self.remember(FileOp::RenamedFolder { from, to });
-        Ok(moves.len())
     }
 
     /// Delete `path` from the project and from disk.

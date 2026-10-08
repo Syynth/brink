@@ -5835,3 +5835,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Every context menu in the native studio matches the web studio's items, order, and disabled states. Each kind of menu has one builder shared by every surface that opens it: the knot/stitch menu serves the Binder (right-click and ⋯), Write's Structure column, and Story Graph nodes; the file/folder menu serves the Binder and the manuscript's file header. Native-only extras (New Stitch…, Write's Go to) stay. Where a web item needs a capability the native side does not have, an issue is filed instead of showing an item that does nothing. The work goes in this order: symbol and file menus, the editor's text menu, the Problems menu, then "Break on write" on State view globals.
 - **WHY:** The inventory found the native menus had drifted per surface. Binder's "Open" did nothing, its ⋯ menu disagreed with its right-click menu, New File on a folder targeted the folder's parent, and functions and library files were offered moves that cannot apply to them. One builder per menu makes that drift impossible, and the web studio is the reference for what an author expects to find.
+
+## Native file and folder moves rewrite INCLUDEs, safe-by-default
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** Renaming or moving a file or folder in the native studio rewrites the `INCLUDE`s the move affects: the ones in other files that point at what moved, and the moved files' own relative ones. Folder moves compute every rewrite against one pre-move snapshot. The edits come from `brink_ide::file_rename` and `brink_ide::dir_rename`, as the web studio's do. A move that would still introduce diagnostics shows the breakage report with "Move anyway". `brink.toml`'s `entry` is still not rewritten. This reverses the earlier native rule that moves left `INCLUDE`s alone for the analysis to report (#3656).
+- **WHY:** The menus now match the web, so Rename… and Rename folder… looked the same on both surfaces. On native, though, they silently broke every story that included the moved files. Web parity for the native studio means the same outcome for the author, not just the same menu item.

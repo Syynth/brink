@@ -10,11 +10,14 @@
 //! next `INCLUDE` cannot find, and nothing on screen would say why.
 //!
 //! **Renaming a FILE is not renaming a knot.** `f2` is the cross-file,
-//! safe-by-default rename; this moves a path. A file's own name appears
-//! in `INCLUDE` lines and in `brink.toml`'s `entry`, and moving it does
-//! NOT rewrite those — the analysis reports the break, in the same place
-//! it reports every other unresolved path, rather than this quietly
-//! rewriting text the author did not ask it to touch.
+//! safe-by-default rename; this moves a path. A move rewrites the
+//! `INCLUDE`s it affects — the ones pointing at what moved, and the moved
+//! files' own relative ones — as the web studio's does (#3656, reversing
+//! the earlier native rule that left them for the analysis to report).
+//! It is safe-by-default like every structural change: a move that would
+//! still break something shows what, with "Move anyway". `brink.toml`'s
+//! `entry` is NOT rewritten — which file the story starts from is the
+//! author's to decide, and the analysis says when it names nothing.
 
 use std::rc::Rc;
 
@@ -24,6 +27,8 @@ use gpui_component::WindowExt as _;
 use gpui_component::button::ButtonVariant;
 use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::{Input, InputEvent, InputState};
+
+use brink_gpui_model::query::{MoveOutcome, MovePlan, QueryKind, QueryResult};
 
 use crate::project::Project;
 use brink_gpui_shell::notify::{Severity, notify};
@@ -147,20 +152,7 @@ pub fn rename_folder(project: Entity<Project>, folder: String, window: &mut Wind
             if to.is_empty() || to == from {
                 return;
             }
-            let moved = project.update(cx, |project, cx| project.rename_folder(&from, &to, cx));
-            match moved {
-                Ok(n) => notify(
-                    Severity::Success,
-                    "files",
-                    format!(
-                        "Moved {from}/ to {to}/ ({n} file{}).",
-                        if n == 1 { "" } else { "s" }
-                    ),
-                    window,
-                    cx,
-                ),
-                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
-            }
+            move_path(project.clone(), from.clone(), to, true, window, cx);
         }
     });
     prompt(
@@ -204,17 +196,7 @@ pub fn rename_file(project: Entity<Project>, path: String, window: &mut Window, 
                 return;
             }
             let to = with_ink_suffix(&to);
-            let moved = project.update(cx, |project, cx| project.rename_file(&from, &to, cx));
-            match moved {
-                Ok(()) => notify(
-                    Severity::Success,
-                    "files",
-                    format!("Moved {from} to {to}."),
-                    window,
-                    cx,
-                ),
-                Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
-            }
+            move_path(project.clone(), from.clone(), to, false, window, cx);
         }
     });
     prompt(
@@ -225,6 +207,116 @@ pub fn rename_file(project: Entity<Project>, path: String, window: &mut Window, 
         window,
         cx,
     );
+}
+
+/// Move a file, or a folder, `INCLUDE`s and all (#3656): the worker plans
+/// it — the moved files' new text, the rewrites in the files that include
+/// them, what it would break — and a safe plan applies; one that would
+/// break something shows what, with "Move anyway".
+pub(crate) fn move_path(
+    project: Entity<Project>,
+    from: String,
+    to: String,
+    folder: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let kind = if folder {
+        QueryKind::MoveFolder {
+            from: from.clone(),
+            to: to.clone(),
+        }
+    } else {
+        QueryKind::MoveFile {
+            from: from.clone(),
+            to: to.clone(),
+        }
+    };
+    let query = project.read(cx).query(kind, cx);
+    let handle = window.window_handle();
+    cx.spawn(async move |cx| {
+        let outcome = query.await;
+        let _ = handle.update(cx, move |_, window, cx| match outcome {
+            Ok(QueryResult::Move(MoveOutcome::Plan(plan))) => {
+                let span = folder.then_some((from, to));
+                if plan.is_safe() {
+                    apply_move(&project, &plan, span.as_ref(), window, cx);
+                } else {
+                    let title = format!(
+                        "{} would break {} place{}",
+                        plan.summary,
+                        plan.introduced.len(),
+                        if plan.introduced.len() == 1 { "" } else { "s" }
+                    );
+                    let introduced = plan.introduced.clone();
+                    let plan = Rc::new(*plan);
+                    crate::structural::breakage_report(
+                        title,
+                        introduced,
+                        Rc::new(move |window, cx| {
+                            apply_move(&project, &plan, span.as_ref(), window, cx);
+                        }),
+                        window,
+                        cx,
+                    );
+                }
+            }
+            Ok(QueryResult::Move(MoveOutcome::Refused(why))) => {
+                notify(Severity::Error, "files", why, window, cx);
+            }
+            _ => notify(
+                Severity::Error,
+                "files",
+                "That move could not be computed.",
+                window,
+                cx,
+            ),
+        });
+    })
+    .detach();
+}
+
+fn apply_move(
+    project: &Entity<Project>,
+    plan: &MovePlan,
+    folder: Option<&(String, String)>,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let folder = folder.map(|(a, b)| (a.as_str(), b.as_str()));
+    let applied = project.update(cx, |project, cx| project.apply_move(plan, folder, cx));
+    match applied {
+        Ok(_) => {
+            let rewrote = plan.edits.len();
+            let tail = match rewrote {
+                0 => String::new(),
+                1 => " — 1 INCLUDE rewritten".to_owned(),
+                n => format!(" — {n} INCLUDEs rewritten"),
+            };
+            notify(
+                Severity::Success,
+                "files",
+                format!("{}{tail}.", plan.summary),
+                window,
+                cx,
+            );
+            // Force never hides what it broke.
+            if !plan.introduced.is_empty() {
+                let n = plan.introduced.len();
+                notify(
+                    Severity::Warning,
+                    "files",
+                    format!(
+                        "That move introduced {n} diagnostic{} — see Problems.",
+                        if n == 1 { "" } else { "s" }
+                    ),
+                    window,
+                    cx,
+                );
+            }
+        }
+        Err(err) => notify(Severity::Error, "files", format!("{err}"), window, cx),
+    }
 }
 
 /// Confirm, then delete every path in `paths` from the project and from

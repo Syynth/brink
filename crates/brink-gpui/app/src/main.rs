@@ -4648,45 +4648,64 @@ mod modes_driven {
     }
 
     /// The folder menu's operations: a new folder exists on disk and in
-    /// the sidecar; a folder rename moves every file in it; and one undo
-    /// moves them all back.
+    /// the sidecar; a folder move takes every file in it and rewrites the
+    /// `INCLUDE`s that pointed into it (#3656); and one undo puts the
+    /// paths and the text back.
     #[test]
-    fn a_folder_is_made_renamed_and_put_back() {
+    fn a_folder_is_made_moved_with_its_includes_and_put_back() {
         let dir = scratch_dir("folders");
         std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
             .expect("writing the config");
-        std::fs::write(
-            dir.join("story.ink"),
-            "INCLUDE acts/one.ink\nINCLUDE acts/two.ink\n-> one\n",
-        )
-        .expect("writing the story");
+        let story = "INCLUDE acts/one.ink\nINCLUDE acts/two.ink\n-> one\n";
+        std::fs::write(dir.join("story.ink"), story).expect("writing the story");
         std::fs::create_dir_all(dir.join("acts")).expect("the folder");
-        std::fs::write(dir.join("acts/one.ink"), "=== one ===\nOne.\n-> two\n")
-            .expect("writing one");
+        std::fs::write(
+            dir.join("acts/one.ink"),
+            "INCLUDE two.ink\n=== one ===\nOne.\n-> two\n",
+        )
+        .expect("writing one");
         std::fs::write(dir.join("acts/two.ink"), "=== two ===\nTwo.\n-> END\n")
             .expect("writing two");
         let mut h = Harness::new();
         let window = h.open(&dir);
         let studio = h.studio(window).expect("open");
         let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
 
         let made = h.update(|cx| project.update(cx, |p, cx| p.create_folder("acts/drafts", cx)));
         assert!(made.is_ok(), "{made:?}");
         assert!(dir.join("acts/drafts").is_dir(), "made on disk");
-        assert!(
-            h.read(|cx| project.read(cx).binder_order().folders.clone())
-                .contains(&"acts/drafts/".to_owned()),
-            "and recorded, so the Binder shows it empty"
-        );
 
-        let moved = h.update(|cx| project.update(cx, |p, cx| p.rename_folder("acts", "parts", cx)));
-        assert_eq!(moved.ok(), Some(2), "both files moved");
+        h.app_window(window, |window, cx| {
+            crate::files::move_path(
+                project.clone(),
+                "acts".to_owned(),
+                "parts".to_owned(),
+                true,
+                window,
+                cx,
+            );
+        });
+        let moved = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .files()
+                    .contains(&"parts/one.ink".to_owned())
+            })
+        });
+        assert!(moved, "the folder never moved");
         let files = h.read(|cx| project.read(cx).files().to_vec());
         assert!(
-            files.contains(&"parts/one.ink".to_owned())
-                && files.contains(&"parts/two.ink".to_owned())
+            files.contains(&"parts/two.ink".to_owned())
                 && !files.iter().any(|f| f.starts_with("acts/")),
             "{files:?}"
+        );
+        let written = std::fs::read_to_string(dir.join("story.ink")).expect("story on disk");
+        assert_eq!(
+            written, "INCLUDE parts/one.ink\nINCLUDE parts/two.ink\n-> one\n",
+            "the includer is rewritten, and saved — it had no unsaved edits"
         );
         assert!(
             h.read(|cx| project.read(cx).binder_order().folders.clone())
@@ -4703,6 +4722,78 @@ mod modes_driven {
                 && !files.iter().any(|f| f.starts_with("parts/")),
             "one undo put the whole folder back: {files:?}"
         );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("story.ink")).expect("story on disk"),
+            story,
+            "and the includes with it"
+        );
+    }
+
+    /// A file move re-points what includes it. An includer with unsaved
+    /// edits is rewritten but left unsaved: saving it would save the
+    /// author's work for them.
+    #[test]
+    fn a_file_move_rewrites_what_includes_it() {
+        let dir = scratch_dir("file-move");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(dir.join("story.ink"), "INCLUDE two.ink\n-> two\n")
+            .expect("writing the story");
+        std::fs::write(dir.join("two.ink"), "=== two ===\nTwo.\n-> END\n").expect("writing two");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        // Unsaved work in the includer.
+        h.update(|cx| {
+            project.update(cx, |p, cx| {
+                p.edit(
+                    "story.ink",
+                    "INCLUDE two.ink\n-> two\n// note\n".to_owned(),
+                    None,
+                    cx,
+                );
+            });
+        });
+
+        h.app_window(window, |window, cx| {
+            crate::files::move_path(
+                project.clone(),
+                "two.ink".to_owned(),
+                "chapters/two.ink".to_owned(),
+                false,
+                window,
+                cx,
+            );
+        });
+        let moved = h.settle_until(PINS_WAIT, |h| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .files()
+                    .contains(&"chapters/two.ink".to_owned())
+            })
+        });
+        assert!(moved, "the file never moved");
+        assert_eq!(
+            h.read(|cx| project
+                .read(cx)
+                .loaded_source("story.ink")
+                .map(str::to_owned)),
+            Some("INCLUDE chapters/two.ink\n-> two\n// note\n".to_owned())
+        );
+        assert!(
+            h.read(|cx| project.read(cx).is_dirty("story.ink")),
+            "still unsaved"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("story.ink")).expect("story on disk"),
+            "INCLUDE two.ink\n-> two\n",
+            "the author's unsaved work was not saved for them"
+        );
+        assert!(!dir.join("two.ink").exists(), "gone from its old path");
     }
 
     /// The symbol menu's moves, run the way a click on one runs them:

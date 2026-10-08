@@ -217,13 +217,34 @@ fn apply(project: &Entity<Project>, plan: &StructuralPlan, window: &mut Window, 
 
 /// The breakage report, with Force inside it.
 fn report(project: Entity<Project>, plan: StructuralPlan, window: &mut Window, cx: &mut App) {
-    let plan = Rc::new(plan);
     let title = format!(
         "{} would break {} place{}",
         plan.summary,
         plan.introduced.len(),
         if plan.introduced.len() == 1 { "" } else { "s" }
     );
+    let introduced = plan.introduced.clone();
+    let plan = Rc::new(plan);
+    breakage_report(
+        title,
+        introduced,
+        Rc::new(move |window, cx| apply(&project, &plan, window, cx)),
+        window,
+        cx,
+    );
+}
+
+/// What a move would break, listed, with one button — "Move anyway" —
+/// that runs `force`. Shared by the structural moves and the file and
+/// folder moves, which gate the same way.
+pub(crate) fn breakage_report(
+    title: String,
+    introduced: Vec<brink_gpui_model::query::Introduced>,
+    force: crate::files::Confirm,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let introduced = Rc::new(introduced);
     window.open_dialog(cx, move |dialog, _window, cx| {
         let theme = cx.theme();
         let (muted, danger, warning, fg) = (
@@ -232,16 +253,14 @@ fn report(project: Entity<Project>, plan: StructuralPlan, window: &mut Window, c
             theme.warning,
             theme.foreground,
         );
-        let plan_for_content = plan.clone();
-        let plan_for_ok = plan.clone();
-        let project = project.clone();
+        let introduced = introduced.clone();
+        let force = force.clone();
         dialog
             .title(SharedString::from(title.clone()))
             .w(px(560.))
             .content(move |content, _window, _cx| {
-                let plan = plan_for_content.clone();
                 let mut body = v_flex().gap_1().text_xs();
-                for d in &plan.introduced {
+                for d in introduced.iter() {
                     let colour = match d.severity {
                         brink_ir::Severity::Error => danger,
                         brink_ir::Severity::Warning => warning,
@@ -268,7 +287,7 @@ fn report(project: Entity<Project>, plan: StructuralPlan, window: &mut Window, c
                     .show_cancel(true),
             )
             .on_ok(move |_, window, cx| {
-                apply(&project, &plan_for_ok, window, cx);
+                force(window, cx);
                 true
             })
     });
