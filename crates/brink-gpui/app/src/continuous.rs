@@ -478,11 +478,13 @@ impl ContinuousView {
 
     /// How many rows will pin above `offset` once it is near the top of
     /// the view: the file's own row, and one for each block it is inside
-    /// that opened on an earlier line — as many as can pin when the scopes
-    /// have not arrived.
+    /// that opened on an earlier line — a knot, a stitch and a block when
+    /// the scopes have not arrived.
     fn pinned_rows_at(&self, path: &str, text: &str, offset: usize) -> usize {
+        // Before the scopes arrive: room for a knot, a stitch and a block,
+        // not the whole cap, or a first jump lands half a screen down.
         let Some(scopes) = self.outlines.get(path) else {
-            return 1 + crate::sticky_lines::MAX_SCOPE_ROWS;
+            return 1 + 3;
         };
         1 + crate::sticky_lines::rows_over(scopes, text, offset)
     }

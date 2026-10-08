@@ -51,7 +51,7 @@ impl PinKind {
 
 /// The most scope rows that pin (the file's row aside): the outermost win,
 /// as the blocks you are deepest in matter least for where you are.
-pub(crate) const MAX_SCOPE_ROWS: usize = 5;
+pub(crate) const MAX_SCOPE_ROWS: usize = 10;
 
 /// One pinned row.
 #[derive(Debug, Clone, PartialEq, Eq)]
