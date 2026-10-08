@@ -124,8 +124,9 @@ pub(crate) fn pushes(
 /// and opened above it — or, failing that, the one the line a row up is
 /// still inside, which the next opening line then pushes out of the way
 /// rather than replacing outright. Only blocks of more than one line pin,
-/// and never two on the same line (a conditional and the first branch
-/// written on its brace line).
+/// never two on the same line (a conditional and the first branch written
+/// on its brace line), and never a conditional or sequence's bare `{` line
+/// (see [`says_something`]).
 pub(crate) fn pinned_at(scopes: &[Scope], text: &str, rows: &[usize]) -> Vec<PinnedLine> {
     let line_of = |at: usize| line_start(text, at.min(text.len()));
     let spans_lines = |s: &Scope| {
@@ -143,6 +144,7 @@ pub(crate) fn pinned_at(scopes: &[Scope], text: &str, rows: &[usize]) -> Vec<Pin
                     parent.is_none_or(|p| *s != p && p.start <= s.start && s.end <= p.end)
                         && !pinned.iter().any(|pin| pin.offset == opens)
                         && spans_lines(s)
+                        && says_something(text, s)
                         && (s.start as usize) <= at
                         && at < s.end as usize
                         && opens < at
@@ -159,14 +161,31 @@ pub(crate) fn pinned_at(scopes: &[Scope], text: &str, rows: &[usize]) -> Vec<Pin
     pinned
 }
 
+/// Whether a block's opening line is worth a pinned row. A conditional's
+/// or sequence's opening line pins only if something is left on it once
+/// the `{` is taken away: a condition (`{ x > 1:`), a switch's subject
+/// (`{ visits:`) or a sequence's kind (`{ stopping:`, `{&`) says what the
+/// branches below it are; a bare `{` says nothing its branches don't, and
+/// would only take a row (maintainer, 2026-10-08). Every other block's
+/// line says what it is.
+fn says_something(text: &str, scope: &Scope) -> bool {
+    if !matches!(scope.kind, ScopeKind::Conditional | ScopeKind::Sequence) {
+        return true;
+    }
+    let start = line_start(text, scope.start as usize);
+    let line = text[start..].lines().next().unwrap_or_default().trim();
+    !line.strip_prefix('{').unwrap_or(line).trim().is_empty()
+}
+
 /// How many rows will pin over `offset` once it is near the top: one per
-/// block it is inside that opened on an earlier line, one per line at most,
-/// up to [`MAX_SCOPE_ROWS`].
+/// block it is inside that opened on an earlier line and says something
+/// there, one per line at most, up to [`MAX_SCOPE_ROWS`].
 pub(crate) fn rows_over(scopes: &[Scope], text: &str, offset: usize) -> usize {
     let line = line_start(text, offset.min(text.len()));
     let mut lines: Vec<usize> = scopes
         .iter()
         .filter(|s| (s.start as usize) <= offset && offset < s.end as usize)
+        .filter(|s| says_something(text, s))
         .map(|s| line_start(text, s.start as usize))
         .filter(|opens| *opens < line)
         .collect();
@@ -651,9 +670,10 @@ mod tests {
     }
 
     #[test]
-    fn choices_conditionals_and_branches_pin_inside_their_stitch() {
-        // Deep in the `- here:` branch: knot, stitch, choice, conditional,
-        // branch — each judged a row lower than the last.
+    fn choices_and_branches_pin_inside_their_stitch() {
+        // Deep in the `- here:` branch: knot, stitch, choice, branch — each
+        // judged a row lower than the last. The conditional's bare `{` says
+        // nothing the branch doesn't, so it takes no row.
         let rows = [
             at("Dark."),
             at("{"),
@@ -664,7 +684,7 @@ mod tests {
         let pinned = pinned_at(&scopes(), TEXT, &rows);
         assert_eq!(
             texts(&pinned),
-            ["=== start ===", "= second", "* [Hide]", "{", "- here:"]
+            ["=== start ===", "= second", "* [Hide]", "- here:"]
         );
         assert_eq!(
             pinned.iter().map(|p| p.kind).collect::<Vec<_>>(),
@@ -672,7 +692,6 @@ mod tests {
                 PinKind::Knot,
                 PinKind::Stitch,
                 PinKind::Choice,
-                PinKind::Block,
                 PinKind::Branch
             ]
         );
@@ -683,7 +702,63 @@ mod tests {
         let rows = [at("Dark."), at("{"), at("- else:"), at("Far."), TEXT.len()];
         let pinned = pinned_at(&scopes(), TEXT, &rows);
         assert_eq!(pinned.last().map(|p| p.text.trim()), Some("- else:"));
-        assert_eq!(pinned.len(), 5);
+        assert_eq!(pinned.len(), 4);
+    }
+
+    #[test]
+    fn a_brace_line_that_says_something_pins() {
+        // A condition on the brace line pins it: in the else, it says what
+        // the else is the else of.
+        let text = "=== k ===\n\
+                    { x > 1:\n\
+                    \x20 Big.\n\
+                    - else:\n\
+                    \x20 Small.\n\
+                    \x20 Smaller.\n\
+                    }\n";
+        let find = |s: &str| text.find(s).expect("line");
+        let scope = |kind, opens: &str, ends: &str| Scope {
+            kind,
+            start: u32::try_from(find(opens)).expect("fits"),
+            end: u32::try_from(find(ends)).expect("fits"),
+        };
+        let scopes = [
+            Scope {
+                kind: ScopeKind::Knot,
+                start: 0,
+                end: u32::try_from(text.len()).expect("fits"),
+            },
+            scope(ScopeKind::Conditional, "{ x", "}"),
+            scope(ScopeKind::Branch, "{ x", "- else"),
+            scope(ScopeKind::Branch, "- else", "}"),
+        ];
+        let rows = [
+            find("Big."),
+            find("- else"),
+            find("Small."),
+            find("Smaller."),
+        ];
+        let pinned = pinned_at(&scopes, text, &rows);
+        let texts: Vec<_> = pinned.iter().map(|p| p.text.trim()).collect();
+        assert_eq!(texts, ["=== k ===", "{ x > 1:", "- else:"]);
+        // A switch's subject or a sequence's kind says something too; a
+        // bare brace does not.
+        for (line, says) in [
+            ("{", false),
+            ("  {  ", false),
+            ("{ x > 1:", true),
+            ("{ visits:", true),
+            ("{ stopping:", true),
+            ("{&", true),
+        ] {
+            let text = format!("{line}\n- a\n- b\n}}\n");
+            let block = Scope {
+                kind: ScopeKind::Sequence,
+                start: 0,
+                end: u32::try_from(text.len()).expect("fits"),
+            };
+            assert_eq!(says_something(&text, &block), says, "{line:?}");
+        }
     }
 
     #[test]
@@ -697,7 +772,8 @@ mod tests {
     #[test]
     fn the_rows_over_a_line_count_the_blocks_it_is_inside() {
         assert_eq!(rows_over(&scopes(), TEXT, at("Lamp.")), 1);
-        assert_eq!(rows_over(&scopes(), TEXT, at("Nearer.")), 5);
+        // Knot, stitch, choice and branch: the bare `{` takes no row.
+        assert_eq!(rows_over(&scopes(), TEXT, at("Nearer.")), 4);
         assert_eq!(rows_over(&scopes(), TEXT, at("=== start")), 0);
     }
 

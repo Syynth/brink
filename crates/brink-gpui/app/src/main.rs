@@ -4161,7 +4161,8 @@ mod modes_driven {
     }
 
     /// Inside a choice, inside a conditional's branch: each block pins,
-    /// knot first, under the file's row.
+    /// knot first, under the file's row — all but the conditional's bare
+    /// `{`, which says nothing its branch doesn't.
     #[test]
     fn choices_and_conditional_branches_pin_too() {
         let mut h = Harness::new();
@@ -4190,12 +4191,13 @@ mod modes_driven {
             h.capture(window);
             h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
         };
-        let found = h.settle_until(PINS_WAIT, |h| pinned(h).len() == 5);
+        let found = h.settle_until(PINS_WAIT, |h| pinned(h).len() == 4);
         assert!(found, "pinned: {:?}", pinned(&mut h));
         let texts: Vec<String> = pinned(&mut h).iter().map(|t| t.trim().to_owned()).collect();
         assert_eq!(
             texts,
-            ["story.ink", "=== start ===", "* [Hide]", "{", "- x > 1:"]
+            // The conditional's bare `{` takes no row: its branch says it.
+            ["story.ink", "=== start ===", "* [Hide]", "- x > 1:"]
         );
         // Each line in the editor's own colours, not one per kind.
         assert!(h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_lines_highlighted(cx))));
