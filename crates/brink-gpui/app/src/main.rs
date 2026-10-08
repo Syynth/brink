@@ -2700,6 +2700,13 @@ impl Render for Studio {
                     }
                 }),
             )
+            .on_action(
+                cx.listener(|this, action: &editor_menu::ToggleWatch, _, cx| {
+                    this.project.update(cx, |project, cx| {
+                        project.toggle_watch(&action.name, cx);
+                    });
+                }),
+            )
             .on_action(cx.listener(|this, _: &editor_menu::ShowTodos, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.open_tool_window("todos", window, cx);
@@ -4817,6 +4824,41 @@ mod modes_driven {
             config.contains("[lints]") && config.contains("E027 = \"allow\""),
             "{config}"
         );
+    }
+
+    /// Break on write, from the menus' action: the watched global pauses
+    /// Play at its write, as a breakpoint would.
+    #[test]
+    fn a_watched_global_pauses_play_at_its_write() {
+        let dir = scratch_dir("watch");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "VAR gold = 0\n-> shore\n=== shore ===\nThe tide was out.\n~ gold = 5\nThe lamp was lit.\n-> END\n",
+        )
+        .expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (project, player) = h.read(|cx| {
+            let s = studio.read(cx);
+            (s.project.clone(), s.player.clone())
+        });
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+
+        h.dispatch(
+            window,
+            crate::editor_menu::ToggleWatch {
+                name: "gold".to_owned(),
+            },
+        );
+        assert!(h.read(|cx| project.read(cx).is_watched("gold")));
+
+        h.dispatch(window, super::Play);
+        let paused = h.settle_until(PINS_WAIT, |h| h.read(|cx| player.read(cx).is_paused()));
+        assert!(paused, "Play ran past the write to gold");
     }
 
     /// The editor menu's Fold and Unfold reach the editor they were asked

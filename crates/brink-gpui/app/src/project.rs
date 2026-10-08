@@ -184,6 +184,8 @@ pub struct Project {
     /// or code that folded away. Drawn differently, so a mark that can
     /// never hit says so instead of looking armed.
     unbound: BTreeSet<(String, u32)>,
+    /// Globals watched for writes (break on write), by name.
+    watched: BTreeSet<String>,
     warnings: Vec<String>,
     /// Whether any analysis has landed. Distinct from the closure being
     /// non-empty, which stays false whenever `brink.toml` names no entry
@@ -327,6 +329,7 @@ impl Project {
             file_ops: Vec::new(),
             breakpoints: BTreeSet::new(),
             unbound: BTreeSet::new(),
+            watched: BTreeSet::new(),
             warnings: Vec::new(),
             analyzed: false,
             revision: 0,
@@ -1173,6 +1176,29 @@ impl Project {
             true
         };
         self.send_breakpoints(cx);
+        on
+    }
+
+    /// Whether a write to global `name` breaks.
+    #[must_use]
+    pub fn is_watched(&self, name: &str) -> bool {
+        self.watched.contains(name)
+    }
+
+    /// Break on writes to global `name`, or stop doing so; then tell the
+    /// worker, which arms it on the next run. Returns whether it is now
+    /// watched.
+    pub fn toggle_watch(&mut self, name: &str, cx: &mut Context<Self>) -> bool {
+        let on = if self.watched.remove(name) {
+            false
+        } else {
+            self.watched.insert(name.to_owned());
+            true
+        };
+        let names: Vec<String> = self.watched.iter().cloned().collect();
+        self.play(PlayCommand::SetWatchpoints(names), cx).detach();
+        cx.emit(ProjectEvent::BreakpointsChanged);
+        cx.notify();
         on
     }
 

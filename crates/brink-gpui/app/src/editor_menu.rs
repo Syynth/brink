@@ -55,6 +55,14 @@ pub struct OpenFile {
     pub path: String,
 }
 
+/// Break on writes to a global, or stop — the editor menu's and the State
+/// view's "Break on write".
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = editor_menu, no_json)]
+pub struct ToggleWatch {
+    pub name: String,
+}
+
 /// Fold or unfold the region starting on a 0-based line of the focused
 /// editor.
 #[derive(Clone, PartialEq, Debug, gpui::Action)]
@@ -165,6 +173,7 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
         cx,
     );
     let library = site.project.read(cx).is_library(&path);
+    let project = site.project.clone();
     let source = site.editor.read(cx).text().to_string();
     window
         .spawn(cx, async move |cx| {
@@ -201,7 +210,48 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
                 };
                 header_menu(&target, click.breakpoint)
             } else {
-                let definition = matches!(definition.await, Ok(QueryResult::Definition(Some(_))));
+                let definition = match definition.await {
+                    Ok(QueryResult::Definition(found)) => found,
+                    _ => None,
+                };
+                // A global's definition: its file's outline says so. Only
+                // a global can be watched for writes.
+                let global = match &definition {
+                    Some(loc) => {
+                        let outline = cx
+                            .update(|_, cx| {
+                                project.read(cx).query(
+                                    QueryKind::DocumentSymbols {
+                                        path: loc.path.clone(),
+                                    },
+                                    cx,
+                                )
+                            })
+                            .ok();
+                        let found = match outline {
+                            Some(task) => match task.await {
+                                Ok(QueryResult::DocumentSymbols(found)) => found,
+                                _ => Vec::new(),
+                            },
+                            None => Vec::new(),
+                        };
+                        found
+                            .into_iter()
+                            .find(|s| {
+                                matches!(s.kind, SymbolKind::Variable | SymbolKind::List)
+                                    && s.start == loc.start
+                            })
+                            .map(|s| s.name)
+                    }
+                    None => None,
+                };
+                let global = global.map(|name| {
+                    let watched = cx
+                        .update(|_, cx| project.read(cx).is_watched(&name))
+                        .unwrap_or(false);
+                    (name, watched)
+                });
+                let definition = definition.is_some();
                 let rename = match rename.await {
                     Ok(QueryResult::PrepareRename(Some((start, end)))) => {
                         source.get(start as usize..end as usize).map(str::to_owned)
@@ -212,7 +262,7 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
                     Ok(QueryResult::FixesAt(found)) => found,
                     _ => Vec::new(),
                 };
-                text_menu(&click, &fixes, definition, rename.as_deref())
+                text_menu(&click, &fixes, definition, rename.as_deref(), global)
             };
             let menu = native(menu);
             let _ = cx.update(|window, cx| menu.show(position, window, cx));
@@ -330,6 +380,7 @@ fn text_menu(
     fixes: &[FixPlan],
     definition: bool,
     rename: Option<&str>,
+    global: Option<(String, bool)>,
 ) -> Vec<Entry> {
     let mut entries = Vec::new();
     // 1. Fixes first: making the problem go away outranks going elsewhere.
@@ -352,6 +403,15 @@ fn text_menu(
                 format!("Rename '{name}'\u{2026}"),
                 crate::RenameSymbol,
             ));
+        }
+        // The State view's verb, where the global is written about.
+        if let Some((name, watched)) = global {
+            let label = if watched {
+                format!("Remove Break on Write '{name}'")
+            } else {
+                format!("Break on Write '{name}'")
+            };
+            entries.push(item(label, ToggleWatch { name }));
         }
         entries.push(Entry::Separator);
     }
@@ -443,7 +503,13 @@ mod tests {
     #[test]
     fn plain_text_offers_only_the_text_group() {
         assert_eq!(
-            labels(&text_menu(&click("The lamp gutters."), &[], false, None)),
+            labels(&text_menu(
+                &click("The lamp gutters."),
+                &[],
+                false,
+                None,
+                None
+            )),
             [
                 "(Cut)",
                 "(Copy)",
@@ -471,7 +537,13 @@ mod tests {
             caret: None,
         };
         assert_eq!(
-            labels(&text_menu(&c, &[fix], true, Some("gold"))),
+            labels(&text_menu(
+                &c,
+                &[fix],
+                true,
+                Some("gold"),
+                Some(("gold".to_owned(), false))
+            )),
             [
                 "Add the missing knot — Suggested",
                 "Fix all safe in this file",
@@ -479,6 +551,7 @@ mod tests {
                 "Go to Definition",
                 "Find References",
                 "Rename 'gold'…",
+                "Break on Write 'gold'",
                 "─",
                 "Open one.ink",
                 "Fold",
