@@ -93,7 +93,7 @@ pub struct Document {
     signature: crate::signature_help::SignatureHint,
     /// The file's outline, for the pinned structure lines: asked for on
     /// the first frame after each analysis.
-    outline: Option<Vec<brink_gpui_model::query::Symbol>>,
+    outline: Option<Vec<brink_gpui_model::query::Scope>>,
     outline_pending: bool,
     /// What is pinned at the top now, and what is fading out.
     pins: crate::sticky_lines::Pins,
@@ -1758,7 +1758,7 @@ impl Document {
             if !self.outline_pending {
                 self.outline_pending = true;
                 let query = self.project.read(cx).query(
-                    QueryKind::DocumentSymbols {
+                    QueryKind::Scopes {
                         path: self.path.to_string(),
                     },
                     cx,
@@ -1767,7 +1767,7 @@ impl Document {
                     let answer = query.await;
                     let _ = this.update(cx, |this, cx| {
                         this.outline_pending = false;
-                        if let Ok(QueryResult::DocumentSymbols(found)) = answer {
+                        if let Ok(QueryResult::Scopes(found)) = answer {
                             this.outline = Some(found);
                             cx.notify();
                         }

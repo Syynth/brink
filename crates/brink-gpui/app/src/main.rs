@@ -3975,6 +3975,11 @@ mod modes_driven {
         assert!(on_screen(&mut h), "the caret is back in view");
     }
 
+    /// How long a pinned-lines test waits for the worker's scopes: its first
+    /// analysis of a project is seconds in a debug build, more under a
+    /// loaded parallel run. Only a failure waits it out.
+    const PINS_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
     /// A long knot with a long stitch, then another knot: room to scroll
     /// past each header.
     fn long_outline_project() -> std::path::PathBuf {
@@ -4009,7 +4014,7 @@ mod modes_driven {
         h.capture(window);
         // The file's row comes at once; its knot and stitch once the
         // outline lands.
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| pinned(h).len() == 3);
+        let found = h.settle_until(PINS_WAIT, |h| pinned(h).len() == 3);
         assert!(found, "the knot and stitch never pinned");
         assert_eq!(pinned(&mut h), ["story.ink", "=== start ===", "= second"]);
         // Hovered, a pinned row still covers the text under it.
@@ -4042,7 +4047,7 @@ mod modes_driven {
         // below the top, under the two pinned rows.
         let into = 92. + (123. - 1.5) * row;
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(into, cx)));
-        let settled = h.settle_until(std::time::Duration::from_secs(10), |h| {
+        let settled = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
             h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
                 .len()
@@ -4077,7 +4082,7 @@ mod modes_driven {
             .read(|cx| manuscript.read(cx).row_height("story.ink", cx))
             .expect("laid out");
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * row, cx)));
-        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+        let pinned = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
             h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
                 .len()
@@ -4155,6 +4160,48 @@ mod modes_driven {
         );
     }
 
+    /// Inside a choice, inside a conditional's branch: each block pins,
+    /// knot first, under the file's row.
+    #[test]
+    fn choices_and_conditional_branches_pin_too() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("nested");
+        let body: String = (0..40)
+            .map(|i| format!("        Near line {i}.\n"))
+            .collect();
+        let story = format!(
+            "VAR x = 2\n-> start\n=== start ===\nIntro.\n* [Hide]\n    Dark.\n    {{\n    - x > 1:\n{body}    - else:\n        Far.\n    }}\n    -> DONE\n"
+        );
+        std::fs::write(dir.join("story.ink"), &story).expect("writing the story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let row = h
+            .read(|cx| manuscript.read(cx).row_height("story.ink", cx))
+            .expect("laid out");
+        // Line 30 of the branch body at the top.
+        let line = story[..story.find("Near line 30").expect("the line")]
+            .matches('\n')
+            .count();
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + line as f32 * row, cx)));
+        let pinned = |h: &mut Harness| {
+            h.capture(window);
+            h.update(|cx| manuscript.update(cx, |m, cx| m.pinned_texts(cx)))
+        };
+        let found = h.settle_until(PINS_WAIT, |h| pinned(h).len() == 5);
+        assert!(found, "pinned: {:?}", pinned(&mut h));
+        let texts: Vec<String> = pinned(&mut h).iter().map(|t| t.trim().to_owned()).collect();
+        assert_eq!(
+            texts,
+            ["story.ink", "=== start ===", "* [Hide]", "{", "- x > 1:"]
+        );
+        let shot = scratch_dir("shot").join("nested.png");
+        h.screenshot(window, &shot);
+        eprintln!("nested screenshot: {}", shot.display());
+    }
+
     /// Script's editors pin the same lines, from their own scroll.
     #[test]
     fn script_pins_the_knot_and_stitch_lines_too() {
@@ -4180,9 +4227,7 @@ mod modes_driven {
             h.capture(window);
             h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
         };
-        let found = h.settle_until(std::time::Duration::from_secs(10), |h| {
-            !pinned(h).is_empty()
-        });
+        let found = h.settle_until(PINS_WAIT, |h| !pinned(h).is_empty());
         assert!(found, "nothing pinned");
         assert_eq!(pinned(&mut h), ["=== start ===", "= second"]);
         let shot = scratch_dir("shot").join("script-pinned.png");
@@ -4273,7 +4318,7 @@ mod modes_driven {
                 e.set_scroll_offset(gpui::point(gpui::px(0.), -row * 80.), cx)
             });
         });
-        let pinned = h.settle_until(std::time::Duration::from_secs(10), |h| {
+        let pinned = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
             h.update(|cx| document.update(cx, |d, cx| d.pinned_texts(cx)))
                 .len()

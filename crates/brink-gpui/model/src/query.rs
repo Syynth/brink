@@ -39,6 +39,11 @@ pub enum QueryKind {
     DocumentSymbols {
         path: String,
     },
+    /// A file's nested structure — knots, stitches, choices, conditionals
+    /// and sequences, by source range: what the pinned lines pin.
+    Scopes {
+        path: String,
+    },
     InlayHints {
         path: String,
     },
@@ -178,6 +183,7 @@ pub enum QueryResult {
     SignatureHelp(Option<Signature>),
     Completions(Vec<Completion>),
     DocumentSymbols(Vec<Symbol>),
+    Scopes(Vec<Scope>),
     InlayHints(Vec<InlayHint>),
     PassageIndex(Vec<PassageSymbol>),
     /// `None` when the path names nothing in the project.
@@ -359,6 +365,31 @@ impl RenamePlan {
         }
         out
     }
+}
+
+/// What kind of block a [`Scope`] is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScopeKind {
+    Knot,
+    Stitch,
+    /// A choice and its branch.
+    Choice,
+    /// A conditional: `{ cond: … }` and its branches.
+    Conditional,
+    /// A sequence, cycle, shuffle or once-only block.
+    Sequence,
+    /// One branch of a conditional or sequence, from its `- …` line.
+    Branch,
+}
+
+/// A block of the file, by byte range: the scopes that nest, as the
+/// structural projection's containers have them. Gathers are left out —
+/// a `-` continuation is not a block anything opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scope {
+    pub kind: ScopeKind,
+    pub start: u32,
+    pub end: u32,
 }
 
 /// A fold candidate, in 0-based lines — what the editor's gutter offers.
@@ -564,6 +595,10 @@ pub(crate) fn answer(
         },
         QueryKind::DocumentSymbols { path } => match symbols(session, path) {
             Some(found) => QueryResult::DocumentSymbols(found),
+            None => QueryResult::Unavailable,
+        },
+        QueryKind::Scopes { path } => match scopes(session, path) {
+            Some(found) => QueryResult::Scopes(found),
             None => QueryResult::Unavailable,
         },
         QueryKind::InlayHints { path } => match inlay_hints(session, path) {
@@ -800,6 +835,85 @@ fn folding_ranges(session: &brink_ide::session::IdeSession, path: &str) -> Optio
         })
         .collect();
     out.sort_by_key(|f| (f.start_line, f.end_line));
+    out.dedup();
+    Some(out)
+}
+
+/// The file's scopes, outermost first: the projection's knot, stitch and
+/// choice containers, conditional and sequence constructs, and each of
+/// their branches.
+///
+/// A branch container covers the branch's content, not its `- cond:`
+/// line, so a branch is taken from the nearest line at or above its
+/// content that opens with `-`, inside its construct — or from the
+/// construct's own first line, for a first branch written on the brace
+/// line (`{ x > 0:`).
+fn scopes(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<Scope>> {
+    use brink_ide::hir_projection::SpanKind;
+    let id = session.file_id(path)?;
+    let projection = session.projection(id)?;
+    let source = session.source(id)?;
+    let line_start = |at: usize| {
+        source[..at.min(source.len())]
+            .rfind('\n')
+            .map_or(0, |n| n + 1)
+    };
+    let constructs: Vec<(usize, usize)> = projection
+        .spans
+        .iter()
+        .filter(|s| matches!(s.kind, SpanKind::Conditional | SpanKind::Sequence))
+        .map(|s| (usize::from(s.range.start()), usize::from(s.range.end())))
+        .collect();
+    let branch_start = |content: usize| -> usize {
+        // The innermost construct holding the branch.
+        let Some(&(open, _)) = constructs
+            .iter()
+            .filter(|(start, end)| *start <= content && content < *end)
+            .max_by_key(|(start, _)| *start)
+        else {
+            return line_start(content);
+        };
+        let mut line = line_start(content);
+        loop {
+            if line <= open {
+                return line_start(open);
+            }
+            let text = source[line..].lines().next().unwrap_or_default();
+            if text.trim_start().starts_with('-') {
+                return line;
+            }
+            line = line_start(line - 1);
+        }
+    };
+    let mut out: Vec<Scope> = projection
+        .spans
+        .iter()
+        .filter_map(|span| {
+            let (start, end) = (
+                usize::from(span.range.start()),
+                usize::from(span.range.end()),
+            );
+            let (kind, start) = match span.kind {
+                // Containers only: a declaration's name is a span of the
+                // same kind.
+                SpanKind::Knot if span.handle.is_some() => (ScopeKind::Knot, start),
+                SpanKind::Stitch if span.handle.is_some() => (ScopeKind::Stitch, start),
+                SpanKind::Choice if span.handle.is_some() => (ScopeKind::Choice, start),
+                SpanKind::Conditional => (ScopeKind::Conditional, start),
+                SpanKind::Sequence => (ScopeKind::Sequence, start),
+                SpanKind::ConditionalBranch | SpanKind::SequenceBranch => {
+                    (ScopeKind::Branch, branch_start(start))
+                }
+                _ => return None,
+            };
+            Some(Scope {
+                kind,
+                start: u32::try_from(start).ok()?,
+                end: u32::try_from(end).ok()?,
+            })
+        })
+        .collect();
+    out.sort_by_key(|s| (s.start, std::cmp::Reverse(s.end)));
     out.dedup();
     Some(out)
 }
@@ -1280,7 +1394,50 @@ fn initial_value(source: &str, name_end: usize) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clamp_offset, document_colors};
+    use super::{ScopeKind, clamp_offset, document_colors, scopes};
+
+    /// The scopes the pinned lines pin: each block by the line it opens on,
+    /// nested as the source nests them.
+    #[test]
+    fn a_files_scopes_are_its_knots_stitches_choices_and_conditionals() {
+        use brink_ide::session::IdeSession;
+        let source = "=== start ===\n\
+                      = second\n\
+                      * [Run]\n    \
+                      Fast.\n    \
+                      {\n    \
+                      - here:\n        \
+                      Near.\n        \
+                      Nearer.\n    \
+                      - else:\n        \
+                      Far.\n    \
+                      }\n    \
+                      -> DONE\n\
+                      * [Wait] -> DONE\n";
+        let mut session = IdeSession::new();
+        session.update_source("main.ink", source.to_owned());
+        session.refresh_analysis();
+        let found = scopes(&session, "main.ink").expect("the file is known");
+        let opening = |kind: ScopeKind| -> Vec<&str> {
+            found
+                .iter()
+                .filter(|s| s.kind == kind)
+                .map(|s| {
+                    let at = s.start as usize;
+                    let line = source[..at].rfind('\n').map_or(0, |n| n + 1);
+                    source[line..].lines().next().unwrap_or_default().trim()
+                })
+                .collect()
+        };
+        assert_eq!(opening(ScopeKind::Knot), ["=== start ==="]);
+        assert_eq!(opening(ScopeKind::Stitch), ["= second"]);
+        assert!(opening(ScopeKind::Choice).contains(&"* [Run]"), "{found:?}");
+        assert_eq!(opening(ScopeKind::Conditional), ["{"]);
+        // Each branch from its own `- …` line, not its first line of text.
+        assert_eq!(opening(ScopeKind::Branch), ["- here:", "- else:"]);
+        // Outermost first.
+        assert!(found.windows(2).all(|w| w[0].start <= w[1].start));
+    }
 
     /// Whether a colour swatch can appear at all in this studio, and where
     /// from. The answer decides whether the provider is dead plumbing.

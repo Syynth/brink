@@ -5783,3 +5783,12 @@
 - **SCOPE:** minor/local
 - **WHAT:** Amends the earlier entry from today ("no pinned file band remains"). Once a file's chapter break has scrolled past the top of Write's manuscript, a row standing for the file pins above its knot and stitch lines. It is drawn like the break: icon, name in spaced capitals, DRAFT badge, unsaved dot, centred over the column. The next file's break pushes it off, and a click goes to the file's start. Jumps and the cursor-follow count the pinned rows as covering the top of the view, in both Write and Script.
 - **WHY:** After using the pinned knot/stitch lines, the maintainer wanted the file named there as well. Drawing it as the chapter break keeps the pinned strip reading as the manuscript's own structure rather than a toolbar. Counting the pinned rows as covered space follows from them hiding the text under them: a jump or a cursor that lands under the strip is as lost as one off the edge.
+
+## Pinned lines cover every nested block: choices, conditionals and their branches
+- **WHEN:** 2026-10-07
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** The pinned structure lines in Write and Script now pin every block the top of the view is inside, as JetBrains does: knot, stitch, choice, a conditional or sequence's opening line, and its current branch's `- …` line. They nest outermost first under Write's file row. Each level is judged at the line under the rows already pinned, and is pushed off by the next block's opening line. Gathers don't pin. At most five block rows pin, keeping the outermost.
+- **WHY:** The maintainer asked for choices and conditional branches like JetBrains, after using the knot/stitch version. The scopes come from the structural projection rather than the text, so `.brink` and `.ink` pin alike. Gathers are left out because a `-` continuation isn't a block anything opens. The cap and the rule of keeping the outermost rows are defaults, since deeply nested pins crowd the text they are meant to locate.
+- **STATUS:** tentative

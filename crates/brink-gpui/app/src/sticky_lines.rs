@@ -1,11 +1,13 @@
-//! Pinned structure lines: the knot and stitch you are inside, held at the
-//! top of the view once their header lines have scrolled past it — the
-//! JetBrains "sticky lines" (decision log 2026-10-07). Write's manuscript
-//! and Script's editors both draw them; the manuscript adds a row for the
-//! file itself above them, drawn like its chapter break.
+//! Pinned structure lines: the blocks you are inside — knot, stitch,
+//! choice, conditional and its branch, sequence — each held at the top of
+//! the view once its opening line has scrolled past it, the JetBrains
+//! "sticky lines" (decision log 2026-10-07). Write's manuscript and
+//! Script's editors both draw them; the manuscript adds a row for the file
+//! itself above them, drawn like its chapter break.
 //!
-//! What to pin is read off the file's outline, not its text, so a `.brink`
-//! file's structure pins the same way an `.ink` file's does. Where the top
+//! What to pin is read off the file's scopes (the worker's structural
+//! projection), not its text, so a `.brink` file's structure pins the same
+//! way an `.ink` file's does. Where the top
 //! of the view is comes from the editor's own layout: a line's height in
 //! the editor's content, compared with how far the host has scrolled.
 
@@ -18,8 +20,7 @@ use gpui::{
 };
 use gpui_component::{ActiveTheme as _, input::EditorState};
 
-use brink_gpui_model::query::Symbol;
-use brink_ir::SymbolKind;
+use brink_gpui_model::query::{Scope, ScopeKind};
 
 /// What a pinned row stands for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -29,7 +30,28 @@ pub(crate) enum PinKind {
     Knot,
     /// A stitch's header, under its knot's.
     Stitch,
+    Choice,
+    /// A conditional's or sequence's opening line.
+    Block,
+    /// A conditional's or sequence's branch: its `- …` line.
+    Branch,
 }
+
+impl PinKind {
+    fn of(kind: ScopeKind) -> Self {
+        match kind {
+            ScopeKind::Knot => Self::Knot,
+            ScopeKind::Stitch => Self::Stitch,
+            ScopeKind::Choice => Self::Choice,
+            ScopeKind::Conditional | ScopeKind::Sequence => Self::Block,
+            ScopeKind::Branch => Self::Branch,
+        }
+    }
+}
+
+/// The most scope rows that pin (the file's row aside): the outermost win,
+/// as the blocks you are deepest in matter least for where you are.
+pub(crate) const MAX_SCOPE_ROWS: usize = 5;
 
 /// One pinned row.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -55,15 +77,15 @@ pub(crate) fn line_start(text: &str, offset: usize) -> usize {
         .map_or(0, |at| at + 1)
 }
 
-fn header(text: &str, symbol: &Symbol, kind: PinKind) -> PinnedLine {
-    let start = line_start(text, symbol.full_start as usize);
+fn header(text: &str, scope: &Scope) -> PinnedLine {
+    let start = line_start(text, scope.start as usize);
     let end = text[start..].find('\n').map_or(text.len(), |at| start + at);
     PinnedLine {
         offset: start,
         line: text[..start].matches('\n').count(),
         text: text[start..end].trim_end().to_owned(),
-        kind,
-        end: symbol.full_end as usize,
+        kind: PinKind::of(scope.kind),
+        end: scope.end as usize,
     }
 }
 
@@ -89,47 +111,63 @@ pub(crate) fn pushes(
     pushes
 }
 
-/// The headers to pin when the line starting at `top` is the first one in
-/// view: the knot it is inside, and the stitch, each only once its own
-/// header line is above the view — a header still on screen pins nothing.
-/// `under` is the line starting just below the knot's pinned row: the
-/// stitch is judged there, since its header slides under that row before
-/// it reaches the top, and would otherwise vanish for a line.
-pub(crate) fn pinned_at(
-    symbols: &[Symbol],
-    text: &str,
-    top: usize,
-    under: usize,
-) -> Vec<PinnedLine> {
-    let holds =
-        |at: usize| move |s: &&Symbol| (s.full_start as usize) <= at && at < s.full_end as usize;
-    let above = |s: &Symbol, at: usize| line_start(text, s.full_start as usize) < at;
-    let mut pinned = Vec::new();
-    let Some(knot) = symbols
-        .iter()
-        .filter(|s| s.kind == SymbolKind::Knot)
-        .find(holds(top))
-    else {
-        return pinned;
+/// The blocks to pin, outermost first. `rows[r]` is the start of the line
+/// just under `r` pinned rows: each level of nesting is judged there, since
+/// a block's opening line slides under the rows above it before it reaches
+/// the top, and would otherwise vanish for a line. At each level the
+/// outermost block inside the last one pinned is taken that holds that line
+/// and opened above it — or, failing that, the one the line a row up is
+/// still inside, which the next opening line then pushes out of the way
+/// rather than replacing outright. Only blocks of more than one line pin,
+/// and never two on the same line (a conditional and the first branch
+/// written on its brace line).
+pub(crate) fn pinned_at(scopes: &[Scope], text: &str, rows: &[usize]) -> Vec<PinnedLine> {
+    let line_of = |at: usize| line_start(text, at.min(text.len()));
+    let spans_lines = |s: &Scope| {
+        let last = (s.end as usize).saturating_sub(1).max(s.start as usize);
+        line_of(last) > line_of(s.start as usize)
     };
-    if !above(knot, top) {
-        return pinned;
-    }
-    pinned.push(header(text, knot, PinKind::Knot));
-    let stitch_at = |at: usize| {
-        knot.children
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Stitch)
-            .find(holds(at))
-            .filter(|s| above(s, at))
-    };
-    // The one whose header has slid under the knot's row, or else the one
-    // the top line is still inside — which the next header then pushes
-    // out of the way rather than replacing outright.
-    if let Some(stitch) = stitch_at(under).or_else(|| stitch_at(top)) {
-        pinned.push(header(text, stitch, PinKind::Stitch));
+    let mut pinned: Vec<PinnedLine> = Vec::new();
+    let mut parent: Option<&Scope> = None;
+    for (r, &at) in rows.iter().enumerate() {
+        let pick = |at: usize| {
+            scopes
+                .iter()
+                .filter(|s| {
+                    let opens = line_of(s.start as usize);
+                    parent.is_none_or(|p| *s != p && p.start <= s.start && s.end <= p.end)
+                        && !pinned.iter().any(|pin| pin.offset == opens)
+                        && spans_lines(s)
+                        && (s.start as usize) <= at
+                        && at < s.end as usize
+                        && opens < at
+                })
+                .min_by_key(|s| (s.start, std::cmp::Reverse(s.end)))
+        };
+        let found = pick(at).or_else(|| r.checked_sub(1).and_then(|up| pick(rows[up])));
+        let Some(scope) = found else {
+            break;
+        };
+        pinned.push(header(text, scope));
+        parent = Some(scope);
     }
     pinned
+}
+
+/// How many rows will pin over `offset` once it is near the top: one per
+/// block it is inside that opened on an earlier line, one per line at most,
+/// up to [`MAX_SCOPE_ROWS`].
+pub(crate) fn rows_over(scopes: &[Scope], text: &str, offset: usize) -> usize {
+    let line = line_start(text, offset.min(text.len()));
+    let mut lines: Vec<usize> = scopes
+        .iter()
+        .filter(|s| (s.start as usize) <= offset && offset < s.end as usize)
+        .map(|s| line_start(text, s.start as usize))
+        .filter(|opens| *opens < line)
+        .collect();
+    lines.sort_unstable();
+    lines.dedup();
+    lines.len().min(MAX_SCOPE_ROWS)
 }
 
 /// The start of the line at `content_y` in the editor's content (zero at
@@ -176,18 +214,23 @@ pub(crate) fn content_top(state: &EditorState, offset: usize) -> Option<Pixels> 
 /// stitch are then judged a row lower, under it.
 pub(crate) fn pin(
     state: &EditorState,
-    symbols: &[Symbol],
+    scopes: &[Scope],
     top: Pixels,
     within: Range<usize>,
     file: Option<PinnedLine>,
 ) -> Option<(Vec<PinnedLine>, Vec<Pixels>)> {
     let row = state.line_height()?;
     let lead = row * usize::from(file.is_some()) as f32;
-    let line = line_at(state, top + lead, within.clone())?;
-    let under = line_at(state, top + lead + row, within).unwrap_or(line);
+    // The line under each number of pinned rows, as far as there are lines.
+    let rows: Vec<usize> = (0..MAX_SCOPE_ROWS)
+        .map_while(|r| line_at(state, top + lead + row * r as f32, within.clone()))
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
     let text = state.value();
     let mut pinned: Vec<PinnedLine> = file.into_iter().collect();
-    pinned.extend(pinned_at(symbols, &text, line, under));
+    pinned.extend(pinned_at(scopes, &text, &rows));
     let pushes = pushes(&pinned, row, |offset| {
         content_top(state, line_start(&text, offset)).map(|y| y - top)
     });
@@ -317,11 +360,13 @@ pub(crate) fn render(
     let theme = cx.theme();
     let tokens = brink_gpui_shell::theme::current(cx).tokens;
     let hsla = brink_gpui_shell::theme::hsla;
-    let (knot, stitch, number, surface) = (
+    let (knot, stitch, number, surface, prose, marker) = (
         hsla(tokens.syn_namespace),
         hsla(tokens.syn_function),
         theme.muted_foreground,
         theme.background,
+        theme.foreground,
+        hsla(tokens.syn_marker.unwrap_or(tokens.syn_operator)),
     );
     // Opaque: a pinned row covers the text scrolled under it, hovered too.
     let hover = surface.blend(theme.muted.opacity(0.35));
@@ -344,7 +389,7 @@ pub(crate) fn render(
                     .items_center()
                     .child(file_row(pin)),
             ),
-            PinKind::Knot | PinKind::Stitch => base
+            kind => base
                 .child(
                     div()
                         .absolute()
@@ -360,12 +405,12 @@ pub(crate) fn render(
                         .left(geometry.text_left)
                         .right(px(0.))
                         .truncate()
-                        .text_color(if pin.kind == PinKind::Stitch {
-                            stitch
-                        } else {
-                            knot
+                        .text_color(match kind {
+                            PinKind::Knot => knot,
+                            PinKind::Stitch => stitch,
+                            _ => prose,
                         })
-                        .child(pin.text.clone()),
+                        .child(line_text(pin, marker)),
                 ),
         }
     };
@@ -476,6 +521,25 @@ pub(crate) fn render(
     )
 }
 
+/// A pinned line's text, its leading markers (`*`, `+`, `-`, `{`) in the
+/// marker colour for a choice or a block's line, as the editor draws them.
+fn line_text(pin: &PinnedLine, marker: gpui::Hsla) -> gpui::StyledText {
+    let text = SharedString::from(pin.text.clone());
+    if matches!(pin.kind, PinKind::Knot | PinKind::Stitch | PinKind::File) {
+        return gpui::StyledText::new(text);
+    }
+    let lead = pin
+        .text
+        .char_indices()
+        .find(|(_, c)| !matches!(c, '*' | '+' | '-' | '{' | ' ' | '\t'))
+        .map_or(pin.text.len(), |(at, _)| at);
+    let style = gpui::HighlightStyle {
+        color: Some(marker),
+        ..Default::default()
+    };
+    gpui::StyledText::new(text).with_highlights(vec![(0..lead, style)])
+}
+
 /// Space under the strip its shadow draws into.
 const SHADOW_ROOM: f32 = 10.;
 
@@ -488,72 +552,63 @@ mod tests {
                         Lamp.\n\
                         = second\n\
                         Run.\n\
+                        * [Hide]\n\
+                        \x20 Dark.\n\
+                        \x20 {\n\
+                        \x20 - here:\n\
+                        \x20     Near.\n\
+                        \x20     Nearer.\n\
+                        \x20 - else:\n\
+                        \x20     Far.\n\
+                        \x20 }\n\
                         Fast.\n\
                         === market ===\n\
                         Stalls.\n";
-
-    fn symbol(
-        name: &str,
-        kind: SymbolKind,
-        header: &str,
-        end: &str,
-        children: Vec<Symbol>,
-    ) -> Symbol {
-        let full_start = u32::try_from(TEXT.find(header).expect("header")).expect("fits");
-        let full_end = u32::try_from(TEXT.find(end).unwrap_or(TEXT.len())).expect("fits");
-        Symbol {
-            name: name.to_owned(),
-            kind,
-            start: full_start,
-            full_start,
-            full_end,
-            is_function: false,
-            value: None,
-            children,
-        }
-    }
-
-    fn outline() -> Vec<Symbol> {
-        let second = symbol(
-            "second",
-            SymbolKind::Stitch,
-            "= second",
-            "=== market",
-            vec![],
-        );
-        vec![
-            symbol(
-                "start",
-                SymbolKind::Knot,
-                "=== start",
-                "=== market",
-                vec![second],
-            ),
-            symbol("market", SymbolKind::Knot, "=== market", "\u{0}", vec![]),
-        ]
-    }
 
     fn at(line: &str) -> usize {
         TEXT.find(line).expect("line")
     }
 
-    /// The line after `line`'s: what sits under the knot's pinned row.
+    /// The start of the line after the one holding `line`.
     fn next(line: &str) -> usize {
         let at = at(line);
         at + TEXT[at..].find('\n').expect("a line end") + 1
     }
 
+    fn scope(kind: ScopeKind, opens: &str, ends: &str) -> Scope {
+        Scope {
+            kind,
+            start: u32::try_from(at(opens)).expect("fits"),
+            end: u32::try_from(TEXT.find(ends).unwrap_or(TEXT.len())).expect("fits"),
+        }
+    }
+
+    fn scopes() -> Vec<Scope> {
+        vec![
+            scope(ScopeKind::Knot, "=== start", "=== market"),
+            scope(ScopeKind::Stitch, "= second", "=== market"),
+            scope(ScopeKind::Choice, "* [Hide]", "Fast."),
+            scope(ScopeKind::Conditional, "{", "Fast."),
+            scope(ScopeKind::Branch, "- here:", "  - else:"),
+            scope(ScopeKind::Branch, "- else:", "  }"),
+            scope(ScopeKind::Knot, "=== market", "\u{0}"),
+        ]
+    }
+
+    fn texts(pinned: &[PinnedLine]) -> Vec<&str> {
+        pinned.iter().map(|p| p.text.trim()).collect()
+    }
+
     #[test]
     fn nothing_pins_above_the_first_knot_or_on_its_header() {
-        assert!(pinned_at(&outline(), TEXT, 0, next("VAR")).is_empty());
-        assert!(pinned_at(&outline(), TEXT, at("=== start"), next("=== start")).is_empty());
+        assert!(pinned_at(&scopes(), TEXT, &[0, next("VAR")]).is_empty());
+        assert!(pinned_at(&scopes(), TEXT, &[at("=== start"), next("=== start")]).is_empty());
     }
 
     #[test]
     fn the_knot_pins_once_its_header_has_scrolled_past() {
-        let pinned = pinned_at(&outline(), TEXT, at("Lamp."), next("Lamp."));
-        assert_eq!(pinned.len(), 1);
-        assert_eq!(pinned[0].text, "=== start ===");
+        let pinned = pinned_at(&scopes(), TEXT, &[at("Lamp."), next("Lamp.")]);
+        assert_eq!(texts(&pinned), ["=== start ==="]);
         assert_eq!(pinned[0].line, 1);
         assert_eq!(pinned[0].offset, at("=== start"));
     }
@@ -561,37 +616,70 @@ mod tests {
     #[test]
     fn a_stitch_pins_under_its_knot() {
         assert_eq!(
-            pinned_at(&outline(), TEXT, at("Lamp."), at("= second")).len(),
-            1,
+            texts(&pinned_at(&scopes(), TEXT, &[at("Lamp."), at("= second")])),
+            ["=== start ==="],
             "its header is in view, under the knot's row"
         );
         // Its header has slid under the knot's row: it pins there.
-        let pinned = pinned_at(&outline(), TEXT, at("= second"), next("= second"));
-        let texts: Vec<_> = pinned
-            .iter()
-            .map(|p| (p.text.as_str(), p.kind == PinKind::Stitch))
-            .collect();
-        assert_eq!(texts, [("=== start ===", false), ("= second", true)]);
-        let pinned = pinned_at(&outline(), TEXT, at("Run."), at("Fast."));
-        let texts: Vec<_> = pinned
-            .iter()
-            .map(|p| (p.text.as_str(), p.kind == PinKind::Stitch))
-            .collect();
-        assert_eq!(texts, [("=== start ===", false), ("= second", true)]);
+        let pinned = pinned_at(&scopes(), TEXT, &[at("= second"), next("= second")]);
+        assert_eq!(texts(&pinned), ["=== start ===", "= second"]);
+        assert_eq!(pinned[1].kind, PinKind::Stitch);
+    }
+
+    #[test]
+    fn choices_conditionals_and_branches_pin_inside_their_stitch() {
+        // Deep in the `- here:` branch: knot, stitch, choice, conditional,
+        // branch — each judged a row lower than the last.
+        let rows = [
+            at("Dark."),
+            at("{"),
+            at("- here:"),
+            at("Near."),
+            at("Nearer."),
+        ];
+        let pinned = pinned_at(&scopes(), TEXT, &rows);
+        assert_eq!(
+            texts(&pinned),
+            ["=== start ===", "= second", "* [Hide]", "{", "- here:"]
+        );
+        assert_eq!(
+            pinned.iter().map(|p| p.kind).collect::<Vec<_>>(),
+            [
+                PinKind::Knot,
+                PinKind::Stitch,
+                PinKind::Choice,
+                PinKind::Block,
+                PinKind::Branch
+            ]
+        );
+    }
+
+    #[test]
+    fn the_next_branch_replaces_the_last() {
+        let rows = [at("Dark."), at("{"), at("- else:"), at("Far."), TEXT.len()];
+        let pinned = pinned_at(&scopes(), TEXT, &rows);
+        assert_eq!(pinned.last().map(|p| p.text.trim()), Some("- else:"));
+        assert_eq!(pinned.len(), 5);
     }
 
     #[test]
     fn the_stitch_stays_while_the_next_header_pushes_it() {
         // The top line is the stitch's last; the next knot's header is the
         // line under the knot's row. The stitch stays, to be pushed.
-        let pinned = pinned_at(&outline(), TEXT, at("Fast."), at("=== market"));
-        let texts: Vec<_> = pinned.iter().map(|p| p.text.as_str()).collect();
-        assert_eq!(texts, ["=== start ===", "= second"]);
+        let pinned = pinned_at(&scopes(), TEXT, &[at("Fast."), at("=== market")]);
+        assert_eq!(texts(&pinned), ["=== start ===", "= second"]);
+    }
+
+    #[test]
+    fn the_rows_over_a_line_count_the_blocks_it_is_inside() {
+        assert_eq!(rows_over(&scopes(), TEXT, at("Lamp.")), 1);
+        assert_eq!(rows_over(&scopes(), TEXT, at("Nearer.")), 5);
+        assert_eq!(rows_over(&scopes(), TEXT, at("=== start")), 0);
     }
 
     #[test]
     fn the_strip_is_pushed_up_by_what_comes_next() {
-        let pinned = pinned_at(&outline(), TEXT, at("Run."), at("Fast."));
+        let pinned = pinned_at(&scopes(), TEXT, &[at("Run."), next("Run.")]);
         let row = px(20.);
         // Far below: nothing moves.
         assert_eq!(pushes(&pinned, row, |_| None), [px(0.), px(0.)]);
@@ -611,7 +699,7 @@ mod tests {
 
     #[test]
     fn a_stitch_row_can_be_pushed_on_its_own() {
-        let mut pinned = pinned_at(&outline(), TEXT, at("Run."), at("Fast."));
+        let mut pinned = pinned_at(&scopes(), TEXT, &[at("Run."), next("Run.")]);
         // The stitch ends sooner than the knot (another stitch follows).
         pinned[1].end = at("Fast.");
         let row = px(20.);
@@ -627,8 +715,7 @@ mod tests {
 
     #[test]
     fn the_next_knot_replaces_the_last() {
-        let pinned = pinned_at(&outline(), TEXT, at("Stalls."), TEXT.len());
-        assert_eq!(pinned.len(), 1);
-        assert_eq!(pinned[0].text, "=== market ===");
+        let pinned = pinned_at(&scopes(), TEXT, &[at("Stalls."), TEXT.len()]);
+        assert_eq!(texts(&pinned), ["=== market ==="]);
     }
 }

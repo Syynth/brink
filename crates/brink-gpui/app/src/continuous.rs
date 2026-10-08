@@ -46,8 +46,7 @@ use gpui_component::{
     v_flex,
 };
 
-use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
-use brink_ir::SymbolKind;
+use brink_gpui_model::query::{QueryKind, QueryResult, Scope};
 
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
@@ -188,9 +187,9 @@ pub struct ContinuousView {
     /// frame the editors' own bounds are from (they learn them as they
     /// paint). See the crumb's measurement in `render`.
     last_view: Rc<std::cell::Cell<Option<gpui::Bounds<gpui::Pixels>>>>,
-    /// Each file's outline, for the pinned structure lines; asked for when
-    /// a file first reaches the top of the view, dropped on each analysis.
-    outlines: HashMap<String, Vec<Symbol>>,
+    /// Each file's scopes, for the pinned structure lines; asked for when a
+    /// file first reaches the top of the view, dropped on each analysis.
+    outlines: HashMap<String, Vec<Scope>>,
     outline_pending: std::collections::HashSet<String>,
     /// What is pinned now, and what is fading out.
     pins: crate::sticky_lines::Pins,
@@ -478,30 +477,14 @@ impl ContinuousView {
     }
 
     /// How many rows will pin above `offset` once it is near the top of
-    /// the view: the file's own row, and the knot and stitch it is inside
-    /// whose headers are above it. Two of those when the outline has not
-    /// arrived, the most there can be.
+    /// the view: the file's own row, and one for each block it is inside
+    /// that opened on an earlier line — as many as can pin when the scopes
+    /// have not arrived.
     fn pinned_rows_at(&self, path: &str, text: &str, offset: usize) -> usize {
-        let Some(symbols) = self.outlines.get(path) else {
-            return 3;
+        let Some(scopes) = self.outlines.get(path) else {
+            return 1 + crate::sticky_lines::MAX_SCOPE_ROWS;
         };
-        let line = crate::sticky_lines::line_start(text, offset.min(text.len()));
-        let holds = |s: &&Symbol| (s.full_start as usize) <= offset && offset < s.full_end as usize;
-        let above =
-            |s: &Symbol| crate::sticky_lines::line_start(text, s.full_start as usize) < line;
-        let knot = symbols
-            .iter()
-            .filter(|s| s.kind == SymbolKind::Knot)
-            .find(holds)
-            .filter(|k| above(k));
-        let stitch = knot.and_then(|k| {
-            k.children
-                .iter()
-                .filter(|s| s.kind == SymbolKind::Stitch)
-                .find(holds)
-                .filter(|s| above(s))
-        });
-        1 + usize::from(knot.is_some()) + usize::from(stitch.is_some())
+        1 + crate::sticky_lines::rows_over(scopes, text, offset)
     }
 
     /// Keep the title bar's crumb over the text: `cell` gets the window x
@@ -656,7 +639,7 @@ impl ContinuousView {
             return;
         }
         let query = self.project.read(cx).query(
-            QueryKind::DocumentSymbols {
+            QueryKind::Scopes {
                 path: path.to_owned(),
             },
             cx,
@@ -666,7 +649,7 @@ impl ContinuousView {
             let answer = query.await;
             let _ = this.update(cx, |this, cx| {
                 this.outline_pending.remove(&path);
-                if let Ok(QueryResult::DocumentSymbols(found)) = answer {
+                if let Ok(QueryResult::Scopes(found)) = answer {
                     this.outlines.insert(path, found);
                     cx.notify();
                 }
