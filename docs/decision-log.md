@@ -5800,3 +5800,14 @@
 - **SCOPE:** minor/local
 - **WHAT:** A conditional's or sequence's opening line pins only if something is left on it once the `{` is removed: a condition (`{ x > 1:`), a switch's subject (`{ visits:`), or a sequence's kind (`{ stopping:`, `{&`). A bare `{` line never pins. Its branches' `- …` lines pin instead. One consequence is accepted: under a bare `{`, the `- else:` branch pins alone, without the sibling condition it's the else of, as JetBrains shows `} else {` alone.
 - **WHY:** The maintainer found the bare `{` row useless in conditionals and a waste of space. In the other shapes the brace line carries information nothing else shows: it is the only header for a first branch written on it, it is what an `- else:` is the else of, it names a switch's subject, and it says a sequence's `- …` lines are steps rather than conditions. Pinning the sibling condition as well, to give the else context, would have cost the row this saves.
+
+## The editor gutter follows Zed: a breakpoint column, ghost fold buttons
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The gpui editors' gutter (Script and Write) takes Zed's layout:
+  - **Breakpoint column.** A column left of the line numbers for breakpoints. Clicking there toggles one, and hovering a line shows a faint dot where one would go. A set breakpoint is a red dot and turns its line number red. A breakpoint bound to no code is a hollow ring with the number in its normal colour.
+  - **No line tint.** The full-width tint behind a breakpoint line is dropped.
+  - **Ghost fold buttons.** Fold chevrons sit right of the numbers as ghost buttons that highlight under the pointer. They show only while the pointer is over the gutter, except a folded line always shows its own.
+- **WHY:** The maintainer wanted Zed's gutter more or less as is. The old line tint marked breakpoints inside the text, where they competed with highlighting and selection. A column of their own puts them where every debugger keeps them and makes them clickable. Fold chevrons that show only on hover keep a resting gutter down to numbers and marks. A hollow ring keeps the "this can never be hit" signal the struck-through line used to give.

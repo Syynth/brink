@@ -55,6 +55,10 @@ use brink_gpui_shell::icons;
 /// A mounted section: its editor, and the height its file needs.
 type Section = (Entity<EditorState>, f32);
 
+/// Each mounted section's breakpoint column marks, by path, refreshed when
+/// the breakpoints change (`crate::gutter`).
+type Gutters = Rc<RefCell<HashMap<String, Rc<crate::gutter::Marks>>>>;
+
 /// gpui-component renders the editor at `line_height: relative(1.5)` over the
 /// theme's monospace size (`input/editor.rs`), so a row is exactly
 /// `mono_font_size * 1.5` — 19.5px at the default 13px. Guessing 20 cost half
@@ -196,6 +200,8 @@ pub struct ContinuousView {
     /// A section to focus once it exists: an arrow key crossed into a file
     /// that had not been mounted yet (`cross_file`).
     pending_focus: Option<String>,
+    /// Each section's breakpoint column.
+    gutters: Gutters,
     /// Frames a reveal may wait for its section to lay out, so it can land
     /// on the line's true place (`apply_pending_reveal`).
     reveal_retries: u8,
@@ -233,6 +239,7 @@ impl ContinuousView {
                 }
                 // The separators' unsaved dots.
                 ProjectEvent::Saved => cx.notify(),
+                ProjectEvent::BreakpointsChanged => this.refresh_gutters(cx),
                 ProjectEvent::SourceChanged {
                     path,
                     origin,
@@ -282,6 +289,7 @@ impl ContinuousView {
             outline_pending: std::collections::HashSet::new(),
             pins: crate::sticky_lines::Pins::default(),
             pending_focus: None,
+            gutters: Rc::default(),
             reveal_retries: 0,
             _subscriptions: vec![watch],
         }
@@ -308,6 +316,8 @@ impl ContinuousView {
     /// the theme's colours) and the row height is re-measured, so nothing
     /// the author is holding moves.
     fn restyle(&mut self, cx: &mut Context<Self>) {
+        // The gutter's red is the theme's.
+        self.refresh_gutters(cx);
         let project = self.project.downgrade();
         let mut stale = None;
         for (path, (editor, _)) in self.editors.borrow().iter() {
@@ -647,6 +657,22 @@ impl ContinuousView {
         true
     }
 
+    /// Read every section's breakpoints afresh and redraw its gutter.
+    fn refresh_gutters(&mut self, cx: &mut Context<Self>) {
+        let editors: Vec<(String, Entity<EditorState>)> = self
+            .editors
+            .borrow()
+            .iter()
+            .map(|(path, (editor, _))| (path.clone(), editor.clone()))
+            .collect();
+        for (path, editor) in editors {
+            if let Some(marks) = self.gutters.borrow().get(&path) {
+                marks.refresh(self.project.read(cx), &path, cx);
+            }
+            editor.update(cx, |_, cx| cx.notify());
+        }
+    }
+
     /// Ask the worker for a file's outline, unless it is held or asked for.
     fn request_outline(&mut self, path: &str, cx: &mut Context<Self>) {
         if self.outlines.contains_key(path) || !self.outline_pending.insert(path.to_owned()) {
@@ -928,6 +954,7 @@ impl ContinuousView {
         section_subs: &Rc<RefCell<Vec<Subscription>>>,
         read: &ReadCell,
         prose: &ProseCache,
+        gutters: &Gutters,
         path: &str,
         is_last: bool,
         line_height_override: Option<f32>,
@@ -984,6 +1011,9 @@ impl ContinuousView {
                 let _ = manuscript.update(cx, |this, cx| this.reveal_span(path, span, cx));
             });
             crate::navigation::install(&mut state, project, key.clone(), origin, navigate);
+            // The breakpoint column, as a tab's editor has it.
+            let marks = crate::gutter::install(&mut state, weak.clone(), key.clone(), cx);
+            gutters.borrow_mut().insert(key.to_string(), marks);
 
             state.set_value(source, window, cx);
             state
@@ -1142,6 +1172,7 @@ impl Render for ContinuousView {
         let mounted = self.mounted.clone();
         let read = self.read.clone();
         let prose = self.prose.clone();
+        let gutters = self.gutters.clone();
         // The Read view's face: the UI's proportional font, at the editor's
         // own size — so a row is the same height either way and only the
         // wrapping moves, which `remeasure_sections` already follows.
@@ -1234,6 +1265,7 @@ impl Render for ContinuousView {
                                 &section_subs,
                                 &read,
                                 &prose,
+                                &gutters,
                                 &path,
                                 index + 1 == count,
                                 measured,
@@ -1532,9 +1564,9 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     let ch = text
         .ch_advance(text.resolve_font(&font), theme.mono_font_size)
         .map_or(f32::from(theme.mono_font_size) * 0.6, f32::from);
-    // The gutter: its digits, one column of spacing, and the margins the
-    // kit sets either side of the text.
-    let gutter = (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch + 24.;
+    // The gutter: the breakpoint column, its digits, one column of
+    // spacing, and the margins the kit sets either side of the text.
+    let gutter = crate::gutter::COLUMN_WIDTH + (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch + 24.;
     Some(px(chars * ch + gutter))
 }
 

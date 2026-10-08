@@ -91,6 +91,8 @@ pub struct Document {
     laid_out: bool,
     /// Parameter hints while a call is being typed.
     signature: crate::signature_help::SignatureHint,
+    /// The gutter's breakpoint column, for a brink file.
+    gutter: Option<Rc<crate::gutter::Marks>>,
     /// The file's outline, for the pinned structure lines: asked for on
     /// the first frame after each analysis.
     outline: Option<Vec<brink_gpui_model::query::Scope>>,
@@ -155,6 +157,7 @@ impl Document {
             highlighter_factory_with_folds(project.downgrade(), path.clone(), Some(folds.clone()))
         });
         let this_document = cx.weak_entity();
+        let mut gutter = None;
         let editor = cx.new(|cx| {
             let mut state = EditorState::new(window, cx)
                 .line_number(brink_gpui_shell::settings::AppSettings::get(cx).show_gutters)
@@ -168,6 +171,13 @@ impl Document {
                 .soft_wrap(true);
 
             if let Some(factory) = &factory {
+                // The breakpoint column (decision log 2026-10-08).
+                gutter = Some(crate::gutter::install(
+                    &mut state,
+                    project.downgrade(),
+                    path.clone(),
+                    cx,
+                ));
                 // Installed BEFORE gpui-component's Input render, whose
                 // `ensure_highlighter_factory` only fills an empty slot — so
                 // this wins and the tree-sitter path is never consulted.
@@ -240,7 +250,7 @@ impl Document {
                 }
                 // A mark is drawn by the highlighter, and the highlighter
                 // only runs on an edit — so a toggle has to ask for one.
-                ProjectEvent::BreakpointsChanged => this.reinstall_highlighter(cx),
+                ProjectEvent::BreakpointsChanged => this.refresh_gutter(cx),
                 // Another editor over this file moved the text; follow it.
                 ProjectEvent::SourceChanged {
                     path,
@@ -270,6 +280,8 @@ impl Document {
         // on a switch — nothing per keystroke).
         let on_theme = cx.observe_global::<gpui_component::Theme>(|this, cx| {
             this.reinstall_highlighter(cx);
+            // The gutter's red is the theme's.
+            this.refresh_gutter(cx);
         });
 
         // The gutter and inlay toggles are settings; every open editor
@@ -302,6 +314,7 @@ impl Document {
             pending_reveal: None,
             laid_out: false,
             signature: crate::signature_help::SignatureHint::default(),
+            gutter,
             outline: None,
             outline_pending: false,
             pins: crate::sticky_lines::Pins::default(),
@@ -544,10 +557,18 @@ impl Document {
 
     /// Fold the analysis the worker just published into the editor.
     /// Rebuild the highlighter from its factory, which is how anything it
-    /// SNAPSHOTS — the theme's band colours, the breakpoint marks — gets
+    /// SNAPSHOTS — the theme's band colours, the file's cues — gets
     /// redrawn without an edit. Installing a factory clears the existing
     /// highlighter, so the next paint builds a fresh one and its `update`
     /// re-reads everything.
+    /// Read this file's breakpoints afresh and redraw the gutter's column.
+    fn refresh_gutter(&mut self, cx: &mut Context<Self>) {
+        if let Some(marks) = &self.gutter {
+            marks.refresh(self.project.read(cx), &self.path, cx);
+        }
+        self.editor.update(cx, |_, cx| cx.notify());
+    }
+
     fn reinstall_highlighter(&mut self, cx: &mut Context<Self>) {
         let Some(factory) = self.factory.clone() else {
             return;
@@ -746,12 +767,6 @@ pub struct BrinkHighlighter {
     /// theme's cue colour and weight resolved for them.
     cue_lines: Vec<CueLine>,
     cue_style: CueStyle,
-    /// Byte ranges of the lines carrying a breakpoint, with whether the
-    /// mark bound to any code.
-    breakpoints: Vec<(Range<usize>, bool)>,
-    /// The colours a mark is drawn in: an armed one, and one that bound
-    /// to nothing.
-    mark: (gpui::Hsla, gpui::Hsla),
     band: (gpui::Hsla, gpui::Hsla),
     /// Writing mode's Read view, for a manuscript section; `None` for every
     /// other host, which never reads.
@@ -1076,77 +1091,6 @@ pub(crate) fn overlay_todo(
     out
 }
 
-/// The byte range of each marked line, paired with whether the mark bound
-/// to any code. A line number past the end of the file is dropped rather
-/// than clamped: the file has been edited under the mark, and painting
-/// the last line instead would put the mark somewhere it was never set.
-#[must_use]
-pub(crate) fn breakpoint_lines(source: &str, marks: &[(u32, bool)]) -> Vec<(Range<usize>, bool)> {
-    if marks.is_empty() {
-        return Vec::new();
-    }
-    let mut out = Vec::new();
-    let mut at = 0usize;
-    for (i, line) in source.split_inclusive('\n').enumerate() {
-        let start = at;
-        at += line.len();
-        let end = start + line.trim_end_matches(['\n', '\r']).len();
-        // Marks are 1-based, as every editor's gutter is.
-        let number = u32::try_from(i + 1).unwrap_or(u32::MAX);
-        if let Some((_, bound)) = marks.iter().find(|(l, _)| *l == number) {
-            out.push((start..end, *bound));
-        }
-    }
-    out
-}
-
-/// Draw the marked lines. An armed mark takes the error colour's tint
-/// behind the whole line; one that bound to NOTHING is drawn muted and
-/// struck through, because a breakpoint that can never hit must not look
-/// like one that will.
-pub(crate) fn overlay_breakpoints(
-    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
-    marks: &[(Range<usize>, bool)],
-    (armed, unbound): (gpui::Hsla, gpui::Hsla),
-) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
-    if marks.is_empty() {
-        return runs;
-    }
-    let mut out = Vec::with_capacity(runs.len());
-    for (range, base) in runs {
-        let mut cuts: Vec<usize> = vec![range.start, range.end];
-        for (line, _) in marks {
-            for at in [line.start, line.end] {
-                if at > range.start && at < range.end {
-                    cuts.push(at);
-                }
-            }
-        }
-        cuts.sort_unstable();
-        cuts.dedup();
-        for pair in cuts.windows(2) {
-            let piece = pair[0]..pair[1];
-            let mut style = base;
-            if let Some((_, bound)) = marks
-                .iter()
-                .find(|(line, _)| line.start <= piece.start && piece.end <= line.end)
-            {
-                if *bound {
-                    style.background_color = Some(armed.opacity(0.22));
-                } else {
-                    style.background_color = Some(unbound.opacity(0.15));
-                    style.strikethrough = Some(gpui::StrikethroughStyle {
-                        thickness: gpui::px(1.),
-                        color: Some(unbound),
-                    });
-                }
-            }
-            out.push((piece, style));
-        }
-    }
-    out
-}
-
 /// Lay the dialect's per-line styling over already-styled runs: a cue
 /// takes the theme's cue colour and weight, a parenthetical goes italic
 /// and muted, a sigil inside either fades. A `dialogue` line — and any
@@ -1230,8 +1174,6 @@ impl BrinkHighlighter {
             todo_lines: Vec::new(),
             muted_lines: Vec::new(),
             cue_lines: Vec::new(),
-            breakpoints: Vec::new(),
-            mark: (gpui::Hsla::default(), gpui::Hsla::default()),
             cue_style: CueStyle {
                 cue: gpui::Hsla::default(),
                 cue_weight: gpui::FontWeight::BOLD,
@@ -1275,12 +1217,7 @@ impl InputHighlighter for BrinkHighlighter {
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
         self.muted_lines = muted_lines(&source);
         self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
-        self.breakpoints = breakpoint_lines(&source, &project.read(cx).breakpoints_in(&self.path));
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
-        self.mark = (
-            brink_gpui_shell::theme::hsla(tokens.error),
-            brink_gpui_shell::theme::hsla(tokens.fg_muted),
-        );
         self.cue_style = CueStyle {
             cue: brink_gpui_shell::theme::hsla(tokens.cue.unwrap_or(tokens.accent)),
             cue_weight: gpui::FontWeight(f32::from(tokens.cue_weight)),
@@ -1367,10 +1304,8 @@ impl InputHighlighter for BrinkHighlighter {
         // The dialect before the band: a TODO note inside a dialogue run
         // is still a note, and the band must win on every word it covers.
         let out = overlay_cues(out, &self.cue_lines, self.cue_style);
-        let out = overlay_todo(out, &self.todo_lines, self.band);
-        // Last, over everything: a marked line has to be legible as
-        // marked whatever else is on it.
-        overlay_breakpoints(out, &self.breakpoints, self.mark)
+        // Breakpoints are the gutter's (`crate::gutter`), not the text's.
+        overlay_todo(out, &self.todo_lines, self.band)
     }
 
     fn fold_ranges(&self, _text: &Rope) -> Vec<gpui_component::input::FoldRange> {
@@ -2112,44 +2047,6 @@ mod tests {
             ],
             "prose that merely mentions INCLUDE is prose"
         );
-    }
-
-    #[test]
-    fn a_marked_line_becomes_its_own_byte_range_and_a_stale_mark_is_dropped() {
-        let source = "one\ntwo\nthree\n";
-        let marks = [(2, true), (9, true)];
-        let lines = super::breakpoint_lines(source, &marks);
-        assert_eq!(
-            lines,
-            vec![(4..7, true)],
-            "line 2 is `two`; line 9 is past the end and is not painted \
-             somewhere it was never set"
-        );
-        assert_eq!(&source[4..7], "two");
-        assert!(super::breakpoint_lines(source, &[]).is_empty());
-    }
-
-    #[test]
-    fn an_armed_mark_is_banded_and_one_that_bound_to_nothing_is_struck_through() {
-        let armed = gpui::hsla(0.0, 0.8, 0.5, 1.0);
-        let unbound = gpui::hsla(0.6, 0.1, 0.5, 1.0);
-        let runs = vec![
-            (0..3, gpui::HighlightStyle::default()),
-            (4..7, gpui::HighlightStyle::default()),
-            (8..13, gpui::HighlightStyle::default()),
-        ];
-        let out =
-            super::overlay_breakpoints(runs, &[(0..3, true), (4..7, false)], (armed, unbound));
-        assert!(
-            out[0].1.background_color.is_some(),
-            "an armed line is banded"
-        );
-        assert!(out[0].1.strikethrough.is_none());
-        assert!(
-            out[1].1.strikethrough.is_some(),
-            "a mark that can never hit must not look like one that will"
-        );
-        assert_eq!(out[2].1.background_color, None, "nothing else is touched");
     }
 
     #[test]

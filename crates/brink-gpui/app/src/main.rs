@@ -14,6 +14,7 @@ mod document;
 mod files;
 mod fixes;
 mod graph_layout;
+mod gutter;
 #[cfg(test)]
 mod harness;
 mod hover_card;
@@ -4393,6 +4394,69 @@ mod modes_driven {
         let after = anchor.get();
         assert_ne!(after, before, "the column moved");
         assert_eq!(after, text_left(&mut h), "and the crumb with it");
+    }
+
+    /// The gutter's breakpoint column: a press there sets a breakpoint on
+    /// that line, and another takes it away.
+    #[test]
+    fn a_press_in_the_gutter_toggles_a_breakpoint() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let (project, document) = h.read(|cx| {
+            let s = studio.read(cx);
+            (
+                s.project.clone(),
+                s.code.read(cx).active_document().cloned(),
+            )
+        });
+        let editor = h.read(|cx| {
+            document
+                .expect("the entry is open")
+                .read(cx)
+                .editor()
+                .clone()
+        });
+        // Line 7, "The lamp gutters.": the column's middle, the row's middle.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (
+                f32::from(state.input_bounds().left()) + 8.,
+                f32::from(at.top()) + row * 6.5,
+            )
+        });
+        let marks = |h: &mut Harness| h.read(|cx| project.read(cx).breakpoints_in("story.ink"));
+        assert!(marks(&mut h).is_empty());
+        h.hover(window, x, y);
+        h.mouse_down(window, x, y);
+        h.mouse_up(window, x, y);
+        assert_eq!(
+            marks(&mut h)
+                .iter()
+                .map(|(line, _)| *line)
+                .collect::<Vec<_>>(),
+            [7],
+            "set on the line pressed"
+        );
+        // Over line 6's fold button, just left of the text: the ghost
+        // button lights under the pointer.
+        let (fx, fy) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        h.hover(window, fx, fy);
+        let shot = scratch_dir("shot").join("gutter.png");
+        h.screenshot(window, &shot);
+        eprintln!("gutter screenshot: {}", shot.display());
+        h.mouse_down(window, x, y);
+        h.mouse_up(window, x, y);
+        assert!(marks(&mut h).is_empty(), "and taken away again");
     }
 
     /// The picture: the sidebar open, the caret in a stitch.
