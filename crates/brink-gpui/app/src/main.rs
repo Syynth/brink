@@ -951,12 +951,13 @@ impl Studio {
             &problems,
             window,
             |this, _, event: &ProblemsMenu, window, cx| match event {
-                ProblemsMenu::Suppress { path, line, code } => {
-                    this.suppress(path, *line, code, window, cx);
+                ProblemsMenu::Suppress { path, scope, code } => {
+                    this.suppress(path, *scope, code, window, cx);
                 }
-                ProblemsMenu::Configure => {
+                ProblemsMenu::Configure { prose } => {
+                    let section = if *prose { "prose" } else { "diagnostics" };
                     this.workspace.update(cx, |workspace, cx| {
-                        workspace.open_settings(Some("diagnostics"), window, cx);
+                        workspace.open_settings(Some(section), window, cx);
                     });
                 }
             },
@@ -1854,23 +1855,35 @@ impl Studio {
     fn suppress(
         &mut self,
         path: &str,
-        line: Option<u32>,
+        scope: crate::problems::Scope,
         code: &str,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        use crate::problems::Scope;
+        // The project scope is a `brink.toml` key, not a comment: written
+        // through the config editor Settings uses, so it lands as Settings
+        // would write it.
+        if scope == Scope::Project {
+            crate::settings_config::edit_config(&self.project, cx, |doc| {
+                crate::settings_config::set_or_remove(doc, "lints", code, Some("allow"))
+            });
+            return;
+        }
         let Some(source) = self.project.read(cx).loaded_source(path).map(str::to_owned) else {
             return;
         };
-        let next = match line {
-            Some(line) => {
+        let next = match scope {
+            Scope::Line(line) => {
                 crate::problems::suppress_line_edit(&source, line, code).map(|(at, text)| {
                     let mut out = source.clone();
                     out.insert_str(at, &text);
                     out
                 })
             }
-            None => crate::problems::suppress_file_source(&source, code),
+            Scope::File => crate::problems::suppress_file_source(&source, code),
+            Scope::AllInFile => crate::problems::suppress_all_file_source(&source),
+            Scope::Project => None,
         };
         let Some(next) = next else {
             // Already covered, or a line that is no longer there: doing
@@ -4761,6 +4774,48 @@ mod modes_driven {
                 && s.contains("= start")),
             "start demoted into market:\n{}",
             source(&mut h)
+        );
+    }
+
+    /// The Problems menu's wider scopes: everything in a file is one
+    /// comment at its top; a project-wide allow is a `[lints]` key.
+    #[test]
+    fn the_problems_menus_wider_suppressions_write_where_they_say() {
+        use crate::problems::Scope;
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let source = |h: &mut Harness, path: &str| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .loaded_source(path)
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        };
+        let suppress = |h: &mut Harness, scope: Scope, code: &str| {
+            h.app_window(window, |window, cx| {
+                studio.update(cx, |studio, cx| {
+                    studio.suppress("story.ink", scope, code, window, cx);
+                });
+            });
+            h.settle();
+        };
+
+        suppress(&mut h, Scope::AllInFile, "E001");
+        assert!(
+            source(&mut h, "story.ink").starts_with("// brink-disable-file-all\n"),
+            "{}",
+            source(&mut h, "story.ink")
+        );
+
+        suppress(&mut h, Scope::Project, "E027");
+        let config = source(&mut h, "brink.toml");
+        assert!(
+            config.contains("[lints]") && config.contains("E027 = \"allow\""),
+            "{config}"
         );
     }
 
