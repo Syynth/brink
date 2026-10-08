@@ -831,6 +831,7 @@ impl Studio {
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged
+                | ProjectEvent::ProseOptionsChanged
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             },
@@ -3526,6 +3527,103 @@ mod modes_driven {
         let shot = scratch_dir("shot").join("hover-card.png");
         h.screenshot(window, &shot);
         eprintln!("hover screenshot: {}", shot.display());
+    }
+
+    /// The grammar setting reaches the checker and both kinds of editor,
+    /// with no edit to prompt them: the manuscript drops the grammar it was
+    /// keeping by text when grammar goes off, and a Script tab brings it
+    /// back when it comes on. The misspelling stays throughout — the
+    /// setting is about grammar only.
+    #[test]
+    fn the_grammar_setting_moves_the_squiggles_and_spares_the_misspellings() {
+        use brink_gpui_model::prose::Grammar;
+        let mut h = Harness::new();
+        let dir = scratch_dir("grammar");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nShe recieve the letter. He opened the the door.\n-> DONE\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let codes_of = |h: &mut Harness, write: bool| {
+            h.read(|cx| {
+                let s = studio.read(cx);
+                let editor = if write {
+                    s.manuscript.read(cx).section_editor("story.ink")
+                } else {
+                    s.code
+                        .read(cx)
+                        .active_document()
+                        .map(|d| d.read(cx).editor().clone())
+                };
+                editor
+                    .and_then(|e| {
+                        e.read(cx).diagnostics().map(|set| {
+                            set.iter()
+                                .filter_map(|d| d.code.as_ref().map(|c| c.to_string()))
+                                .filter(|c| c.starts_with("prose."))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let has = |codes: &[String], code: &str| codes.iter().any(|c| c == code);
+        // Through the window, as the Settings UI does: `Harness::update`
+        // runs on the app outside an update cycle, so the global's
+        // observers would not hear of the change until something else
+        // flushed it.
+        let set = |h: &mut Harness, grammar: Grammar| {
+            h.app_window(window, |_, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = grammar);
+            });
+        };
+        // Harper builds its dictionary on a worker's first check, which
+        // takes seconds in an unoptimized test build.
+        let wait = std::time::Duration::from_secs(30);
+
+        // Write, with Harper's grammar: both halves.
+        h.dispatch(window, ModeWrite);
+        let both = h.settle_until(wait, |h| {
+            let codes = codes_of(h, true);
+            has(&codes, "prose.Spelling") && has(&codes, "prose.Repetition")
+        });
+        assert!(both, "spelling and grammar: {:?}", codes_of(&mut h, true));
+
+        // Off: the manuscript checks again although its text did not move.
+        set(&mut h, Grammar::Off);
+        let spelling_only = h.settle_until(wait, |h| {
+            let codes = codes_of(h, true);
+            has(&codes, "prose.Spelling") && !has(&codes, "prose.Repetition")
+        });
+        assert!(
+            spelling_only,
+            "the manuscript drops its kept grammar: {:?}",
+            codes_of(&mut h, true)
+        );
+
+        // A Script tab opened under Off checks under Off…
+        h.dispatch(window, ModeScript);
+        let tab_off = h.settle_until(wait, |h| {
+            let codes = codes_of(h, false);
+            has(&codes, "prose.Spelling") && !has(&codes, "prose.Repetition")
+        });
+        assert!(
+            tab_off,
+            "the tab checks under Off: {:?}",
+            codes_of(&mut h, false)
+        );
+
+        // …and brings the grammar back when it is switched on again.
+        set(&mut h, Grammar::Harper);
+        let tab_on = h.settle_until(wait, |h| {
+            let codes = codes_of(h, false);
+            has(&codes, "prose.Spelling") && has(&codes, "prose.Repetition")
+        });
+        assert!(tab_on, "the tab re-checks: {:?}", codes_of(&mut h, false));
     }
 
     /// Write mode draws the same squiggles as Script: a bad reference is

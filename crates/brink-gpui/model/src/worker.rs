@@ -102,6 +102,11 @@ pub enum Request {
     /// A file left the project: forget it. A rename is a `RemoveFile`
     /// then an `AddFile`, in that order.
     RemoveFile { path: String },
+    /// The app's prose options — today the grammar checked while typing
+    /// (`AppSettings.prose_grammar`). Kept across `Open`: they belong to
+    /// this machine, not to the project. Changes no text, so it produces
+    /// no analysis; the editors ask for their prose again themselves.
+    SetProseOptions { grammar: crate::prose::Grammar },
     /// Drive the play session — see [`crate::play`]. Answered after the
     /// queries of the same drain, against the same text.
     Play {
@@ -414,6 +419,8 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     // The play session, the breakpoint marks that outlive it, and what a
     // fault left behind — see [`PlaySlot`].
     let mut play = PlaySlot::default();
+    // The app's prose options, which outlive any one project.
+    let mut grammar = crate::prose::Grammar::default();
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -490,6 +497,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     files.retain(|f| f != &path);
                     edited = true;
                 }
+                Request::SetProseOptions { grammar: chosen } => grammar = chosen,
             }
         }
 
@@ -537,13 +545,20 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                 )))
             } else if let QueryKind::Prose { path } = &kind {
                 // The config decides whether it runs at all, in which
-                // English, and which invented names are words.
+                // English, and which invented names are words; the app's
+                // own setting decides which grammar comes with it.
                 if config.prose_enabled() {
                     let dictionary =
                         crate::prose::project_dictionary(&session, config.prose_dictionary());
                     QueryResult::Prose(
-                        crate::prose::check(&session, path, &dictionary, config.prose_dialect())
-                            .unwrap_or_default(),
+                        crate::prose::check(
+                            &session,
+                            path,
+                            &dictionary,
+                            config.prose_dialect(),
+                            grammar,
+                        )
+                        .unwrap_or_default(),
                     )
                 } else {
                     QueryResult::Prose(Vec::new())

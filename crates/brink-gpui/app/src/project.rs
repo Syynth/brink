@@ -19,6 +19,7 @@ use brink_gpui_model::cues::CueLine;
 use brink_gpui_model::play::{PlayCommand, PlayOutcome};
 use brink_gpui_model::query::{QueryKind, QueryResult};
 use brink_gpui_model::worker::{Diagnostic, DraftGlob, Kinds, Request, Response, Worker};
+use brink_gpui_shell::settings::AppSettings;
 use gpui::{App, AppContext as _, Context, EntityId, EventEmitter, Task};
 
 /// What the UI learns from the worker.
@@ -43,6 +44,10 @@ pub enum ProjectEvent {
     },
     /// A file's prose lints moved. Problems lists them; nothing else does.
     ProseChanged,
+    /// The app's prose options changed (the grammar checked while typing).
+    /// No text moved, so no analysis follows: every editor asks for its
+    /// prose again itself, and drops any lints it was keeping by text.
+    ProseOptionsChanged,
     /// The disk moved under the project. The changes are already applied
     /// — this is what the studio should SAY about them.
     DiskChanged(Vec<DiskReport>),
@@ -123,6 +128,9 @@ pub fn diff(old: &str, new: &str) -> Option<SourceDelta> {
 /// The mirror.
 pub struct Project {
     worker: Worker,
+    /// The grammar last sent to the worker, so a settings change that
+    /// moved something else does not re-check every open file.
+    prose_grammar: brink_gpui_model::prose::Grammar,
     root: PathBuf,
     files: Vec<String>,
     /// The project's `brink.toml`, root-relative, if it has one. Held in
@@ -314,6 +322,14 @@ impl Project {
     pub fn new(cx: &mut Context<Self>) -> Self {
         let worker = Worker::spawn();
         let responses = worker.responses();
+        // The grammar is an app setting, so it reaches the worker from
+        // here: now, and on every change after (`sync_prose_options`).
+        let prose_grammar = AppSettings::get(cx).prose_grammar;
+        worker.send(Request::SetProseOptions {
+            grammar: prose_grammar,
+        });
+        cx.observe_global::<AppSettings>(Self::sync_prose_options)
+            .detach();
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(response) = responses.recv().await {
                 if this
@@ -327,6 +343,7 @@ impl Project {
         });
         Self {
             worker,
+            prose_grammar,
             root: PathBuf::new(),
             files: Vec::new(),
             binder_order: BinderOrder::default(),
@@ -359,6 +376,18 @@ impl Project {
             _pump: pump,
             empty_kinds: Kinds::new(),
         }
+    }
+
+    /// Send the worker the grammar the settings now name, if it moved,
+    /// and have every editor check its prose again under it.
+    fn sync_prose_options(&mut self, cx: &mut Context<Self>) {
+        let grammar = AppSettings::get(cx).prose_grammar;
+        if grammar == self.prose_grammar {
+            return;
+        }
+        self.prose_grammar = grammar;
+        self.worker.send(Request::SetProseOptions { grammar });
+        cx.emit(ProjectEvent::ProseOptionsChanged);
     }
 
     fn apply(&mut self, response: Response, cx: &mut Context<Self>) {

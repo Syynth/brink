@@ -20,11 +20,70 @@
 //! indistinguishable from the feature being broken (#3210). The knots,
 //! stitches and labels the analysis already knows are added to whatever
 //! `[prose] dictionary` lists.
+//!
+//! **The checkers sit behind this module.** This file decides what is
+//! prose and what the result looks like; an engine module decides how it
+//! is checked. Today that is [`harper`] everywhere, and the grammar the
+//! author sees while typing is an app setting ([`Grammar`]) — the shape
+//! `docs/gpui-prose-checker-spec.md` builds the macOS checker into.
 
 use std::collections::BTreeSet;
 
 use brink_ide::session::IdeSession;
 use brink_ir::hir::projection::SpanKind;
+
+mod harper;
+
+/// Which grammar the editor checks while the author types.
+///
+/// An APP setting (`AppSettings.prose_grammar`), not `[prose]`: it picks
+/// between the checkers on this machine, and a collaborator on another
+/// platform may not have the same ones to pick from
+/// (`docs/gpui-prose-checker-spec.md` §6). Spelling is not affected —
+/// switching grammar off leaves the misspellings underlined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grammar {
+    /// Harper's rules.
+    #[default]
+    Harper,
+    /// None: spelling only.
+    Off,
+}
+
+impl Grammar {
+    pub const ALL: [Self; 2] = [Self::Harper, Self::Off];
+
+    /// The spelling in the app's settings file.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Harper => "harper",
+            Self::Off => "off",
+        }
+    }
+
+    /// Read back what [`Grammar::as_str`] wrote; `None` for anything else.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.as_str() == value)
+    }
+}
+
+/// The rule category every engine reports a misspelling under. Everything
+/// else a checker says is grammar, for [`Grammar`]'s purposes.
+const SPELLING: &str = "Spelling";
+
+/// A finding as an engine reports it: in UTF-16 code units of the file,
+/// the unit every checker here speaks. [`check`] turns it into a
+/// [`ProseLint`] in bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Lint16 {
+    start: u32,
+    end: u32,
+    kind: String,
+    message: String,
+    fixes: Vec<ProseFix>,
+}
 
 /// One finding, in BYTE offsets of the file.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -192,6 +251,7 @@ pub fn check(
     path: &str,
     dictionary: &[String],
     dialect: Option<&str>,
+    grammar: Grammar,
 ) -> Option<Vec<ProseLint>> {
     let id = session.file_id(path)?;
     let source = session.source(id)?.to_owned();
@@ -201,41 +261,35 @@ pub fn check(
         return Some(Vec::new());
     }
     let units = Units::new(&source);
-    let request = brink_prose::CheckRequest {
-        text: source.clone(),
-        spans: ranges
-            .iter()
-            .map(|&(a, b)| brink_prose::SpanJs {
-                start: units.to_utf16(a) as usize,
-                end: units.to_utf16(b) as usize,
-            })
-            .collect(),
-        dictionary: dictionary.to_vec(),
-        dialect: dialect.map(str::to_owned),
-    };
-    let response = brink_prose::check(&request);
+    let spans: Vec<(u32, u32)> = ranges
+        .iter()
+        .map(|&(a, b)| (units.to_utf16(a), units.to_utf16(b)))
+        .collect();
+    let found = harper::check(&source, &spans, dictionary, dialect);
     Some(
-        response
-            .lints
+        compose(found, grammar)
             .into_iter()
             .map(|lint| ProseLint {
-                start: units.to_byte(lint.start as u32),
-                end: units.to_byte(lint.end as u32),
+                start: units.to_byte(lint.start),
+                end: units.to_byte(lint.end),
                 kind: lint.kind,
                 message: lint.message,
-                fixes: lint
-                    .suggestions
-                    .into_iter()
-                    .filter_map(|s| match s.kind {
-                        "replace" => Some(ProseFix::Replace(s.text)),
-                        "remove" => Some(ProseFix::Remove),
-                        _ => None,
-                    })
-                    .take(MAX_FIXES)
-                    .collect(),
+                fixes: lint.fixes,
             })
             .collect(),
     )
+}
+
+/// The engines' findings, as the grammar setting asks for them.
+///
+/// One engine answers both halves today, so this only keeps or drops its
+/// grammar, in the order it reported. A second spelling engine and the
+/// rules for where two engines overlap (spec §4.3) join it here.
+fn compose(found: Vec<Lint16>, grammar: Grammar) -> Vec<Lint16> {
+    found
+        .into_iter()
+        .filter(|lint| grammar == Grammar::Harper || lint.kind == SPELLING)
+        .collect()
 }
 
 #[cfg(test)]
@@ -285,6 +339,43 @@ mod tests {
                 "round trip at {byte}"
             );
         }
+    }
+
+    #[test]
+    fn the_grammar_setting_keeps_its_name_in_the_settings_file() {
+        for grammar in Grammar::ALL {
+            assert_eq!(Grammar::parse(grammar.as_str()), Some(grammar));
+        }
+        assert_eq!(Grammar::parse("languagetool"), None);
+        assert_eq!(Grammar::default(), Grammar::Harper);
+    }
+
+    #[test]
+    fn grammar_off_keeps_the_misspellings_and_nothing_else() {
+        // A misspelling and a doubled word, through the real checker.
+        let text = "She recieve the letter. He opened the the door.";
+        let units = Units::new(text);
+        let spans = [(0, units.to_utf16(text.len() as u32))];
+        let found = harper::check(text, &spans, &[], None);
+        let kinds =
+            |lints: &[Lint16]| -> Vec<String> { lints.iter().map(|l| l.kind.clone()).collect() };
+        assert!(
+            kinds(&found).contains(&SPELLING.to_owned())
+                && kinds(&found).iter().any(|k| k != SPELLING),
+            "the probe text should draw both halves, got {:?}",
+            kinds(&found)
+        );
+
+        let with = compose(found.clone(), Grammar::Harper);
+        assert_eq!(with, found, "Harper keeps everything, in order");
+
+        let without = compose(found, Grammar::Off);
+        assert!(!without.is_empty());
+        assert!(
+            without.iter().all(|l| l.kind == SPELLING),
+            "only spelling survives, got {:?}",
+            kinds(&without)
+        );
     }
 
     #[test]

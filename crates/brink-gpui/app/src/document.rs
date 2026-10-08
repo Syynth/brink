@@ -248,6 +248,10 @@ impl Document {
                     this.outline = None;
                     this.refresh(cx);
                 }
+                // Prose squiggles are added on top of the compiler's, so a
+                // re-check under new options goes through the full
+                // refresh, which clears them first.
+                ProjectEvent::ProseOptionsChanged => this.refresh(cx),
                 // A mark is drawn by the highlighter, and the highlighter
                 // only runs on an edit — so a toggle has to ask for one.
                 ProjectEvent::BreakpointsChanged => this.refresh_gutter(cx),
