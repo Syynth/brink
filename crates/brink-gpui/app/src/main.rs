@@ -3364,7 +3364,7 @@ mod modes_driven {
                     .section_editor("story.ink")
             })
             .expect("mounted");
-        let content = "**label** `clue_case_file.case_file_open`\n\n*Defined in* [`clues/clue_case_file.ink`](#0)".to_owned();
+        let content = "**list item** `clues.case_file`\n\n**LIST** `clues` — **`case_file = 1`**, `parents_letter = 2`, `birthday_card = 3`\n\n*Defined in* [`lib/lists.ink`](#0)".to_owned();
         h.update(|cx| {
             crate::hover_card::remember(
                 &content,
