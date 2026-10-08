@@ -4545,6 +4545,14 @@ mod modes_driven {
             h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
         });
         assert!(folded, "the knot folded");
+        // All of it: lines 7–12 hidden, through its last, "-> DONE" — the
+        // knot's header stays (row 5), the blank after it is row 6, and
+        // the next knot comes straight after.
+        assert_eq!(
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13)),
+            7,
+            "the fold hides the knot through its last line"
+        );
     }
 
     /// Write's sections fold too, and a folded section shrinks to the rows

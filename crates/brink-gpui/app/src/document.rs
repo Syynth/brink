@@ -872,8 +872,15 @@ pub(crate) fn request_folds(
         };
         let candidates = folds
             .into_iter()
+            // brink-ide's fold ENDS on its last line (inclusive, as the web
+            // editor folds); the kit hides only the lines BETWEEN start and
+            // end, leaving the end line showing — a brace language's
+            // closing `}`. One past ours, so the last line folds too.
             .map(|f| {
-                gpui_component::input::FoldRange::new(f.start_line as usize, f.end_line as usize)
+                gpui_component::input::FoldRange::new(
+                    f.start_line as usize,
+                    f.end_line as usize + 1,
+                )
             })
             .collect();
         // The cell is what the highlighter reports from now on; the
