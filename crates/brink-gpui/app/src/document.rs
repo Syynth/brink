@@ -579,6 +579,10 @@ impl Document {
     }
 
     fn refresh(&mut self, cx: &mut Context<Self>) {
+        // The gutter's ▶ lines follow the knots and stitches as they move.
+        if let Some(marks) = &self.gutter {
+            crate::gutter::refresh_headers(marks, &self.editor, &self.project, &self.path, cx);
+        }
         let (rope, source) = {
             let state = self.editor.read(cx);
             (state.text().clone(), state.value().to_string())

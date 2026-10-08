@@ -191,6 +191,12 @@ impl Player {
         )
     }
 
+    /// Where the last session was started, for the tests.
+    #[cfg(test)]
+    pub fn started_at(&self) -> Option<&str> {
+        self.start_at.as_deref()
+    }
+
     /// Whether the panel currently sits in a dock.
     #[must_use]
     pub fn is_docked(&self) -> bool {

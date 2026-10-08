@@ -2575,6 +2575,13 @@ impl Render for Studio {
             .on_action(cx.listener(Self::toggle_writing_sidebar))
             .on_action(cx.listener(Self::toggle_structure_column))
             .on_action(cx.listener(Self::toggle_breakpoint))
+            // The gutter's ▶ (and any surface's "Play from here" that lets
+            // the action reach the root): a session entered at that path.
+            .on_action(
+                cx.listener(|this, action: &crate::binder::PlayFromHere, window, cx| {
+                    this.play_at(Some(action.path.clone()), window, cx);
+                }),
+            )
             .on_action(cx.listener(Self::clear_breakpoints))
             .on_action(cx.listener(Self::debug_continue))
             .on_action(cx.listener(Self::debug_step_line))
@@ -4457,6 +4464,87 @@ mod modes_driven {
         h.mouse_down(window, x, y);
         h.mouse_up(window, x, y);
         assert!(marks(&mut h).is_empty(), "and taken away again");
+    }
+
+    /// A knot's header line plays from there: its gutter cell starts a
+    /// session at the knot, and sets no breakpoint.
+    #[test]
+    fn a_press_on_a_knots_gutter_plays_from_there() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let (project, player, editor) = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            (
+                s.project.clone(),
+                s.player.clone(),
+                document.read(cx).editor().clone(),
+            )
+        });
+        // Line 6, "=== start ===", once the outline has marked it.
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (
+                f32::from(state.input_bounds().left()) + 8.,
+                f32::from(at.top()) + row * 5.5,
+            )
+        });
+        let started = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.read(|cx| player.read(cx).started_at().is_some())
+        });
+        assert!(started, "the press started a session");
+        assert_eq!(
+            h.read(|cx| player.read(cx).started_at().map(str::to_owned))
+                .as_deref(),
+            Some("start")
+        );
+        assert!(
+            h.read(|cx| project.read(cx).breakpoints_in("story.ink"))
+                .is_empty(),
+            "a header line plays, it does not take a breakpoint"
+        );
+    }
+
+    /// The fold button folds: a press on line 6's chevron folds the knot.
+    #[test]
+    fn a_press_on_the_fold_button_folds() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        let folded = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.capture(window);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.capture(window);
+            // Line 14, "=== market ===", moves up once the knot above it
+            // is folded away.
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+        });
+        assert!(folded, "the knot folded");
     }
 
     /// The picture: the sidebar open, the caret in a stitch.

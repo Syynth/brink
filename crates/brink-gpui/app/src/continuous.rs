@@ -229,6 +229,7 @@ impl ContinuousView {
                 ProjectEvent::Opened { .. } => this.reload(cx),
                 ProjectEvent::Analyzed => {
                     this.refresh_diagnostics(cx);
+                    this.refresh_play_lines(cx);
                     if this.read.on.get() {
                         this.sync_prose(cx);
                     }
@@ -657,6 +658,21 @@ impl ContinuousView {
         true
     }
 
+    /// Re-read every section's knot and stitch lines for its gutter's ▶.
+    fn refresh_play_lines(&mut self, cx: &mut Context<Self>) {
+        let editors: Vec<(String, Entity<EditorState>)> = self
+            .editors
+            .borrow()
+            .iter()
+            .map(|(path, (editor, _))| (path.clone(), editor.clone()))
+            .collect();
+        for (path, editor) in editors {
+            if let Some(marks) = self.gutters.borrow().get(&path).cloned() {
+                crate::gutter::refresh_headers(&marks, &editor, &self.project, &path, cx);
+            }
+        }
+    }
+
     /// Read every section's breakpoints afresh and redraw its gutter.
     fn refresh_gutters(&mut self, cx: &mut Context<Self>) {
         let editors: Vec<(String, Entity<EditorState>)> = self
@@ -1018,6 +1034,10 @@ impl ContinuousView {
             state.set_value(source, window, cx);
             state
         });
+        // Its ▶ lines, from the outline the last analysis left.
+        if let Some(marks) = gutters.borrow().get(path).cloned() {
+            crate::gutter::refresh_headers(&marks, &state, project, path, cx);
+        }
 
         // The spike got re-analysis as a side effect of the highlighter,
         // which called `sync` on every paint. That is exactly the
