@@ -41,6 +41,7 @@ mod state_view;
 mod sticky_lines;
 mod story_graph;
 mod structural;
+mod symbol_menu;
 mod tab_title;
 mod todos;
 mod treemap;
@@ -916,9 +917,13 @@ impl Studio {
         let on_graph = cx.subscribe_in(
             &graph,
             window,
-            |this, _, event: &crate::story_graph::StoryGraphEvent, window, cx| {
-                let crate::story_graph::StoryGraphEvent::Navigate { path, span } = event;
-                this.show(path, span.clone(), window, cx);
+            |this, _, event: &crate::story_graph::StoryGraphEvent, window, cx| match event {
+                crate::story_graph::StoryGraphEvent::Navigate { path, span } => {
+                    this.show(path, span.clone(), window, cx);
+                }
+                crate::story_graph::StoryGraphEvent::Outline(event) => {
+                    this.on_outline(event, window, cx);
+                }
             },
         );
         let on_program = cx.subscribe_in(
@@ -1353,7 +1358,7 @@ impl Studio {
                 return;
             };
             let _ = cx.update(|window, cx| {
-                rename::prompt(site, range.start, current, window, cx);
+                rename::prompt(site.project, site.path, range.start, current, window, cx);
             });
         })
         .detach();
@@ -1684,8 +1689,59 @@ impl Studio {
                     cx,
                 );
             }
-            BinderEvent::Demote { path, knot } => {
-                structural::demote(self.project.clone(), path.clone(), knot.clone(), window, cx);
+            BinderEvent::Demote { path, knot, into } => {
+                structural::demote(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    into.clone(),
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::MoveStitch {
+                path,
+                knot,
+                stitch,
+                dest,
+            } => {
+                structural::move_stitch(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    stitch.clone(),
+                    dest.clone(),
+                    window,
+                    cx,
+                );
+            }
+            BinderEvent::Reorder {
+                path,
+                knot,
+                stitch,
+                up,
+            } => {
+                structural::reorder(
+                    self.project.clone(),
+                    path.clone(),
+                    knot.clone(),
+                    stitch.clone(),
+                    *up,
+                    window,
+                    cx,
+                );
+            }
+            // From a row, not a caret: the rename pipeline asks the worker
+            // at the name's own offset, so no editor needs to be open.
+            BinderEvent::RenameSymbol { path, offset, name } => {
+                rename::prompt(
+                    self.project.clone(),
+                    path.clone().into(),
+                    *offset,
+                    name.clone(),
+                    window,
+                    cx,
+                );
             }
             BinderEvent::Open { .. } => {}
         }
@@ -4511,6 +4567,85 @@ mod modes_driven {
             h.read(|cx| project.read(cx).breakpoints_in("story.ink"))
                 .is_empty(),
             "a header line plays, it does not take a breakpoint"
+        );
+    }
+
+    /// The symbol menu's moves, run the way a click on one runs them:
+    /// a reorder, a stitch moved into another knot, a knot demoted into a
+    /// chosen one. Each one's text is what the move says.
+    #[test]
+    fn the_symbol_menus_moves_reshape_the_file() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        let source = |h: &mut Harness| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .loaded_source("story.ink")
+                    .unwrap_or_default()
+                    .to_owned()
+            })
+        };
+        let run = |h: &mut Harness, event: crate::binder::BinderEvent| {
+            h.app_window(window, |window, cx| {
+                studio.update(cx, |studio, cx| studio.on_outline(&event, window, cx));
+            });
+        };
+        let moved = |h: &mut Harness, check: &dyn Fn(&str) -> bool| {
+            h.settle_until(PINS_WAIT, |h| check(&source(h)))
+        };
+
+        // `market` up above `start`.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::Reorder {
+                path: "story.ink".to_owned(),
+                knot: "market".to_owned(),
+                stitch: None,
+                up: true,
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| s.find("=== market").unwrap_or(usize::MAX)
+                < s.find("=== start").unwrap_or(0)),
+            "market moved up:\n{}",
+            source(&mut h)
+        );
+
+        // `start.second` into `market`, its divert following it.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::MoveStitch {
+                path: "story.ink".to_owned(),
+                knot: "start".to_owned(),
+                stitch: "second".to_owned(),
+                dest: "market".to_owned(),
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| s.contains("-> market.second")),
+            "second moved into market:\n{}",
+            source(&mut h)
+        );
+
+        // `start` — stitchless now — demoted into `market`.
+        run(
+            &mut h,
+            crate::binder::BinderEvent::Demote {
+                path: "story.ink".to_owned(),
+                knot: "start".to_owned(),
+                into: Some("market".to_owned()),
+            },
+        );
+        assert!(
+            moved(&mut h, &|s| !s.contains("=== start")
+                && s.contains("= start")),
+            "start demoted into market:\n{}",
+            source(&mut h)
         );
     }
 

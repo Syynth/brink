@@ -21,12 +21,20 @@ use gpui_component::dialog::DialogButtonProps;
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
-use crate::navigation::{EditorSite, rename};
+use crate::navigation::rename;
 use crate::project::Project;
 use brink_gpui_shell::notify::{Severity, notify};
 
-/// Ask for a new name for the symbol at `offset`, currently `current`.
-pub fn prompt(site: EditorSite, offset: usize, current: String, window: &mut Window, cx: &mut App) {
+/// Ask for a new name for the symbol at `offset` in `path`, currently
+/// `current`. No editor is needed: the menus rename from a row.
+pub fn prompt(
+    project: Entity<Project>,
+    path: SharedString,
+    offset: usize,
+    current: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
     let input = cx.new(|cx| {
         let mut state = InputState::new(window, cx).placeholder("New name");
         state.set_value(current.clone(), window, cx);
@@ -36,7 +44,6 @@ pub fn prompt(site: EditorSite, offset: usize, current: String, window: &mut Win
     // reach an input that holds focus, and a rename prompt you have to
     // click is a prompt nobody uses.
     let confirm = Rc::new({
-        let site = site.clone();
         let input = input.clone();
         move |window: &mut Window, cx: &mut App| {
             let new_name = input.read(cx).value().trim().to_owned();
@@ -44,7 +51,7 @@ pub fn prompt(site: EditorSite, offset: usize, current: String, window: &mut Win
             if new_name.is_empty() {
                 return;
             }
-            run(&site, offset, new_name, window, cx);
+            run(&project, &path, offset, new_name, window, cx);
         }
     });
     let on_enter = {
@@ -84,9 +91,16 @@ pub fn prompt(site: EditorSite, offset: usize, current: String, window: &mut Win
 }
 
 /// Compute the plan; apply it when safe, else show the report.
-fn run(site: &EditorSite, offset: usize, new_name: String, window: &mut Window, cx: &mut App) {
-    let plan = rename(site, offset, new_name, cx);
-    let project = site.project.clone();
+fn run(
+    project: &Entity<Project>,
+    path: &str,
+    offset: usize,
+    new_name: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    let plan = rename(project, path, offset, new_name, cx);
+    let project = project.clone();
     window
         .spawn(cx, async move |cx| {
             let Some(plan) = plan.await else {

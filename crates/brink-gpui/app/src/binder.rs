@@ -34,22 +34,26 @@
 //! the disk).
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, AppContext as _, ClickEvent, Context, DragMoveEvent, Entity, EventEmitter,
-    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, ParentElement as _, Pixels, Point, Render, ScrollStrategy, SharedString,
-    StatefulInteractiveElement as _, Styled as _, UniformListScrollHandle, Window, anchored,
-    deferred, div, point, prelude::FluentBuilder as _, px, uniform_list,
+    FocusHandle, Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
+    ParentElement as _, Render, ScrollStrategy, SharedString, StatefulInteractiveElement as _,
+    Styled as _, UniformListScrollHandle, Window, div, prelude::FluentBuilder as _, px,
+    uniform_list,
 };
 use gpui_component::{
-    ActiveTheme as _, Sizable as _, StyledExt as _, h_flex,
+    ActiveTheme as _, IconName, Sizable as _, StyledExt as _,
+    button::{Button, ButtonVariants as _},
+    h_flex,
     input::{Input, InputEvent, InputState},
-    menu::ContextMenuExt as _,
+    menu::{ContextMenuExt as _, DropdownMenu as _, PopupMenu, PopupMenuItem},
     v_flex,
 };
 
 use crate::project::{Project, ProjectEvent};
+use crate::symbol_menu;
 use brink_gpui_shell::icons;
 
 /// One knot (with its stitches) for Structure mode — the worker's
@@ -132,9 +136,6 @@ pub struct Row {
     pub path: String,
     /// Byte offset to reveal when the row is opened (symbol rows only).
     pub offset: Option<usize>,
-    /// Where a symbol row's own content stops (`full_end`) — where a new
-    /// stitch goes. `None` on file and folder rows.
-    pub end: Option<usize>,
     pub expandable: bool,
     pub expanded: bool,
     pub entry: bool,
@@ -207,10 +208,31 @@ pub enum BinderEvent {
         knot: String,
         stitch: String,
     },
-    /// Fold a knot into the knot above it, as a stitch.
+    /// Fold a knot into `into` (or the knot above it), as a stitch.
     Demote {
         path: String,
         knot: String,
+        into: Option<String>,
+    },
+    /// Move a stitch out of its knot into `dest`.
+    MoveStitch {
+        path: String,
+        knot: String,
+        stitch: String,
+        dest: String,
+    },
+    /// Move a knot, or one of its stitches, one place up or down.
+    Reorder {
+        path: String,
+        knot: String,
+        stitch: Option<String>,
+        up: bool,
+    },
+    /// Rename the knot or stitch whose name starts at `offset`, now `name`.
+    RenameSymbol {
+        path: String,
+        offset: usize,
+        name: String,
     },
 }
 
@@ -255,32 +277,8 @@ pub struct NewKnot {
     pub path: String,
 }
 
-/// Create a stitch at the end of the knot a symbol row belongs to. Offered
-/// on a knot row and on a stitch row alike: a stitch's sibling goes in the
-/// same place its own knot ends, which is what `full_end` carries.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct NewStitch {
-    pub path: String,
-    pub full_end: usize,
-}
-
-/// Promote the stitch a row names to a knot of its own.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct PromoteStitch {
-    pub path: String,
-    pub knot: String,
-    pub stitch: String,
-}
-
-/// Demote the knot a row names into the knot above it.
-#[derive(Clone, PartialEq, Debug, gpui::Action)]
-#[action(namespace = binder, no_json)]
-pub struct DemoteKnot {
-    pub path: String,
-    pub knot: String,
-}
+/// A row's menu, shared by its right-click and its `⋯`.
+type RowMenu = Rc<dyn Fn(PopupMenu, &mut Window, &mut Context<PopupMenu>) -> PopupMenu>;
 
 /// The folder a path sits in, root-relative and possibly empty — where a
 /// new file made from this row's menu goes.
@@ -292,17 +290,6 @@ fn folder_of(path: &str) -> String {
 }
 
 impl Row {
-    /// The runtime path of a symbol row — `knot` or `knot.stitch` — read
-    /// off its key (`file::knot[::stitch]`). `None` for files and folders.
-    fn play_path(&self) -> Option<String> {
-        match self.kind {
-            RowKind::Knot | RowKind::Stitch => {
-                Some(self.key.split("::").skip(1).collect::<Vec<_>>().join("."))
-            }
-            RowKind::Folder | RowKind::File => None,
-        }
-    }
-
     /// What a structural move would act on, read off the row's key
     /// (`file::knot[::stitch]`). `None` for a file or a folder, which have
     /// no shape to change.
@@ -488,12 +475,6 @@ pub struct Binder {
     filter_open: bool,
     filter_text: String,
     drop: Option<DropTarget>,
-    /// The hover-revealed ⋯ menu: which row, and where to anchor it.
-    /// gpui-component 0.6.0 publishes no click-triggered popup (only the
-    /// right-click `ContextMenu`), so the row-actions affordance the studio
-    /// has is built here directly — `anchored` + `deferred`, which is what
-    /// that component does internally anyway.
-    row_menu: Option<(SharedString, Point<Pixels>)>,
     scroll: UniformListScrollHandle,
     focus: FocusHandle,
     /// The dock tab this panel sits in, for the rail to select.
@@ -569,7 +550,6 @@ impl Binder {
             filter_open: false,
             filter_text: String::new(),
             drop: None,
-            row_menu: None,
             scroll: UniformListScrollHandle::new(),
             focus: cx.focus_handle(),
             tab: brink_gpui_shell::tool_window::TabSlot::default(),
@@ -771,7 +751,6 @@ impl Binder {
                         label: name.clone().into(),
                         path: key.clone(),
                         offset: None,
-                        end: None,
                         expandable: true,
                         expanded,
                         entry: false,
@@ -819,7 +798,6 @@ impl Binder {
                         label: name.into(),
                         path: path.clone(),
                         offset: None,
-                        end: None,
                         expandable: structure && !file_symbols.is_empty(),
                         expanded,
                         entry: Some(path.as_str()) == entry,
@@ -850,7 +828,6 @@ impl Binder {
                             label: knot.name.clone().into(),
                             path: path.clone(),
                             offset: Some(knot.start),
-                            end: Some(knot.full_end),
                             expandable: !knot.children.is_empty(),
                             expanded: knot_expanded,
                             entry: false,
@@ -874,7 +851,6 @@ impl Binder {
                                 label: stitch.name.clone().into(),
                                 path: path.clone(),
                                 offset: Some(stitch.start),
-                                end: Some(knot.full_end),
                                 expandable: false,
                                 expanded: false,
                                 entry: false,
@@ -1189,6 +1165,9 @@ impl Binder {
         let Some(row) = self.rows.get(index).cloned() else {
             return div().into_any_element();
         };
+        // One menu, two ways to open it: right-click and the `⋯`.
+        let row_menu = self.menu_for(&row, cx);
+        let dots_menu = row_menu.clone();
         let theme = cx.theme();
         let selected = self.selected.as_ref() == Some(&row.key) || self.marked.contains(&row.key);
         let drop_into = self.drop == Some(DropTarget::Into(row.key.clone()));
@@ -1215,21 +1194,7 @@ impl Binder {
             kind: row.kind,
         };
         let key_for_move = row.key.clone();
-        let menu_key = row.key.clone();
-        let menu_focus = self.focus.clone();
-        let play_path = row.play_path();
-        let file_path = row.path.clone();
-        // A library file is a FILE row, but not the author's: renaming or
-        // deleting one is not offered. (`Project`'s own operations refuse
-        // it too — it is not in the mirror — but a menu item that only
-        // ever reports an error is a menu item that should not be there.)
-        let is_file = row.kind == RowKind::File && !self.project.read(cx).is_library(&row.path);
-        // A library file's symbols are not the author's to add to either.
-        let row_end = (!self.project.read(cx).is_library(&row.path))
-            .then_some(row.end)
-            .flatten();
         let kind_for_move = row.kind;
-        let structural = row.structural();
 
         // Indent guides, Zed's placement (the web studio's `binder.css`,
         // maintainer 2026-08-23): one hairline per ancestor, centred under
@@ -1312,32 +1277,13 @@ impl Binder {
                     )
                     .children(marks)
                     .child(
-                        div()
-                            .id(("row-actions", index))
-                            .flex()
-                            .items_center()
-                            .justify_center()
-                            .size(px(18.))
-                            .rounded_sm()
-                            .invisible()
-                            .group_hover("", |s| s.visible())
-                            .hover(|s| s.bg(theme.muted))
-                            .child(icons::icon(
-                                icons::BrinkIcon::Dots,
-                                px(12.),
-                                theme.muted_foreground,
-                            ))
-                            .on_mouse_down(
-                                MouseButton::Left,
-                                cx.listener({
-                                    let key = menu_key.clone();
-                                    move |this, event: &MouseDownEvent, _window, cx| {
-                                        cx.stop_propagation();
-                                        this.row_menu = Some((key.clone(), event.position));
-                                        cx.notify();
-                                    }
-                                }),
-                            ),
+                        div().invisible().group_hover("", |s| s.visible()).child(
+                            Button::new(("row-actions", index))
+                                .ghost()
+                                .xsmall()
+                                .icon(IconName::Ellipsis)
+                                .dropdown_menu(move |menu, window, cx| dots_menu(menu, window, cx)),
+                        ),
                     ),
             )
             .group("")
@@ -1414,85 +1360,97 @@ impl Binder {
                 let dragged = dragged.clone();
                 this.apply_drop(&dragged, cx);
             }))
-            .context_menu(move |menu, _window, _cx| {
-                let menu = menu
-                    .action_context(menu_focus.clone())
-                    .label(row.label.clone())
-                    .separator()
-                    .menu("Open", Box::new(NoopAction));
-                let menu = match play_path.clone() {
-                    Some(path) => menu.menu("Play from here", Box::new(PlayFromHere { path })),
-                    None => menu,
-                };
-                let menu = menu.separator().menu(
-                    "New File…",
-                    Box::new(NewFile {
-                        folder: folder_of(&file_path),
-                    }),
-                );
-                // Structural creation, from the row it belongs under: a
-                // file makes a knot, a knot or one of its stitches makes a
-                // stitch. A folder row is neither and is offered neither.
-                let menu = match (is_file, row_end) {
-                    (true, _) => menu.menu(
-                        "New Knot…",
-                        Box::new(NewKnot {
-                            path: file_path.clone(),
-                        }),
-                    ),
-                    (false, Some(full_end)) => menu.menu(
-                        "New Stitch…",
-                        Box::new(NewStitch {
-                            path: file_path.clone(),
-                            full_end,
-                        }),
-                    ),
-                    (false, None) => menu,
-                };
-                // The structural moves, on the row whose shape they change:
-                // a stitch can become a knot, a knot can fold into the one
-                // above it. Both go through the safe-by-default gate, so
-                // the menu offers them and the report decides.
-                let menu = match &structural {
-                    Some(Structural::Stitch { knot, stitch }) => menu.separator().menu(
-                        "Promote to Knot\u{2026}",
-                        Box::new(PromoteStitch {
-                            path: file_path.clone(),
-                            knot: knot.clone(),
-                            stitch: stitch.clone(),
-                        }),
-                    ),
-                    Some(Structural::Knot { knot }) => menu.separator().menu(
-                        "Demote to Stitch\u{2026}",
-                        Box::new(DemoteKnot {
-                            path: file_path.clone(),
-                            knot: knot.clone(),
-                        }),
-                    ),
-                    None => menu,
-                };
-                // Rename and Delete are FILE operations. On a symbol row
-                // they would have to mean something else — renaming a knot
-                // is `f2`'s cross-file, safe-by-default job — so they are
-                // not offered there rather than offered and wrong.
-                if !is_file {
-                    return menu;
-                }
-                menu.separator()
-                    .menu(
-                        "Rename…",
-                        Box::new(RenameFile {
-                            path: file_path.clone(),
-                        }),
-                    )
-                    .menu(
-                        "Delete…",
-                        Box::new(DeleteFile {
-                            path: file_path.clone(),
-                        }),
-                    )
-            })
+            .context_menu(move |menu, window, cx| row_menu(menu, window, cx))
             .into_any_element()
+    }
+
+    /// The menu a row opens. A knot or stitch row's is the shared symbol
+    /// menu ([`symbol_menu`]); a file's and a folder's are the file
+    /// operations.
+    fn menu_for(&self, row: &Row, cx: &mut Context<Self>) -> RowMenu {
+        let me = cx.entity().downgrade();
+        let emit: symbol_menu::Emit = Rc::new(move |event, _, cx| {
+            let _ = me.update(cx, |_, cx| cx.emit(event));
+        });
+        let library = self.project.read(cx).is_library(&row.path);
+        if let Some(structural) = row.structural() {
+            let (knot, stitch) = match structural {
+                Structural::Knot { knot } => (knot, None),
+                Structural::Stitch { knot, stitch } => (knot, Some(stitch)),
+            };
+            let outline = self
+                .symbols
+                .get(&row.path)
+                .map(|nodes| symbol_menu::outline_from_nodes(nodes))
+                .unwrap_or_default();
+            let target = symbol_menu::Target {
+                path: row.path.clone(),
+                knot,
+                stitch,
+                library,
+                outline: Rc::new(outline),
+            };
+            return Rc::new(move |menu, window, cx| {
+                symbol_menu::build(menu, &target, &emit, window, cx)
+            });
+        }
+        let row = row.clone();
+        let focus = self.focus.clone();
+        Rc::new(move |menu, _, _| {
+            let click = |event: BinderEvent| {
+                let emit = emit.clone();
+                move |_: &ClickEvent, window: &mut Window, cx: &mut App| {
+                    emit(event.clone(), window, cx);
+                }
+            };
+            let menu = menu.action_context(focus.clone());
+            match row.kind {
+                RowKind::File => {
+                    let menu = menu.item(PopupMenuItem::new("Open").on_click(click(
+                        BinderEvent::Open {
+                            path: row.path.clone(),
+                            offset: None,
+                        },
+                    )));
+                    if library {
+                        return menu;
+                    }
+                    menu.separator()
+                        .menu(
+                            "New File\u{2026}",
+                            Box::new(NewFile {
+                                folder: folder_of(&row.path),
+                            }),
+                        )
+                        .menu(
+                            "New Knot\u{2026}",
+                            Box::new(NewKnot {
+                                path: row.path.clone(),
+                            }),
+                        )
+                        .separator()
+                        .menu(
+                            "Rename\u{2026}",
+                            Box::new(RenameFile {
+                                path: row.path.clone(),
+                            }),
+                        )
+                        .menu(
+                            "Delete\u{2026}",
+                            Box::new(DeleteFile {
+                                path: row.path.clone(),
+                            }),
+                        )
+                }
+                // A folder's new file goes in the folder itself.
+                _ => menu.menu(
+                    "New File\u{2026}",
+                    Box::new(NewFile {
+                        folder: row.path.clone(),
+                    }),
+                ),
+            }
+        })
     }
 
     /// A header affordance: our own SVG, tinted, with an active state.
@@ -1643,72 +1601,6 @@ impl Binder {
     }
 }
 
-impl Binder {
-    /// The ⋯ menu, anchored where it was opened. Same items as the
-    /// right-click menu — one list, two affordances, as in the studio
-    /// (`BinderContextMenu.tsx` is shared by both).
-    fn render_row_menu(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let (key, position) = self.row_menu.clone()?;
-        let row = self.rows.iter().find(|r| r.key == key)?.clone();
-        let theme = cx.theme();
-        let (fg, muted, accent, popover, border) = (
-            theme.foreground,
-            theme.muted_foreground,
-            theme.accent,
-            theme.popover,
-            theme.border,
-        );
-        let item = |label: &'static str, cx: &mut Context<Self>, row: Row| {
-            div()
-                .id(label)
-                .px_3()
-                .py_1()
-                .text_sm()
-                .text_color(fg)
-                .hover(move |s| s.bg(accent))
-                .cursor_pointer()
-                .child(label)
-                .on_click(cx.listener(move |this, _: &ClickEvent, _window, cx| {
-                    this.row_menu = None;
-                    if label == "Open" && row.kind != RowKind::Folder {
-                        cx.emit(BinderEvent::Open {
-                            path: row.path.clone(),
-                            offset: row.offset,
-                        });
-                    }
-                    cx.notify();
-                }))
-        };
-        Some(
-            deferred(
-                anchored().position(point(position.x, position.y)).child(
-                    v_flex()
-                        .min_w(px(160.))
-                        .py_1()
-                        .rounded_md()
-                        .bg(popover)
-                        .border_1()
-                        .border_color(border)
-                        .shadow_md()
-                        .child(
-                            div()
-                                .px_3()
-                                .py_1()
-                                .text_xs()
-                                .text_color(muted)
-                                .child(row.label.clone()),
-                        )
-                        .child(item("Open", cx, row.clone()))
-                        .child(item("Play from here", cx, row.clone()))
-                        .child(item("Rename…", cx, row.clone()))
-                        .child(item("Delete", cx, row)),
-                ),
-            )
-            .into_any_element(),
-        )
-    }
-}
-
 impl EventEmitter<BinderEvent> for Binder {}
 
 impl Focusable for Binder {
@@ -1757,25 +1649,6 @@ impl Render for Binder {
                     path: action.path.clone(),
                 });
             }))
-            .on_action(cx.listener(|_, action: &NewStitch, _, cx| {
-                cx.emit(BinderEvent::NewStitch {
-                    path: action.path.clone(),
-                    full_end: action.full_end,
-                });
-            }))
-            .on_action(cx.listener(|_, action: &PromoteStitch, _, cx| {
-                cx.emit(BinderEvent::Promote {
-                    path: action.path.clone(),
-                    knot: action.knot.clone(),
-                    stitch: action.stitch.clone(),
-                });
-            }))
-            .on_action(cx.listener(|_, action: &DemoteKnot, _, cx| {
-                cx.emit(BinderEvent::Demote {
-                    path: action.path.clone(),
-                    knot: action.knot.clone(),
-                });
-            }))
             .size_full()
             .bg(sidebar)
             // A docked Binder draws its own edge. A files-only one is a
@@ -1809,20 +1682,11 @@ impl Render for Binder {
                     .text_color(muted)
                     .child(format!("{count} rows")),
             )
-            .children(self.render_row_menu(cx))
             // Dropping anywhere clears the highlight even if no row took it.
             .on_drop(cx.listener(|this, _: &DraggedRow, _window, cx| {
                 this.drop = None;
                 cx.notify();
             }))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseDownEvent, _window, cx| {
-                    if this.row_menu.take().is_some() {
-                        cx.notify();
-                    }
-                }),
-            )
     }
 }
 
@@ -1847,8 +1711,6 @@ impl Render for DragPreview {
             .child(self.label.clone())
     }
 }
-
-gpui::actions!(binder, [NoopAction]);
 
 /// A symbol's own counts: diagnostics whose start falls inside its full body
 /// range (`symbolMarks` in `Binder.tsx`).
@@ -1985,7 +1847,6 @@ mod tests {
             label: key.into(),
             path: key.to_owned(),
             offset: None,
-            end: None,
             expandable: false,
             expanded: false,
             entry: false,

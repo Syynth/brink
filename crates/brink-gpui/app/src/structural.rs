@@ -94,15 +94,62 @@ pub fn promote(
     );
 }
 
-/// Demote `knot` in `path` into the knot above it.
+/// Demote `knot` in `path` into `into`, or the knot above it.
 pub fn demote(
     project: Entity<Project>,
     path: String,
     knot: String,
+    into: Option<String>,
     window: &mut Window,
     cx: &mut App,
 ) {
-    run(project, QueryKind::Demote { path, knot }, window, cx);
+    run(project, QueryKind::Demote { path, knot, into }, window, cx);
+}
+
+/// Move `knot.stitch` in `path` into `dest`.
+pub fn move_stitch(
+    project: Entity<Project>,
+    path: String,
+    knot: String,
+    stitch: String,
+    dest: String,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    run(
+        project,
+        QueryKind::MoveStitch {
+            path,
+            knot,
+            stitch,
+            dest,
+        },
+        window,
+        cx,
+    );
+}
+
+/// Move a knot — or one of its stitches — one place up or down.
+pub fn reorder(
+    project: Entity<Project>,
+    path: String,
+    knot: String,
+    stitch: Option<String>,
+    up: bool,
+    window: &mut Window,
+    cx: &mut App,
+) {
+    run(
+        project,
+        QueryKind::Reorder {
+            path,
+            knot,
+            stitch,
+            up,
+        },
+        window,
+        cx,
+    );
 }
 
 fn run(project: Entity<Project>, kind: QueryKind, window: &mut Window, cx: &mut App) {

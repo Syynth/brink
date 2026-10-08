@@ -340,14 +340,15 @@ pub fn prepare_rename(site: &EditorSite, cx: &mut App) -> Task<Option<(Range<usi
 /// The rename plan for the symbol at `offset` — computed and gated, not
 /// applied. Applying is [`Project::apply_edits`], the host's act.
 pub fn rename(
-    site: &EditorSite,
+    project: &Entity<Project>,
+    path: &str,
     offset: usize,
     new_name: String,
     cx: &mut App,
 ) -> Task<Option<RenamePlan>> {
-    let query = site.project.read(cx).query(
+    let query = project.read(cx).query(
         QueryKind::Rename {
-            path: site.path.to_string(),
+            path: path.to_owned(),
             offset: u32::try_from(offset).unwrap_or(u32::MAX),
             new_name,
         },

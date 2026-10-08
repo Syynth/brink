@@ -17,6 +17,7 @@
 //! same flows.
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::rc::Rc;
 
 use brink_gpui_model::query::{QueryKind, QueryResult, Symbol};
 use brink_ir::SymbolKind;
@@ -38,6 +39,7 @@ use crate::binder::{Binder, BinderEvent};
 use crate::continuous::{ContinuousView, FileAction, ManuscriptEvent};
 use crate::player::Player;
 use crate::project::{Project, ProjectEvent};
+use crate::symbol_menu;
 use brink_gpui_shell::icons;
 
 /// Each pane's width until the author drags it, and the range a drag may
@@ -659,6 +661,7 @@ impl WriteView {
                     &path,
                     knot,
                     None,
+                    symbols,
                     here_knot == Some(knot.full_start) && here_stitch.is_none(),
                     cx,
                 ));
@@ -667,6 +670,7 @@ impl WriteView {
                         &path,
                         stitch,
                         Some(knot),
+                        symbols,
                         here_stitch == Some(stitch.full_start),
                         cx,
                     ));
@@ -679,6 +683,7 @@ impl WriteView {
                         &path,
                         function,
                         None,
+                        symbols,
                         here_knot == Some(function.full_start),
                         cx,
                     ));
@@ -687,7 +692,7 @@ impl WriteView {
             if !globals.is_empty() {
                 body.push(self.section_header("Globals", None, cx));
                 for global in globals {
-                    body.push(self.symbol_row(&path, global, None, false, cx));
+                    body.push(self.symbol_row(&path, global, None, symbols, false, cx));
                 }
             }
         }
@@ -770,6 +775,7 @@ impl WriteView {
         path: &str,
         symbol: &Symbol,
         knot: Option<&Symbol>,
+        outline: &[Symbol],
         here: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -804,81 +810,50 @@ impl WriteView {
         let at = symbol.start as usize;
         let reveal_path = path.to_owned();
 
-        // The `⋯` menu: what the Binder offers on the same row.
-        let menu =
-            {
-                let me = self.me.clone();
-                let path = path.to_owned();
-                let name = symbol.name.clone();
-                let kind = symbol.kind;
-                let is_function = symbol.is_function;
-                let full_end = symbol.full_end as usize;
-                let knot_name = knot.map(|k| k.name.clone());
-                let knot_end = knot.map(|k| k.full_end as usize);
-                Button::new(SharedString::from(format!("write-more-{path}-{at}")))
-                    .ghost()
-                    .xsmall()
-                    .icon(IconName::Ellipsis)
-                    .dropdown_menu(move |menu, _, _| {
-                        let emit = |event: WriteEvent| {
-                            let me = me.clone();
-                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                let event = event.clone();
-                                let _ = me.update(cx, |_, cx| cx.emit(event));
-                            }
-                        };
-                        let reveal = {
-                            let me = me.clone();
-                            let path = path.clone();
-                            move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
-                                let _ = me.update(cx, |this, cx| this.reveal_at(&path, at, cx));
-                            }
-                        };
-                        let mut menu = menu.item(PopupMenuItem::new("Go to").on_click(reveal));
-                        let play_path = match (kind, &knot_name) {
-                            (SymbolKind::Stitch, Some(k)) => Some(format!("{k}.{name}")),
-                            (SymbolKind::Knot, _) if !is_function => Some(name.clone()),
-                            _ => None,
-                        };
-                        if let Some(play) = play_path {
-                            menu = menu.item(PopupMenuItem::new("Play from here").on_click(emit(
-                                WriteEvent::Outline(BinderEvent::Play { path: play }),
-                            )));
-                        }
-                        match (kind, &knot_name) {
-                            (SymbolKind::Knot, _) if !is_function => menu
-                                .item(PopupMenuItem::new("New Stitch\u{2026}").on_click(emit(
-                                    WriteEvent::Outline(BinderEvent::NewStitch {
-                                        path: path.clone(),
-                                        full_end,
-                                    }),
-                                )))
-                                .separator()
-                                .item(PopupMenuItem::new("Demote to Stitch\u{2026}").on_click(
-                                    emit(WriteEvent::Outline(BinderEvent::Demote {
-                                        path: path.clone(),
-                                        knot: name.clone(),
-                                    })),
-                                )),
-                            (SymbolKind::Stitch, Some(k)) => menu
-                                .item(PopupMenuItem::new("New Stitch\u{2026}").on_click(emit(
-                                    WriteEvent::Outline(BinderEvent::NewStitch {
-                                        path: path.clone(),
-                                        full_end: knot_end.unwrap_or(full_end),
-                                    }),
-                                )))
-                                .separator()
-                                .item(PopupMenuItem::new("Promote to Knot\u{2026}").on_click(
-                                    emit(WriteEvent::Outline(BinderEvent::Promote {
-                                        path: path.clone(),
-                                        knot: k.clone(),
-                                        stitch: name.clone(),
-                                    })),
-                                )),
-                            _ => menu,
-                        }
-                    })
+        // The `⋯` menu: "Go to", then what the Binder offers on the same
+        // row — the shared knot/stitch menu, one list for both.
+        let menu = {
+            let me = self.me.clone();
+            let path = path.to_owned();
+            let target = match (symbol.kind, knot) {
+                (SymbolKind::Knot, _) => Some((symbol.name.clone(), None)),
+                (SymbolKind::Stitch, Some(k)) => Some((k.name.clone(), Some(symbol.name.clone()))),
+                _ => None,
+            }
+            .map(|(knot, stitch)| symbol_menu::Target {
+                path: path.clone(),
+                knot,
+                stitch,
+                library: self.project.read(cx).is_library(&path),
+                outline: Rc::new(symbol_menu::outline_from_symbols(outline)),
+            });
+            let emit: symbol_menu::Emit = {
+                let me = me.clone();
+                Rc::new(move |event, _, cx| {
+                    let _ = me.update(cx, |_, cx| cx.emit(WriteEvent::Outline(event)));
+                })
             };
+            Button::new(SharedString::from(format!("write-more-{path}-{at}")))
+                .ghost()
+                .xsmall()
+                .icon(IconName::Ellipsis)
+                .dropdown_menu(move |menu, window, cx| {
+                    let reveal = {
+                        let me = me.clone();
+                        let path = path.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            let _ = me.update(cx, |this, cx| this.reveal_at(&path, at, cx));
+                        }
+                    };
+                    let menu = menu.item(PopupMenuItem::new("Go to").on_click(reveal));
+                    match &target {
+                        Some(target) => {
+                            symbol_menu::build(menu.separator(), target, &emit, window, cx)
+                        }
+                        None => menu,
+                    }
+                })
+        };
 
         let new_stitch = is_knot.then(|| {
             let me = self.me.clone();
