@@ -169,8 +169,8 @@ mod tests {
     fn every_icon_file_became_a_variant() {
         let files = Assets::iter().filter(|p| p.starts_with("icons/")).count();
         assert_eq!(
-            files, 25,
-            "expected the ported set plus the two mode glyphs; found {files}"
+            files, 26,
+            "expected the ported set, the two mode glyphs and the label dash; found {files}"
         );
         assert!(
             Assets

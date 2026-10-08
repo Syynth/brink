@@ -51,6 +51,9 @@ pub enum QueryKind {
     /// passage picker (ruled 2026-09-02: sample lines come from a
     /// knot/stitch selector).
     PassageIndex,
+    /// Every place the ⌘K go-to can take you besides a file: knots,
+    /// functions, stitches and labels, across the author's files.
+    GoToIndex,
     /// Every `hex_color` literal in a file, for the editor's colour
     /// swatches. Cheap and per-file, like inlay hints.
     DocumentColors {
@@ -216,6 +219,7 @@ pub enum QueryResult {
     Scopes(Vec<Scope>),
     InlayHints(Vec<InlayHint>),
     PassageIndex(Vec<PassageSymbol>),
+    GoToIndex(Vec<GoToSymbol>),
     /// `None` when the path names nothing in the project.
     Passage(Option<Vec<PassageLine>>),
     /// `None` when nothing under the offset resolves.
@@ -481,6 +485,29 @@ pub struct PassageSymbol {
     pub span: std::ops::Range<usize>,
 }
 
+/// What a go-to place is — which decides its icon and its chip.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoToKind {
+    Knot,
+    /// A knot declared `function`: the same construct, a different icon.
+    Function,
+    Stitch,
+    Label,
+}
+
+/// One place the go-to can reveal.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GoToSymbol {
+    pub kind: GoToKind,
+    /// The dotted address: `knot`, `knot.stitch`, `knot.stitch.label`.
+    pub qualified: String,
+    pub file: String,
+    /// The declaration's own name span, so going there reveals it.
+    pub span: std::ops::Range<usize>,
+    /// 1-based line of the name.
+    pub line: u32,
+}
+
 /// One content line of a passage, with the file it came from.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PassageLine {
@@ -691,6 +718,7 @@ pub(crate) fn answer(
             None => QueryResult::Unavailable,
         },
         QueryKind::PassageIndex => QueryResult::PassageIndex(passage_index(session)),
+        QueryKind::GoToIndex => QueryResult::GoToIndex(go_to_index(session)),
         QueryKind::Passage { path } => QueryResult::Passage(passage(session, path)),
         QueryKind::Definition { path, offset } => match definition(session, path, *offset) {
             Some(found) => QueryResult::Definition(found),
@@ -1006,6 +1034,55 @@ fn scopes(session: &brink_ide::session::IdeSession, path: &str) -> Option<Vec<Sc
 /// A HIR name's range as the plain byte range this boundary speaks in.
 fn range_of(range: &brink_ir::TextRange) -> std::ops::Range<usize> {
     usize::from(range.start())..usize::from(range.end())
+}
+
+/// Every knot, function, stitch and label of the author's files, in file
+/// order then kind and declaration order. Read off each file's symbol
+/// manifest, which already names stitches and labels by their dotted
+/// address. The mounted stdlib is not somewhere an author goes.
+fn go_to_index(session: &brink_ide::session::IdeSession) -> Vec<GoToSymbol> {
+    let mut files: Vec<(String, brink_db::FileId)> = session
+        .db()
+        .file_ids()
+        .filter(|id| !session.is_mounted_std(*id))
+        .filter_map(|id| Some((session.db().file_path(id)?.to_owned(), id)))
+        .collect();
+    files.sort();
+    let mut out = Vec::new();
+    for (file, id) in files {
+        let (Some(manifest), Some(source)) = (session.manifest(id), session.source(id)) else {
+            continue;
+        };
+        let line_of = |at: usize| {
+            let lines = source.get(..at).map_or(0, |b| b.matches('\n').count());
+            u32::try_from(lines + 1).unwrap_or(u32::MAX)
+        };
+        let mut push = |kind: GoToKind, symbol: &brink_ir::symbols::DeclaredSymbol| {
+            let span = range_of(&symbol.range);
+            out.push(GoToSymbol {
+                kind,
+                qualified: symbol.name.clone(),
+                file: file.clone(),
+                line: line_of(span.start),
+                span,
+            });
+        };
+        for knot in &manifest.knots {
+            let kind = if knot.detail.as_deref() == Some("function") {
+                GoToKind::Function
+            } else {
+                GoToKind::Knot
+            };
+            push(kind, knot);
+        }
+        for stitch in &manifest.stitches {
+            push(GoToKind::Stitch, stitch);
+        }
+        for label in &manifest.labels {
+            push(GoToKind::Label, label);
+        }
+    }
+    out
 }
 
 /// Every knot and stitch of the author's files, in file order then
@@ -1852,6 +1929,36 @@ mod tests {
             panic!("moving onto a file must refuse");
         };
         assert!(why.contains("already exists"), "{why}");
+    }
+
+    /// The ⌘K index: knots, functions, stitches and labels, each by its
+    /// dotted address, with the line its name is on.
+    #[test]
+    fn the_go_to_index_holds_every_place_and_its_line() {
+        use super::{GoToKind, go_to_index};
+        use brink_ide::session::IdeSession;
+        let mut session = IdeSession::new();
+        session.update_source(
+            "main.ink",
+            "-> harbour\n=== harbour ===\nThe boats.\n- (dock) The pier.\n= night_watch\n* (oath) [Promise] Kept.\n-> END\n=== function twice(x) ===\n~ return x * 2\n"
+                .to_owned(),
+        );
+        session.refresh_analysis();
+        let mut found: Vec<(GoToKind, String, u32)> = go_to_index(&session)
+            .into_iter()
+            .map(|s| (s.kind, s.qualified, s.line))
+            .collect();
+        found.sort_by(|a, b| a.1.cmp(&b.1));
+        assert_eq!(
+            found,
+            [
+                (GoToKind::Knot, "harbour".to_owned(), 2),
+                (GoToKind::Label, "harbour.dock".to_owned(), 4),
+                (GoToKind::Stitch, "harbour.night_watch".to_owned(), 5),
+                (GoToKind::Label, "harbour.night_watch.oath".to_owned(), 6),
+                (GoToKind::Function, "twice".to_owned(), 8),
+            ]
+        );
     }
 
     #[test]
