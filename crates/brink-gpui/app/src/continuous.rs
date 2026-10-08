@@ -59,6 +59,14 @@ type Section = (Entity<EditorState>, f32);
 /// the breakpoints change (`crate::gutter`).
 type Gutters = Rc<RefCell<HashMap<String, Rc<crate::gutter::Marks>>>>;
 
+/// Each mounted section's fold candidates, by path: the cell its
+/// highlighter reports them from, refreshed after each analysis.
+type Folds = Rc<RefCell<HashMap<String, crate::document::FoldCell>>>;
+
+/// The fold column the kit's gutter keeps right of the line numbers
+/// (`FOLD_ICON_HITBOX_WIDTH`), now that sections fold.
+const FOLD_COLUMN: f32 = 18.;
+
 /// gpui-component renders the editor at `line_height: relative(1.5)` over the
 /// theme's monospace size (`input/editor.rs`), so a row is exactly
 /// `mono_font_size * 1.5` — 19.5px at the default 13px. Guessing 20 cost half
@@ -105,11 +113,12 @@ const TRAILING_ROWS: usize = 8;
 /// studio's. `rows()` is textarea-only in gpui-base, so the height goes on
 /// the element.
 ///
-/// Only a first guess once soft wrap is on. A wrapped section's true height
-/// is its *wrapped* row count, which the fork exposes as
-/// `EditorState::wrap_row_count` (the toolkit keeps `display_map` private);
-/// [`ContinuousView::remeasure_sections`] re-sizes every mounted section
-/// against it on each frame, so a resize that re-wraps is caught too.
+/// Only a first guess once soft wrap is on. A section's true height is the
+/// rows it shows — wrapped, less any folded — which the fork exposes as
+/// `EditorState::display_row_count` (the toolkit keeps `display_map`
+/// private); [`ContinuousView::remeasure_sections`] re-sizes every mounted
+/// section against it on each frame, so a resize that re-wraps is caught
+/// too, and a fold asks for that frame.
 /// Undersize a section and the editor gets a viewport smaller than its
 /// content and starts scrolling ITSELF — the wheel then moves one file
 /// instead of the manuscript, and a revealed selection drags the section
@@ -202,6 +211,8 @@ pub struct ContinuousView {
     pending_focus: Option<String>,
     /// Each section's breakpoint column.
     gutters: Gutters,
+    /// Each section's fold candidates.
+    folds: Folds,
     /// Frames a reveal may wait for its section to lay out, so it can land
     /// on the line's true place (`apply_pending_reveal`).
     reveal_retries: u8,
@@ -291,6 +302,7 @@ impl ContinuousView {
             pins: crate::sticky_lines::Pins::default(),
             pending_focus: None,
             gutters: Rc::default(),
+            folds: Rc::default(),
             reveal_retries: 0,
             _subscriptions: vec![watch],
         }
@@ -322,9 +334,11 @@ impl ContinuousView {
         let project = self.project.downgrade();
         let mut stale = None;
         for (path, (editor, _)) in self.editors.borrow().iter() {
+            let fold_cell = self.folds.borrow().get(path).cloned().unwrap_or_default();
             let factory = manuscript_highlighter_factory(
                 project.clone(),
                 SharedString::from(path.clone()),
+                fold_cell,
                 self.read.clone(),
             );
             editor.update(cx, |state, cx| {
@@ -375,7 +389,7 @@ impl ContinuousView {
         } else {
             0
         };
-        let rows = editor.read(cx).wrap_row_count().max(1);
+        let rows = editor.read(cx).display_row_count().max(1);
         let height = (rows + trailing) as f32 * line_height;
         if let Some(section) = self.editors.borrow_mut().get_mut(path) {
             section.1 = height;
@@ -658,7 +672,8 @@ impl ContinuousView {
         true
     }
 
-    /// Re-read every section's knot and stitch lines for its gutter's ▶.
+    /// Re-read every section's knot and stitch lines for its gutter's ▶,
+    /// and its fold candidates.
     fn refresh_play_lines(&mut self, cx: &mut Context<Self>) {
         let editors: Vec<(String, Entity<EditorState>)> = self
             .editors
@@ -669,6 +684,9 @@ impl ContinuousView {
         for (path, editor) in editors {
             if let Some(marks) = self.gutters.borrow().get(&path).cloned() {
                 crate::gutter::refresh_headers(&marks, &editor, &self.project, &path, cx);
+            }
+            if let Some(cell) = self.folds.borrow().get(&path).cloned() {
+                crate::document::request_folds(&self.project, &path, &editor, &cell, cx);
             }
         }
     }
@@ -774,7 +792,7 @@ impl ContinuousView {
                 theme.mono_font_family.clone()
             },
             font_size: theme.mono_font_size,
-            folds: false,
+            folds: true,
         })
     }
 
@@ -811,7 +829,7 @@ impl ContinuousView {
     ) -> Option<(gpui::EntityId, bool, f32, f32)> {
         let (editor, height) = self.editors.borrow().get(path).cloned()?;
         let state = editor.read(cx);
-        let rows = state.wrap_row_count().max(1) as f32;
+        let rows = state.display_row_count().max(1) as f32;
         let line = f32::from(state.line_height()?);
         let focused = state.focus_handle(cx).is_focused(window);
         let trailing = if self.files.last().is_some_and(|f| f == path) {
@@ -971,6 +989,7 @@ impl ContinuousView {
         read: &ReadCell,
         prose: &ProseCache,
         gutters: &Gutters,
+        folds: &Folds,
         path: &str,
         is_last: bool,
         line_height_override: Option<f32>,
@@ -1002,16 +1021,19 @@ impl ContinuousView {
                 // Prose wraps (maintainer, 2026-09-05); the section is
                 // re-sized to its wrapped rows — see `section_height`.
                 .soft_wrap(true)
-                // A fold hides rows, and a section is exactly its rows — a
-                // folded section would be taller than its content and
-                // start scrolling itself (see `section_height`). The
-                // manuscript is a reading surface; folding belongs to the
-                // tabs.
-                .folding(false)
+                // Sections fold as tabs do (maintainer, 2026-10-08): a
+                // fold hides rows, so a section is sized by the rows it
+                // SHOWS (`display_row_count`), and re-measured whenever
+                // that count moves.
+                .folding(true)
                 // See `TRAILING_ROWS`.
                 .scroll_beyond_last_line(Some(trailing));
+            let fold_cell = crate::document::FoldCell::default();
+            folds
+                .borrow_mut()
+                .insert(key.to_string(), fold_cell.clone());
             state.set_highlighter_factory(
-                manuscript_highlighter_factory(weak.clone(), key.clone(), read.clone()),
+                manuscript_highlighter_factory(weak.clone(), key.clone(), fold_cell, read.clone()),
                 cx,
             );
             // A section mounted while Read is on starts in its chrome.
@@ -1034,9 +1056,27 @@ impl ContinuousView {
             state.set_value(source, window, cx);
             state
         });
-        // Its ▶ lines, from the outline the last analysis left.
+        // Its ▶ lines and its folds, from the analysis the project has.
         if let Some(marks) = gutters.borrow().get(path).cloned() {
             crate::gutter::refresh_headers(&marks, &state, project, path, cx);
+        }
+        if let Some(cell) = folds.borrow().get(path).cloned() {
+            crate::document::request_folds(project, path, &state, &cell, cx);
+        }
+        // A fold or an unfold changes the rows the section shows, and its
+        // height has to follow; watched as a count, so a caret blink or a
+        // keystroke that moves no row costs the manuscript nothing.
+        {
+            let shown = Rc::new(std::cell::Cell::new(0usize));
+            let me = me.clone();
+            section_subs
+                .borrow_mut()
+                .push(cx.observe(&state, move |state, cx| {
+                    let now = state.read(cx).display_row_count();
+                    if shown.replace(now) != now {
+                        let _ = me.update(cx, |_, cx| cx.notify());
+                    }
+                }));
         }
 
         // The spike got re-analysis as a side effect of the highlighter,
@@ -1138,7 +1178,7 @@ impl ContinuousView {
             let Some(index) = self.files.iter().position(|f| f == path) else {
                 continue;
             };
-            let rows = section.0.read(cx).wrap_row_count().max(1);
+            let rows = section.0.read(cx).display_row_count().max(1);
             let trailing = if index == last { TRAILING_ROWS } else { 0 };
             let height = (rows + trailing) as f32 * line_height;
             if (section.1 - height).abs() > 0.5 {
@@ -1193,6 +1233,7 @@ impl Render for ContinuousView {
         let read = self.read.clone();
         let prose = self.prose.clone();
         let gutters = self.gutters.clone();
+        let folds = self.folds.clone();
         // The Read view's face: the UI's proportional font, at the editor's
         // own size — so a row is the same height either way and only the
         // wrapping moves, which `remeasure_sections` already follows.
@@ -1286,6 +1327,7 @@ impl Render for ContinuousView {
                                 &read,
                                 &prose,
                                 &gutters,
+                                &folds,
                                 &path,
                                 index + 1 == count,
                                 measured,
@@ -1586,7 +1628,10 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
         .map_or(f32::from(theme.mono_font_size) * 0.6, f32::from);
     // The gutter: the breakpoint column, its digits, one column of
     // spacing, and the margins the kit sets either side of the text.
-    let gutter = crate::gutter::COLUMN_WIDTH + (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch + 24.;
+    let gutter = crate::gutter::COLUMN_WIDTH
+        + (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch
+        + FOLD_COLUMN
+        + 24.;
     Some(px(chars * ch + gutter))
 }
 

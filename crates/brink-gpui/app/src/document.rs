@@ -471,36 +471,7 @@ impl Document {
         if self.factory.is_none() {
             return;
         }
-        let query = self.project.read(cx).query(
-            QueryKind::FoldingRanges {
-                path: self.path.to_string(),
-            },
-            cx,
-        );
-        let editor = self.editor.clone();
-        let cell = self.folds.clone();
-        cx.spawn(async move |_, cx| {
-            let Ok(QueryResult::FoldingRanges(folds)) = query.await else {
-                return;
-            };
-            let candidates = folds
-                .into_iter()
-                .map(|f| {
-                    gpui_component::input::FoldRange::new(
-                        f.start_line as usize,
-                        f.end_line as usize,
-                    )
-                })
-                .collect();
-            // The cell is what the highlighter reports from now on; the
-            // push makes this frame show them rather than the next edit.
-            *cell.borrow_mut() = candidates;
-            let candidates = cell.borrow().clone();
-            editor.update(cx, |state, cx| {
-                state.apply_highlighter_fold_candidates(candidates, cx);
-            });
-        })
-        .detach();
+        request_folds(&self.project, &self.path, &self.editor, &self.folds, cx);
     }
 
     /// Ask for this file's prose lints and add them to the editor's
@@ -877,6 +848,45 @@ pub(crate) fn highlighter_factory(
     highlighter_factory_with_folds(project, path, None)
 }
 
+/// Ask the worker for a file's fold candidates and hand them to its
+/// editor's highlighter through `cell` — Script's tabs and Write's
+/// sections alike.
+pub(crate) fn request_folds(
+    project: &Entity<Project>,
+    path: &str,
+    editor: &Entity<EditorState>,
+    cell: &FoldCell,
+    cx: &mut App,
+) {
+    let query = project.read(cx).query(
+        QueryKind::FoldingRanges {
+            path: path.to_owned(),
+        },
+        cx,
+    );
+    let editor = editor.clone();
+    let cell = cell.clone();
+    cx.spawn(async move |cx| {
+        let Ok(QueryResult::FoldingRanges(folds)) = query.await else {
+            return;
+        };
+        let candidates = folds
+            .into_iter()
+            .map(|f| {
+                gpui_component::input::FoldRange::new(f.start_line as usize, f.end_line as usize)
+            })
+            .collect();
+        // The cell is what the highlighter reports from now on; the
+        // push makes this frame show them rather than the next edit.
+        *cell.borrow_mut() = candidates;
+        let candidates = cell.borrow().clone();
+        editor.update(cx, |state, cx| {
+            state.apply_highlighter_fold_candidates(candidates, cx);
+        });
+    })
+    .detach();
+}
+
 /// Structural fold candidates, shared between a document and its
 /// highlighter. gpui-base takes fold candidates FROM the highlighter
 /// (`EditorMode::drive_highlighter` → `InputHighlighter::fold_ranges`) on
@@ -898,9 +908,10 @@ pub(crate) fn highlighter_factory_with_folds(
 pub(crate) fn manuscript_highlighter_factory(
     project: WeakEntity<Project>,
     path: SharedString,
+    folds: FoldCell,
     read: ReadCell,
 ) -> InputHighlighterFactory {
-    factory(project, path, None, Some(read))
+    factory(project, path, Some(folds), Some(read))
 }
 
 fn factory(

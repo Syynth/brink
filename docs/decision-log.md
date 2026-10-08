@@ -5811,3 +5811,11 @@
   - **No line tint.** The full-width tint behind a breakpoint line is dropped.
   - **Ghost fold buttons.** Fold chevrons sit right of the numbers as ghost buttons that highlight under the pointer. They show only while the pointer is over the gutter, except a folded line always shows its own.
 - **WHY:** The maintainer wanted Zed's gutter more or less as is. The old line tint marked breakpoints inside the text, where they competed with highlighting and selection. A column of their own puts them where every debugger keeps them and makes them clickable. Fold chevrons that show only on hover keep a resting gutter down to numbers and marks. A hollow ring keeps the "this can never be hit" signal the struck-through line used to give.
+
+## Write's manuscript sections fold, as Script's tabs do
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** Each file in Write's manuscript folds like a Script tab: the same fold ranges from the worker, the same ghost fold buttons in the gutter. A folded section shrinks to the rows it still shows, so no gap is left. This reverses the earlier choice to keep Write without folding ("the manuscript is a reading surface; folding belongs to the tabs").
+- **WHY:** The maintainer reached for folding in Write and found it missing next to play-from-here, which works there. The earlier reason was technical: a section is sized to exactly its rows, so a fold would have left it taller than its content and scrolling itself. Sizing sections by the rows they show (folds applied), and re-measuring when that count changes, removes the problem.

@@ -4547,6 +4547,56 @@ mod modes_driven {
         assert!(folded, "the knot folded");
     }
 
+    /// Write's sections fold too, and a folded section shrinks to the rows
+    /// it still shows, so no gap is left where the folded text was.
+    #[test]
+    fn a_section_folds_and_shrinks_to_fit() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        h.capture(window);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let editor = h
+            .read(|cx| manuscript.read(cx).section_editor("story.ink"))
+            .expect("mounted");
+        let height = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx);
+                f32::from(state.input_bounds().size.height)
+            })
+        };
+        let before = height(&mut h);
+        let (x, y) = h.read(|cx| {
+            let state = editor.read(cx);
+            let row = f32::from(state.line_height().expect("laid out"));
+            let at = state.range_to_bounds(&(0..0)).expect("laid out");
+            (f32::from(at.left()) - 19., f32::from(at.top()) + row * 5.5)
+        });
+        let folded = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.hover(window, x, y);
+            h.capture(window);
+            h.mouse_down(window, x, y);
+            h.mouse_up(window, x, y);
+            h.capture(window);
+            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+        });
+        assert!(folded, "the knot folded");
+        h.capture(window);
+        h.capture(window);
+        let after = height(&mut h);
+        assert!(after < before, "the section shrank: {before} -> {after}");
+        let shown = h.read(|cx| editor.read(cx).display_row_count());
+        let row = h.read(|cx| f32::from(editor.read(cx).line_height().expect("laid out")));
+        // The last section carries its scroll-past-the-end rows.
+        let trailing = 8.;
+        assert!(
+            (after - (shown as f32 + trailing) * row).abs() < 1.,
+            "sized to the rows it shows: {after} for {shown} rows"
+        );
+    }
+
     /// The picture: the sidebar open, the caret in a stitch.
     #[test]
     fn the_writing_sidebar_picture() {
