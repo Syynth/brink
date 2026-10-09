@@ -196,6 +196,12 @@ pub(crate) fn rewrite_story(story: &mut StoryData, rewrite: &dyn Rewrite) -> usi
             for entry in &mut table.entries {
                 entry.bytecode_offset = offset_u32(layout.map(entry.bytecode_offset as usize));
             }
+            // An `EmitLine`'s site (#3670) follows its instruction — into
+            // an `EmitLineNl` when the fusion took it, which starts where
+            // the `EmitLine` did.
+            for site in &mut table.line_sites {
+                site.bytecode_offset = offset_u32(layout.map(site.bytecode_offset as usize));
+            }
         }
     }
     replaced
@@ -369,7 +375,7 @@ mod tests {
 
     use brink_format::{
         AddressDef, ContainerDef, CountingFlags, DebugContainerTable, DebugEntry, DebugInfoSection,
-        DefinitionId, DefinitionTag,
+        DebugLineSite, DefinitionId, DefinitionTag,
     };
 
     use brink_format::BinaryKind;
@@ -565,6 +571,12 @@ mod tests {
             kind_token: 0,
             flags: 0,
         };
+        let site = |off: usize| DebugLineSite {
+            bytecode_offset: u32::try_from(off).unwrap(),
+            file_idx: 0,
+            range_start: 0,
+            range_len: 0,
+        };
         story.debug_info = Some(DebugInfoSection {
             files: Vec::new(),
             containers: vec![DebugContainerTable {
@@ -575,6 +587,8 @@ mod tests {
                     entry(pair.len() + 1),  // on the second pair
                 ],
                 locals: Vec::new(),
+                // Each `EmitLine`'s site (#3670) must land on its fused op.
+                line_sites: vec![site(0), site(pair.len() + 1)],
             }],
         });
 
@@ -618,6 +632,17 @@ mod tests {
                 "offset {off} is a boundary"
             );
         }
+        // Each line site sits on the `EmitLineNl` its `EmitLine` became.
+        let sites: Vec<u32> = story.debug_info.as_ref().expect("debug").containers[0]
+            .line_sites
+            .iter()
+            .map(|s| s.bytecode_offset)
+            .collect();
+        assert_eq!(
+            sites,
+            vec![0, u32::try_from(fused.len() + 1).unwrap()],
+            "a line's site follows its instruction into the fusion"
+        );
     }
 
     #[test]

@@ -421,6 +421,36 @@ impl Program {
         })
     }
 
+    /// Where the `EmitLine` at `offset` in `container_idx` was written
+    /// (#3670): that use's own source range, from the `DebugInfo` line-site
+    /// table — exact match, since a site is one instruction. `None` with no
+    /// debug info, no site for the instruction (a version-2 section, or
+    /// text with no author source), or a synthetic file.
+    #[must_use]
+    pub fn emit_site_source(
+        &self,
+        container_idx: u32,
+        offset: u32,
+    ) -> Option<crate::debug::DebugSourceLocation> {
+        let debug_info = self.debug_info.as_ref()?;
+        let table = debug_info.containers.get(container_idx as usize)?;
+        let at = table
+            .line_sites
+            .binary_search_by_key(&offset, |site| site.bytecode_offset)
+            .ok()?;
+        let site = table.line_sites.get(at)?;
+        let file = debug_info.files.get(site.file_idx as usize)?;
+        let path = match file.surface {
+            brink_format::FileSurface::Synthetic => return None,
+            brink_format::FileSurface::Ink | brink_format::FileSurface::Native => file.path.clone(),
+        };
+        Some(crate::debug::DebugSourceLocation {
+            file: Some(path),
+            range_start: site.range_start,
+            range_len: site.range_len,
+        })
+    }
+
     /// The `DebugInfo` entry covering `position` — the floor lookup both
     /// [`Self::resolve_debug_position`] and [`Self::debug_line_key`] share.
     fn debug_entry_at(

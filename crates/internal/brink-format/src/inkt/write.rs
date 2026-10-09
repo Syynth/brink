@@ -400,6 +400,14 @@ fn write_debug_info(w: &mut dyn fmt::Write, debug_info: Option<&DebugInfoSection
                 entry.flags
             )?;
         }
+        // #3670: where each `EmitLine` was written.
+        for site in &table.line_sites {
+            writeln!(
+                w,
+                "      (site {} {} {} {})",
+                site.bytecode_offset, site.file_idx, site.range_start, site.range_len
+            )?;
+        }
         if !table.locals.is_empty() {
             writeln!(w, "      (locals")?;
             for local in &table.locals {

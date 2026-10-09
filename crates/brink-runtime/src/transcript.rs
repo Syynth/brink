@@ -434,11 +434,15 @@ fn encode_part(part: &OutputPart, buf: &mut Vec<u8>) {
             write_u8(buf, TAG_TEXT);
             write_str(buf, s);
         }
+        // `site` is not persisted (#3670): it is where THIS run emitted
+        // the line, and a decoded part falls back to the line table's
+        // location — today's behaviour for a restored transcript.
         OutputPart::LineRef {
             container_idx,
             line_idx,
             slots,
             flags,
+            site: _,
         } => {
             write_u8(buf, TAG_LINE_REF);
             write_u32(buf, *container_idx);
@@ -490,6 +494,7 @@ fn decode_part(bytes: &[u8], off: &mut usize) -> Result<OutputPart, TranscriptEr
                 line_idx,
                 slots,
                 flags,
+                site: None,
             }
         }
         TAG_VALUE_REF => OutputPart::ValueRef(decode_value(bytes, off, 0)?),
@@ -1130,6 +1135,7 @@ mod tests {
             line_idx: 0,
             slots: Vec::new(),
             flags: LineFlags::empty(),
+            site: None,
         }));
         assert!(is_persisted(&OutputPart::ValueRef(Value::Bool(true))));
         assert!(is_persisted(&OutputPart::Newline));
@@ -1157,6 +1163,7 @@ mod tests {
                 line_idx: 9,
                 slots: vec![Value::Int(1), Value::String(Arc::from("hi"))],
                 flags: LineFlags::ALL_WS,
+                site: None,
             },
             OutputPart::ValueRef(Value::Bool(true)),
             OutputPart::Spring,
@@ -1412,6 +1419,7 @@ mod tests {
             line_idx: 7,
             slots: vec![Value::Int(123), Value::String(Arc::from("hello"))],
             flags: LineFlags::ALL_WS | LineFlags::EMPTY,
+            site: None,
         }];
         let bytes = write_transcript(&parts, 1234, &crate::output::Fragments::default());
         let data = read_transcript(&bytes).unwrap();
@@ -1422,6 +1430,7 @@ mod tests {
                 line_idx,
                 slots,
                 flags,
+                ..
             } => {
                 assert_eq!(*container_idx, 42);
                 assert_eq!(*line_idx, 7);
