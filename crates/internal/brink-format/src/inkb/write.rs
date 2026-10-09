@@ -750,7 +750,15 @@ pub fn write_section_frame_shapes(shapes: &[FrameShapeDef], buf: &mut Vec<u8>) {
 /// `docs/debugger-spec.md` §2.2) — independent of the `.inkb` format
 /// `VERSION`, so the entry encoding can grow (e.g. the reserved `NodeId`
 /// column, §1.3) without another whole-format bump.
-pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 2;
+///
+/// Version 3 (#3670) appends each container's line-site table
+/// ([`crate::DebugLineSite`]) after its locals. The reader still accepts
+/// version 2, which has none.
+pub(crate) const DEBUG_INFO_SECTION_VERSION: u8 = 3;
+
+/// The oldest `DebugInfo` section version the reader still accepts:
+/// version 2 is version 3 without the line-site tables.
+pub(crate) const DEBUG_INFO_SECTION_MIN_VERSION: u8 = 2;
 
 /// `DebugLocalEntry` row flags (section version 2). Version 1 wrote a bare
 /// `has_range` 0/1 byte in this position; version 2 keeps that as bit 0 and
@@ -869,6 +877,21 @@ pub fn write_section_debug_info(section: &DebugInfoSection, buf: &mut Vec<u8>) {
                 write_varint(buf, u64::from(range_start));
                 write_varint(buf, u64::from(range_len));
             }
+        }
+
+        // Section version 3 (#3670): the line sites, delta-coded by offset
+        // like the entries above (and saturating for the same reason).
+        write_varint(buf, table.line_sites.len() as u64);
+        let mut prev_offset: u32 = 0;
+        for site in &table.line_sites {
+            write_varint(
+                buf,
+                u64::from(site.bytecode_offset.saturating_sub(prev_offset)),
+            );
+            prev_offset = site.bytecode_offset;
+            write_varint(buf, u64::from(site.file_idx));
+            write_varint(buf, u64::from(site.range_start));
+            write_varint(buf, u64::from(site.range_len));
         }
     }
 }

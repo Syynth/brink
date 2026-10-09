@@ -82,9 +82,11 @@ debug_files = { "(" ~ "files" ~ debug_file_entry* ~ ")" }
 debug_file_entry = { "(" ~ "file" ~ integer ~ debug_surface ~ string ~ integer ~ debug_file_lines? ~ ")" }
 debug_file_lines = { "(" ~ "lines" ~ integer* ~ ")" }
 debug_surface = { "synthetic" | "ink" | "native" }
-debug_container = { "(" ~ "dcontainer" ~ integer ~ debug_entry* ~ debug_locals? ~ ")" }
+debug_container = { "(" ~ "dcontainer" ~ integer ~ debug_entry* ~ debug_line_site* ~ debug_locals? ~ ")" }
 // entry: bytecode_offset file_idx range_start range_len kind_token flags
 debug_entry = { "(" ~ "entry" ~ integer ~ integer ~ integer ~ integer ~ integer ~ integer ~ ")" }
+// site: bytecode_offset file_idx range_start range_len   [#3670: where an EmitLine was written]
+debug_line_site = { "(" ~ "site" ~ integer ~ integer ~ integer ~ integer ~ ")" }
 debug_locals = { "(" ~ "locals" ~ debug_local_entry* ~ ")" }
 // local: slot "name" synthetic? (range file_idx start len)?   [#3395: synthetic]
 debug_local_entry = { "(" ~ "local" ~ integer ~ string ~ debug_synthetic? ~ debug_range? ~ ")" }

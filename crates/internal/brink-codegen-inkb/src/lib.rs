@@ -387,6 +387,10 @@ struct ContainerEmitter<'a> {
     /// none). `None` on the default `emit()` path costs nothing beyond the
     /// tag check itself.
     debug_entries: Option<Vec<debug_info::RawDebugEntry>>,
+    /// Where each `EmitLine` this container emits was written (#3670) —
+    /// `Some` exactly when `debug_entries` is, recorded by
+    /// [`Self::emit_line_op`], the one place an `EmitLine` is emitted.
+    line_sites: Option<Vec<debug_info::RawLineSite>>,
 }
 
 /// Jump-patch bookkeeping for one open `LogicWhile` (innermost = top of
@@ -421,6 +425,7 @@ impl<'a> ContainerEmitter<'a> {
             errors: &mut state.errors,
             relocations: Vec::new(),
             debug_entries: None,
+            line_sites: None,
         }
     }
 
@@ -444,6 +449,27 @@ impl<'a> ContainerEmitter<'a> {
             offset,
             name: NameRef::Symbol(text.to_string()),
         });
+    }
+
+    /// Emit `EmitLine(idx, slots)`, and — when debug info is being
+    /// recorded — remember where this use of the line was written (#3670).
+    /// The line table cannot: dedup gives every repeat of a text one entry,
+    /// carrying the first use's location.
+    fn emit_line_op(
+        &mut self,
+        idx: u16,
+        slots: u8,
+        source_location: Option<&brink_format::SourceLocation>,
+    ) {
+        #[expect(clippy::cast_possible_truncation)]
+        let offset = self.bytecode.len() as u32;
+        if let (Some(sites), Some(location)) = (self.line_sites.as_mut(), source_location) {
+            sites.push(debug_info::RawLineSite {
+                offset,
+                location: location.clone(),
+            });
+        }
+        self.emit(Opcode::EmitLine(idx, slots));
     }
 
     #[expect(clippy::needless_pass_by_value)]
@@ -734,6 +760,7 @@ fn walk_container(
     let mut emitter = ContainerEmitter::new(state, scope_id);
     if debug_enabled {
         emitter.debug_entries = Some(raw_entries);
+        emitter.line_sites = Some(Vec::new());
     }
 
     // Branch containers (conditional or sequence) suppress `Done` after
@@ -761,8 +788,11 @@ fn walk_container(
     // (`debug_enabled == false`) path, with no separate branch needed here.
     emitter.emit_body_top_level(&container.body, prologue_end_index);
 
+    // #3670: this container's `EmitLine` sites, taken with its entries.
+    let mut raw_line_sites = Vec::new();
     let raw_entries = if debug_enabled {
         let mut entries = emitter.debug_entries.take().unwrap_or_default();
+        raw_line_sites = emitter.line_sites.take().unwrap_or_default();
         if prologue_end_index.is_none() {
             // Coverage guarantee (§2.4): even when no statement was flagged
             // above — an empty body, or a choice-target body containing
@@ -850,7 +880,7 @@ fn walk_container(
     // the eventual `StoryData::containers`, matching §2.2's `container_idx`
     // contract. A no-op (`state.debug` is `None`) on the default path.
     if let Some(debug) = state.debug.as_mut() {
-        debug.push_container(raw_entries, raw_locals);
+        debug.push_container(raw_entries, raw_locals, raw_line_sites);
     }
 
     // Primary address: every container is addressable by its own id.

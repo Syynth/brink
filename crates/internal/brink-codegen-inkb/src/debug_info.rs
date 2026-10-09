@@ -11,7 +11,7 @@ use std::collections::HashMap;
 
 use brink_format::{
     DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DebugContainerTable, DebugEntry, DebugFileEntry,
-    DebugInfoSection, DebugLocalEntry, FileSurface, NameId,
+    DebugInfoSection, DebugLineSite, DebugLocalEntry, FileSurface, NameId,
 };
 use brink_ir::{FileId, Provenance, lir};
 
@@ -56,6 +56,14 @@ pub(crate) struct RawDebugEntry {
     pub prologue_end: bool,
 }
 
+/// One recorded `EmitLine` site (#3670): the instruction's offset in its
+/// container and where that use of the line was written — before the
+/// location's path is interned into the section's file table.
+pub(crate) struct RawLineSite {
+    pub offset: u32,
+    pub location: brink_format::SourceLocation,
+}
+
 /// One recorded temp-slot declaration for a single container's `LocalsTable`
 /// (`docs/debugger-spec.md` §3, D7/#3185). Produced from
 /// [`brink_ir::lir::Param`] (function/knot/stitch parameters — bound by a
@@ -89,6 +97,8 @@ pub(crate) struct DebugCollector {
     /// One `Vec<RawLocal>` per container, parallel to `containers` above
     /// (same push order, same lockstep contract).
     locals: Vec<Vec<RawLocal>>,
+    /// One `Vec<RawLineSite>` per container, parallel to `containers`.
+    line_sites: Vec<Vec<RawLineSite>>,
     files: FileTableBuilder,
 }
 
@@ -97,6 +107,7 @@ impl DebugCollector {
         Self {
             containers: Vec::new(),
             locals: Vec::new(),
+            line_sites: Vec::new(),
             files: FileTableBuilder::new(),
         }
     }
@@ -106,7 +117,12 @@ impl DebugCollector {
     /// which is offset order) plus its raw locals, and intern every
     /// referenced file (from entries and from any local's declaring range)
     /// into the section-local file table, first-reference order (§2.3).
-    pub(crate) fn push_container(&mut self, raw: Vec<RawDebugEntry>, locals: Vec<RawLocal>) {
+    pub(crate) fn push_container(
+        &mut self,
+        raw: Vec<RawDebugEntry>,
+        locals: Vec<RawLocal>,
+        line_sites: Vec<RawLineSite>,
+    ) {
         for entry in &raw {
             self.files.intern(entry.provenance.file);
         }
@@ -117,6 +133,7 @@ impl DebugCollector {
         }
         self.containers.push(raw);
         self.locals.push(locals);
+        self.line_sites.push(line_sites);
     }
 
     /// Finish collecting and produce the wire-shaped section. `program`
@@ -131,11 +148,26 @@ impl DebugCollector {
     /// routes a resolver lookup to the wrong `ProvenanceResolver` instead of
     /// failing loudly).
     pub(crate) fn finish(
-        self,
+        mut self,
         program: &lir::Program,
         sources: Option<&std::collections::BTreeMap<FileId, String>>,
         errors: &mut Vec<crate::CodegenError>,
     ) -> DebugInfoSection {
+        // A line site names its file by path (it is a line-table
+        // `SourceLocation`); intern the file it names, which a statement
+        // entry has almost always interned already. A path the program
+        // does not know resolves to the synthetic sentinel, and its site
+        // is dropped below rather than misattributed.
+        let file_of_path: HashMap<&str, FileId> = program
+            .file_paths
+            .iter()
+            .map(|(id, path)| (path.as_str(), *id))
+            .collect();
+        for site in self.line_sites.iter().flatten() {
+            if let Some(&file) = file_of_path.get(site.location.file.as_str()) {
+                self.files.intern(file);
+            }
+        }
         let files = self.files.to_entries(program, sources, errors);
         let index_of = |file: FileId| -> u32 { self.files.index_of(file) };
         // Resolve a `NameId` against the program's name table — falls back
@@ -154,7 +186,8 @@ impl DebugCollector {
             .containers
             .into_iter()
             .zip(self.locals)
-            .map(|(raw, raw_locals)| {
+            .zip(self.line_sites)
+            .map(|((raw, raw_locals), raw_sites)| {
                 let entries = raw
                     .into_iter()
                     .map(|e| {
@@ -195,7 +228,26 @@ impl DebugCollector {
                         synthetic: l.synthetic,
                     })
                     .collect();
-                DebugContainerTable { entries, locals }
+                let line_sites = raw_sites
+                    .into_iter()
+                    .filter_map(|site| {
+                        let file = *file_of_path.get(site.location.file.as_str())?;
+                        Some(DebugLineSite {
+                            bytecode_offset: site.offset,
+                            file_idx: index_of(file),
+                            range_start: site.location.range_start,
+                            range_len: site
+                                .location
+                                .range_end
+                                .saturating_sub(site.location.range_start),
+                        })
+                    })
+                    .collect();
+                DebugContainerTable {
+                    entries,
+                    locals,
+                    line_sites,
+                }
             })
             .collect();
         DebugInfoSection { files, containers }

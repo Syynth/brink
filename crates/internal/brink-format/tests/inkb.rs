@@ -1626,7 +1626,7 @@ fn frame_shapes_rejects_unknown_section_version() {
 fn sample_debug_info() -> brink_format::DebugInfoSection {
     use brink_format::{
         DEBUG_FLAG_IS_STMT, DEBUG_FLAG_PROLOGUE_END, DebugContainerTable, DebugEntry,
-        DebugFileEntry, DebugInfoSection, DebugLocalEntry, FileSurface,
+        DebugFileEntry, DebugInfoSection, DebugLineSite, DebugLocalEntry, FileSurface,
     };
 
     DebugInfoSection {
@@ -1708,6 +1708,21 @@ fn sample_debug_info() -> brink_format::DebugInfoSection {
                         synthetic: true,
                     },
                 ],
+                // #3670: where each `EmitLine` was written.
+                line_sites: vec![
+                    DebugLineSite {
+                        bytecode_offset: 0,
+                        file_idx: 1,
+                        range_start: 10,
+                        range_len: 5,
+                    },
+                    DebugLineSite {
+                        bytecode_offset: 300,
+                        file_idx: 1,
+                        range_start: 40,
+                        range_len: 12,
+                    },
+                ],
             },
             DebugContainerTable {
                 entries: vec![DebugEntry {
@@ -1719,6 +1734,7 @@ fn sample_debug_info() -> brink_format::DebugInfoSection {
                     flags: DEBUG_FLAG_IS_STMT | DEBUG_FLAG_PROLOGUE_END,
                 }],
                 locals: Vec::new(),
+                line_sites: Vec::new(),
             },
         ],
     }
@@ -1763,6 +1779,10 @@ fn roundtrip_debug_info_section_inkt() {
     );
     assert!(text.contains("(local 3 \"$lift1\" synthetic)"));
     assert!(text.contains("(local 1 \"doubled\" (range 1 10 5))"));
+    assert!(
+        text.contains("(site 300 1 40 12)"),
+        "a line site is its own row (#3670): {text}"
+    );
 
     let recovered = brink_format::read_inkt(&text).unwrap();
     assert_eq!(data.debug_info, recovered.debug_info);
@@ -1855,12 +1875,14 @@ fn debug_info_rejects_reserved_local_flag_bits() {
             declaring_range: None,
             synthetic: true,
         }],
+        line_sites: Vec::new(),
     }];
     let mut buf = Vec::new();
     write_section_debug_info(&section, &mut buf);
-    // The row is the last thing written: slot u16, name (u32 len + "x"),
-    // flags u8 — so the flags byte is the final byte of the buffer.
-    let flags_at = buf.len() - 1;
+    // The row is the last thing written before the (empty) line-site
+    // count: slot u16, name (u32 len + "x"), flags u8 — so the flags byte
+    // is the second-to-last byte of the buffer.
+    let flags_at = buf.len() - 2;
     assert_eq!(buf[flags_at], 0b10, "synthetic, no range");
 
     let index = debug_info_index_for(&buf);
@@ -1870,6 +1892,37 @@ fn debug_info_rejects_reserved_local_flag_bits() {
     buf[flags_at] = 0b110;
     let err = read_section_debug_info(&buf, &index).unwrap_err();
     assert_eq!(err, DecodeError::InvalidDebugLocalFlags(0b110));
+}
+
+/// #3670: a version-2 `DebugInfo` section — written before the line-site
+/// table existed — still reads, with no sites (every line then resolves
+/// through the line table). A version-2 section is a version-3 one with
+/// neither the per-container site count nor the version byte's new value,
+/// so one empty container makes it by dropping the trailing count.
+#[test]
+fn debug_info_reads_a_version_2_section_with_no_line_sites() {
+    use brink_format::{DebugContainerTable, read_section_debug_info, write_section_debug_info};
+
+    let mut section = sample_debug_info();
+    section.containers = vec![DebugContainerTable {
+        entries: Vec::new(),
+        locals: Vec::new(),
+        line_sites: Vec::new(),
+    }];
+    let mut buf = Vec::new();
+    write_section_debug_info(&section, &mut buf);
+    assert_eq!(
+        buf.last(),
+        Some(&0),
+        "the empty site count ends the section"
+    );
+    buf.pop();
+    buf[0] = 2;
+
+    let index = debug_info_index_for(&buf);
+    let read = read_section_debug_info(&buf, &index).unwrap().unwrap();
+    assert_eq!(read.files, section.files);
+    assert_eq!(read.containers, section.containers);
 }
 
 /// §2.2's ruled, explicit departure from this format's default
@@ -1896,6 +1949,7 @@ fn debug_info_reader_tolerates_reserved_flag_bits() {
             flags: DEBUG_FLAG_IS_STMT | DEBUG_FLAG_RESERVED_MASK,
         }],
         locals: Vec::new(),
+        line_sites: Vec::new(),
     }];
 
     let mut buf = Vec::new();

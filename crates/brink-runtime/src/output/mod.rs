@@ -48,6 +48,14 @@ pub enum OutputPart {
         line_idx: u16,
         slots: Vec<Value>,
         flags: brink_format::LineFlags,
+        /// Where it was emitted: the byte offset of the `EmitLine` in
+        /// `container_idx`, resolved through `DebugInfo` at read time
+        /// (#3670). The line-table entry cannot say this — dedup shares
+        /// one entry across every repeat of a text, carrying the first
+        /// use's location. `None` for a part not emitted by the VM (built
+        /// in a test, or decoded from a transcript, which does not persist
+        /// it); such a part falls back to the entry's location.
+        site: Option<u32>,
     },
     /// Deferred value — stringified at read time.
     ValueRef(Value),
@@ -863,12 +871,29 @@ impl OutputBuffer {
 
     /// Push a deferred line reference. Resolved at read time.
     /// Applies the same filtering as `push_text` using precomputed flags.
+    /// With no emit site — the tests' shorthand; the VM pushes through
+    /// [`Self::push_emitted_line_ref`].
+    #[cfg(test)]
     pub fn push_line_ref(
         &mut self,
         container_idx: u32,
         line_idx: u16,
         slots: Vec<Value>,
         flags: brink_format::LineFlags,
+    ) {
+        self.push_emitted_line_ref(container_idx, line_idx, slots, flags, None);
+    }
+
+    /// [`Self::push_line_ref`], remembering the emitting instruction's
+    /// offset — what the VM pushes, so a delivered line's source is where
+    /// it was emitted rather than its text's first use (#3670).
+    pub fn push_emitted_line_ref(
+        &mut self,
+        container_idx: u32,
+        line_idx: u16,
+        slots: Vec<Value>,
+        flags: brink_format::LineFlags,
+        site: Option<u32>,
     ) {
         // Suppress whitespace-only/empty content when there's no content yet.
         if !self.has_content()
@@ -882,6 +907,7 @@ impl OutputBuffer {
             line_idx,
             slots,
             flags,
+            site,
         });
     }
 
@@ -1291,6 +1317,40 @@ pub(crate) fn resolve_lines_marked(
     }
 }
 
+/// Where a line reference's text was written: its emit site's own range,
+/// from `DebugInfo`'s line-site table (#3670); else — no site, no debug
+/// info, or text with no author source — its line-table entry's location,
+/// which is the text's FIRST use when dedup shared the entry.
+pub(crate) fn line_ref_source(
+    program: &Program,
+    line_tables: &[Vec<LineEntry>],
+    container_idx: u32,
+    line_idx: u16,
+    site: Option<u32>,
+) -> Option<brink_format::SourceLocation> {
+    let emitted = site.and_then(|offset| {
+        let at = program.emit_site_source(container_idx, offset)?;
+        Some(brink_format::SourceLocation {
+            file: at.file?,
+            range_start: at.range_start,
+            range_end: at.range_start + at.range_len,
+        })
+    });
+    emitted.or_else(|| {
+        // Same table selection as `resolve_line_ref`: a `LineRef`'s
+        // `container_idx` keys the SCOPE table via `scope_table_idx`,
+        // never `line_tables` directly — indexing raw silently reads
+        // another scope's line (found live: every provenance chip pointed
+        // at the wrong place while the TEXT — resolved through the correct
+        // road — looked fine).
+        let scope_idx = program.scope_table_idx(container_idx) as usize;
+        line_tables
+            .get(scope_idx)
+            .and_then(|t| t.get(line_idx as usize))
+            .and_then(|entry| entry.source_location.clone())
+    })
+}
+
 fn widen_source(
     current: &mut Option<brink_format::SourceLocation>,
     entry: Option<&brink_format::SourceLocation>,
@@ -1468,22 +1528,13 @@ fn drive_lines(
                 if let OutputPart::LineRef {
                     container_idx,
                     line_idx,
+                    site,
                     ..
                 } = part
                 {
-                    // Same table selection as `resolve_line_ref`: a
-                    // `LineRef`'s `container_idx` keys the SCOPE table via
-                    // `scope_table_idx`, never `line_tables` directly —
-                    // indexing raw silently reads another scope's line
-                    // (found live: every provenance chip pointed at the
-                    // wrong place while the TEXT — resolved through the
-                    // correct road — looked fine).
-                    let scope_idx = program.scope_table_idx(*container_idx) as usize;
-                    let entry_source = line_tables
-                        .get(scope_idx)
-                        .and_then(|t| t.get(*line_idx as usize))
-                        .and_then(|entry| entry.source_location.as_ref());
-                    widen_source(&mut current_source, entry_source);
+                    let source =
+                        line_ref_source(program, line_tables, *container_idx, *line_idx, *site);
+                    widen_source(&mut current_source, source.as_ref());
                 }
                 if part_involves_fragment_ref(part) {
                     saw_fragment_ref = true;
@@ -2575,6 +2626,7 @@ mod tests {
             line_idx,
             slots,
             flags,
+            site: None,
         }
     }
 

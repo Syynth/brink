@@ -13,9 +13,9 @@ use super::values::{parse_value, parse_value_type};
 use super::{InktParseError, P, Rule};
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, DebugContainerTable,
-    DebugEntry, DebugFileEntry, DebugInfoSection, DebugLocalEntry, DirectEffects, DispatchEntry,
-    EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef, ListDef, ListItemDef,
-    StructShapeDef,
+    DebugEntry, DebugFileEntry, DebugInfoSection, DebugLineSite, DebugLocalEntry, DirectEffects,
+    DispatchEntry, EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef, GlobalVarDef,
+    ListDef, ListItemDef, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::value::{ListValue, ShapeId};
@@ -534,9 +534,11 @@ fn parse_debug_file_entry(pair: P<'_>) -> Result<DebugFileEntry, InktParseError>
 fn parse_debug_container(pair: P<'_>) -> Result<DebugContainerTable, InktParseError> {
     let mut entries = Vec::new();
     let mut locals = Vec::new();
+    let mut line_sites = Vec::new();
     for inner in pair.into_inner() {
         match inner.as_rule() {
             Rule::debug_entry => entries.push(parse_debug_entry(inner)?),
+            Rule::debug_line_site => line_sites.push(parse_debug_line_site(inner)?),
             Rule::debug_locals => {
                 for local in inner.into_inner() {
                     if local.as_rule() == Rule::debug_local_entry {
@@ -547,7 +549,30 @@ fn parse_debug_container(pair: P<'_>) -> Result<DebugContainerTable, InktParseEr
             _ => {}
         }
     }
-    Ok(DebugContainerTable { entries, locals })
+    Ok(DebugContainerTable {
+        entries,
+        locals,
+        line_sites,
+    })
+}
+
+/// `(site $offset $file_idx $range_start $range_len)` (#3670).
+fn parse_debug_line_site(pair: P<'_>) -> Result<DebugLineSite, InktParseError> {
+    let mut inner = pair.into_inner();
+    let mut next_u32 = |ctx: &str| -> Result<u32, InktParseError> {
+        let p = inner.next().ok_or_else(|| InktParseError {
+            message: format!("expected {ctx} in debug line site"),
+            line: 0,
+            col: 0,
+        })?;
+        parse_u32(&p)
+    };
+    Ok(DebugLineSite {
+        bytecode_offset: next_u32("bytecode_offset")?,
+        file_idx: next_u32("file_idx")?,
+        range_start: next_u32("range_start")?,
+        range_len: next_u32("range_len")?,
+    })
 }
 
 /// `(entry $offset $file_idx $range_start $range_len $kind_token $flags)`.

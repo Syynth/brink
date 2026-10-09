@@ -944,6 +944,52 @@ mod tests {
         );
     }
 
+    /// A screenplay repeats its cues, and a played line's source is the
+    /// lines it was written on — never back to a cue's first use (#3670),
+    /// which is what the manuscript bands.
+    #[test]
+    fn a_played_lines_source_is_only_its_own_lines() {
+        let src = "-> scene\n=== scene ===\n    @Rhodes: <>\n        So much for calling me back, huh?\n\n    @Jackie: <>\n        I need a cigarette.\n\n    @Rhodes: <>\n        Need's a strong word, you know.\n-> END\n";
+        let mut d = Driver::new(src);
+        let mut out = d.go(PlayCommand::Start { at: None });
+        let mut sources = Vec::new();
+        for _ in 0..6 {
+            for step in &out.steps {
+                if let PlayStep::Line {
+                    text,
+                    source: Some(loc),
+                    ..
+                } = step
+                {
+                    sources.push((
+                        text.clone(),
+                        src[loc.start as usize..loc.end as usize].to_owned(),
+                    ));
+                }
+            }
+            if out
+                .stop
+                .as_ref()
+                .is_some_and(|s| s.kind == StopKind::Terminal)
+            {
+                break;
+            }
+            out = d.go(PlayCommand::Next);
+        }
+        let (_, last) = sources
+            .iter()
+            .find(|(text, _)| text.contains("strong word"))
+            .expect("the line played");
+        assert!(
+            last.contains("@Rhodes") && last.contains("strong word"),
+            "its own cue and text: {last:?}"
+        );
+        assert!(
+            !last.contains("So much") && !last.contains("cigarette"),
+            "and nothing before them: {last:?}"
+        );
+    }
+
     #[test]
     fn a_breakpoint_set_before_play_is_armed_by_the_start_that_follows() {
         // Marking a line and pressing Play is the ordinary way to reach a
