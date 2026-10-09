@@ -567,8 +567,10 @@ impl Studio {
             );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
-            // Bindable, with no default key yet (R4).
-            workspace.register_command("Play", "Show/Hide Player", TogglePlayer, None, cx);
+            // ⌘P: bring the Player out — running the story when nothing has
+            // run — and put it away again (decision log 2026-10-09). Free
+            // since go-to moved to ⌘K.
+            workspace.register_command("Play", "Show/Hide Player", TogglePlayer, Some("cmd-p"), cx);
             // Bindable, with no default key yet (R4).
             workspace.register_command("View", "Read View", ToggleReadView, None, cx);
             workspace.register_command("View", "Writing Sidebar", ToggleWritingSidebar, None, cx);
@@ -2479,8 +2481,19 @@ impl Studio {
             .update(cx, |project, cx| project.clear_breakpoints(cx));
     }
 
+    /// F5: with a story running, on to the next stop (`>|`); with none,
+    /// start one — a debugger's F5 starts the program it has nothing to
+    /// continue (decision log 2026-10-09).
     fn debug_continue(&mut self, _: &DebugContinue, window: &mut Window, cx: &mut Context<Self>) {
-        self.debug(PlayCommand::Continue, window, cx);
+        let state = self.player.read(cx).state();
+        if matches!(
+            state,
+            crate::player::SessionState::Idle | crate::player::SessionState::Over
+        ) {
+            self.play(&Play, window, cx);
+        } else {
+            self.debug(PlayCommand::Continue, window, cx);
+        }
     }
 
     fn debug_step_line(&mut self, _: &DebugStepLine, window: &mut Window, cx: &mut Context<Self>) {
@@ -3358,10 +3371,12 @@ mod modes_driven {
                 h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
                 assert!(player_until(&mut h, &player, |p| !p.is_busy()));
             }
-            // Let the correction frames run.
-            for _ in 0..6 {
-                h.advance(std::time::Duration::from_millis(20));
-            }
+            // Let the slide run — it is timed in real time.
+            let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                h.read(|cx| player.read(cx).now_gap())
+                    .is_some_and(|(top, now)| (top - now).abs() <= 2.)
+            });
             let (top, now) = h
                 .read(|cx| player.read(cx).now_gap())
                 .expect("the current row is laid out");
@@ -3384,9 +3399,11 @@ mod modes_driven {
         h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
         assert!(player_until(&mut h, &player, |p| p.state()
             == crate::player::SessionState::AwaitingChoice));
-        for _ in 0..6 {
-            h.advance(std::time::Duration::from_millis(20));
-        }
+        let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| player.read(cx).now_gap())
+                .is_some_and(|(top, now)| (top - now).abs() <= 2.)
+        });
         let (top, now) = h
             .read(|cx| player.read(cx).now_gap())
             .expect("the current row is laid out");
@@ -3420,9 +3437,12 @@ mod modes_driven {
         // Where the row is now — measured again before each click, since a
         // frame of NOW correction or the arrival's rise can still move it.
         let row_at = |h: &mut Harness| {
-            for _ in 0..4 {
-                h.advance(std::time::Duration::from_millis(50));
-            }
+            // Settled on NOW: nothing still sliding under the pointer.
+            let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                h.read(|cx| player.read(cx).now_gap())
+                    .is_some_and(|(top, now)| (top - now).abs() <= 1.)
+            });
             h.read(|cx| player.read(cx).active_row_bounds())
                 .expect("the first line is laid out")
         };
@@ -3649,9 +3669,9 @@ mod modes_driven {
         );
     }
 
-    /// Rewind (#3665): `<<` steps lines off at the autoplay pace until
-    /// paused, marking them undone until the story moves on; `|<` goes back
-    /// to just before the last choice — the cards again, the echo gone.
+    /// Rewind (#3665): `<<` steps one line back per press, marking it
+    /// undone until the story moves on; `|<` goes back to just before the
+    /// last choice — the cards again, the echo gone.
     #[test]
     fn rewind_steps_back_and_returns_to_the_choice() {
         let mut h = Harness::new();
@@ -3669,13 +3689,14 @@ mod modes_driven {
         let before = lines(&mut h);
         assert!(before >= 3, "{before} lines");
 
-        // << rewinds on its own, a line per pace, until paused.
-        h.update(|cx| player.update(cx, |p, cx| p.toggle_rewind(cx)));
-        assert!(autoplay_until(&mut h, &player, |p| p.line_count() <= before - 2));
-        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
-        let paused_at = lines(&mut h);
+        // << goes back one line per press — no timer.
+        for _ in 0..2 {
+            h.update(|cx| player.update(cx, |p, cx| p.back_one_line(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        }
+        assert_eq!(lines(&mut h), before - 2, "two presses, two lines back");
         h.advance(std::time::Duration::from_millis(1000));
-        assert_eq!(lines(&mut h), paused_at, "▶ paused the rewind");
+        assert_eq!(lines(&mut h), before - 2, "and nothing more on its own");
         assert!(
             !h.read(|cx| player.read(cx).trail().undone).is_empty(),
             "the lines rewound past are marked undone"
@@ -3704,6 +3725,62 @@ mod modes_driven {
             trail.chosen
         );
         assert!(trail.not_taken.is_empty(), "and nothing is dimmed");
+    }
+
+    /// A new line arrives without a jump: it lays out under the one
+    /// before and the transcript slides up until it meets NOW — never
+    /// snapped to the top and back, never past NOW, settling on it. Sampled
+    /// a frame at a time (the slide runs on real time).
+    #[test]
+    fn a_new_line_slides_up_to_now_without_jumping() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        for _ in 0..2 {
+            h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+            h.advance(std::time::Duration::from_millis(800));
+        }
+        let now = h
+            .read(|cx| player.read(cx).now_gap())
+            .map(|(_, now)| now)
+            .expect("laid out");
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        let mut tops = Vec::new();
+        for _ in 0..30 {
+            h.redraw(window);
+            if let Some((top, _)) = h.read(|cx| player.read(cx).now_gap()) {
+                tops.push(top);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(12));
+        }
+        assert!(
+            tops.iter().all(|&t| t >= now - 1.),
+            "never above NOW (no snap to the top): {tops:?}"
+        );
+        assert!(
+            tops.windows(2).all(|w| w[1] <= w[0] + 0.5),
+            "only ever moving up onto it: {tops:?}"
+        );
+        assert!(
+            tops.last().is_some_and(|t| (t - now).abs() <= 2.),
+            "settling on NOW: {tops:?}"
+        );
+    }
+
+    /// F5 with nothing running starts the story — a debugger's F5 starts
+    /// what it has nothing to continue.
+    #[test]
+    fn f5_starts_an_idle_story() {
+        let mut h = Harness::new();
+        let window = h.open(&stage_project());
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::DebugContinue);
+        assert!(
+            player_until(&mut h, &player, |p| p.line_count() >= 1),
+            "F5 started it"
+        );
     }
 
     /// `>|` runs straight to the next stop — here, the first choice.

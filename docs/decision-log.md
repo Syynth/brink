@@ -6015,3 +6015,19 @@
 - **SCOPE:** moderate
 - **WHAT:** The Player's rewind (#3665: `|<` back to just before the last choice, `<<` back a line at a time at autoplay pace, rewound lines keep a dashed "undone" rail until the story moves on) restores from a capped history of story copies the worker keeps — one before every line it plays and one before each choice taken. The oldest copies drop off past the cap.
 - **WHY:** Chosen over replaying from the start (unbounded history, but slow to rewind a long story and dependent on everything replaying identically) and over choice-only snapshots (exact `|<`, but `<<` would replay forward): a copy per line makes both gestures exact and instant, at a memory cost the cap bounds.
+
+## `<<` rewinds one line per press, not on a timer
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** minor/local
+- **WHAT:** The Player's `<<` steps back exactly one line each time it is pressed. It no longer rewinds continuously at the autoplay pace (revising the "Write-mode transport: a symmetric strip with rewind" ruling, whose `<<` rewound "continuously at Autoplay's pace, and Pause stops it"). `|<` (back to just before the last choice) is unchanged.
+- **WHY:** Maintainer, after trying it: "the 'rewind autoplay' feature is dumb, now that i've tried it lol, it should just rewind one line when you click it."
+
+## ⌘P shows the Player and starts the story; F5 starts an idle story
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / keymap
+- **SCOPE:** minor/local
+- **WHAT:** ⌘P is Show/Hide Player — out, running the story when nothing has run, and away again on a second press (free since go-to moved to ⌘K). F5, the debugger's Continue, starts the story when nothing is running instead of reporting that nothing is.
+- **WHY:** Maintainer wanted a keyboard way to start the Player in Write mode ("⌘P probably, or maybe F5?"); F5 already reached the Player but "just sucks" with nothing running — a debugger's F5 starts the program it has nothing to continue.

@@ -112,10 +112,6 @@ pub struct Player {
     undone: Vec<Location>,
     /// How many steps back the worker can rewind.
     history: usize,
-    /// `<<`: rewinding at the autoplay pace, until paused or at the start.
-    rewinding: bool,
-    /// The wait before the next step back.
-    rewind_timer: Option<gpui::Task<()>>,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -156,7 +152,7 @@ pub struct Player {
     /// A story line to bring to NOW, and how many more frames may try: its
     /// real top is measured after each layout and the list scrolled by the
     /// difference, until it sits there.
-    to_now: Option<(usize, u8)>,
+    to_now: Option<NowMove>,
     /// `>>`: playing on by itself at the Settings pace, until a stop.
     autoplay: bool,
     /// Where autoplay will stop, found by running a copy of the story
@@ -213,8 +209,6 @@ impl Player {
             hovered: None,
             undone: Vec::new(),
             history: 0,
-            rewinding: false,
-            rewind_timer: None,
             attached: None,
             saves,
             choices: Vec::new(),
@@ -332,7 +326,6 @@ impl Player {
         self.arrivals.clear();
         self.undone.clear();
         self.history = 0;
-        self.halt_rewind();
         self.choices.clear();
         // One item before the transcript and one past it — the head and the
         // tail, the room that lets its first and last rows reach NOW.
@@ -500,9 +493,8 @@ impl Player {
         if !self.running {
             let at = self.start_at.clone();
             self.start(at, cx);
-        } else if self.autoplay || self.rewinding {
+        } else if self.autoplay {
             self.halt_autoplay();
-            self.halt_rewind();
             cx.notify();
         } else if self.can_advance() {
             self.send(PlayCommand::Next, cx);
@@ -614,43 +606,17 @@ impl Player {
     pub(crate) fn back_to_choice(&mut self, cx: &mut Context<Self>) {
         if self.history > 0 && !self.busy {
             self.halt_autoplay();
-            self.halt_rewind();
             self.send(PlayCommand::BackToChoice, cx);
         }
     }
 
-    /// `<<`: rewind a line at a time at the autoplay pace until paused (▶,
-    /// now ❚❚) or at the start; a second press pauses.
-    pub(crate) fn toggle_rewind(&mut self, cx: &mut Context<Self>) {
-        if self.rewinding {
-            self.halt_rewind();
-        } else if self.history > 0 && !self.busy {
+    /// `<<`: one line back per press (2026-10-09, revised: not a timed
+    /// rewind).
+    pub(crate) fn back_one_line(&mut self, cx: &mut Context<Self>) {
+        if self.history > 0 && !self.busy {
             self.halt_autoplay();
-            self.rewinding = true;
             self.send(PlayCommand::Back, cx);
         }
-        cx.notify();
-    }
-
-    fn halt_rewind(&mut self) {
-        self.rewinding = false;
-        self.rewind_timer = None;
-    }
-
-    /// The next step back, after the pace's wait.
-    fn schedule_rewind(&mut self, cx: &mut Context<Self>) {
-        let wait = std::time::Duration::from_secs_f32(
-            brink_gpui_shell::settings::AppSettings::get(cx).autoplay_ms / 1000.,
-        );
-        let generation = self.generation;
-        self.rewind_timer = Some(cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(wait).await;
-            let _ = this.update(cx, |this, cx| {
-                if this.rewinding && this.generation == generation && !this.busy {
-                    this.send(PlayCommand::Back, cx);
-                }
-            });
-        }));
     }
 
     /// Keep the transcript up to the `lines`-th story line, and set what
@@ -904,15 +870,7 @@ impl Player {
                                     .stop
                                     .as_ref()
                                     .is_some_and(|stop| stop.kind == StopKind::Line);
-                            let rewound = outcome.rewound.is_some();
                             this.apply(outcome, cx);
-                            if this.rewinding {
-                                if rewound && this.history > 0 {
-                                    this.schedule_rewind(cx);
-                                } else {
-                                    this.halt_rewind();
-                                }
-                            }
                             if this.autoplay {
                                 if line && this.can_advance() {
                                     this.schedule_autoplay(cx);
@@ -1106,15 +1064,16 @@ impl Player {
         // Beside the manuscript a story line's top sits on the NOW line,
         // where the manuscript puts its source (decision log 2026-10-09);
         // otherwise, and for chrome rows, just keep the row in view. The
-        // row goes to the top first, then is brought to NOW by measuring
-        // where it really landed (`render`): an estimate from the rows
-        // above it was a row short whenever they had not been measured.
+        // row lays out where it falls — under the one before — and the
+        // transcript then slides up until it meets NOW (`render`), measured
+        // rather than estimated. (It used to snap the row to the top and
+        // then back down: two jumps, one of them seen.)
         if self.write_mode && line {
-            self.list.scroll_to(gpui::ListOffset {
-                item_ix: ix + 1,
-                offset_in_item: px(0.),
+            self.to_now = Some(NowMove {
+                ix,
+                slide: None,
+                tries: NOW_TRIES,
             });
-            self.to_now = Some((ix, NOW_TRIES));
         } else {
             self.list.scroll_to_reveal_item(ix + 1);
         }
@@ -1634,9 +1593,6 @@ impl Player {
         if !self.choices.is_empty() {
             return ("Choose".into(), hsla(tokens.symbol_knot), false);
         }
-        if self.rewinding {
-            return (with_here("Rewinding").into(), hsla(tokens.info), false);
-        }
         if self.autoplay {
             // Where it will stop, as the lookahead found (the canvas's
             // "stops at ● tower.ink 6"); where it is until that answers.
@@ -2005,10 +1961,10 @@ impl Player {
         let started = !self.entries.is_empty();
         let width = f32::from(self.list.viewport_bounds().size.width);
         let roomy = width == 0. || width >= HINT_MIN_WIDTH;
-        let can_primary = !self.running || self.autoplay || self.rewinding || self.can_advance();
+        let can_primary = !self.running || self.autoplay || self.can_advance();
         let can_back = self.history > 0 && !self.busy;
         let advance = self.can_advance();
-        let hint: SharedString = if self.autoplay || self.rewinding {
+        let hint: SharedString = if self.autoplay {
             "space · pause".into()
         } else if !self.choices.is_empty() {
             format!("1\u{2013}{} · choose", self.choices.len()).into()
@@ -2019,7 +1975,7 @@ impl Player {
         } else {
             "space · continue".into()
         };
-        let (primary_icon, primary_tip) = if self.autoplay || self.rewinding {
+        let (primary_icon, primary_tip) = if self.autoplay {
             (BrinkIcon::TransportPause, "Pause (space)")
         } else {
             (BrinkIcon::TransportPlay, "Continue (space)")
@@ -2078,12 +2034,12 @@ impl Player {
                 Self::icon_button(
                     "player-back",
                     BrinkIcon::TransportBack,
-                    "Rewind — a line at a time, at the autoplay pace",
-                    self.rewinding.then_some(primary),
-                    self.rewinding || can_back,
+                    "Back one line",
+                    None,
+                    can_back,
                     cx,
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_rewind(cx))),
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.back_one_line(cx))),
             )
             .child(
                 div()
@@ -2298,23 +2254,40 @@ impl Render for Player {
         // Bring the current line to NOW: measure where the last layout
         // really put it, scroll by the difference, and look again next
         // frame — until it is there, or the tries run out.
-        if let Some((ix, tries)) = self.to_now.take() {
-            let again = tries.checked_sub(1).map(|left| (ix, left));
-            match self.list.bounds_for_item(ix + 1) {
+        if let Some(mut slide) = self.to_now.take() {
+            match self.list.bounds_for_item(slide.ix + 1) {
                 Some(row) => {
+                    // Where it is now; where the slide wants it this frame.
                     let off = f32::from(row.top()) - self.now_y;
-                    if off.abs() > 1. {
-                        self.list.scroll_by(px(off));
-                        self.to_now = again;
+                    let (from, started) =
+                        *slide.slide.get_or_insert((off, std::time::Instant::now()));
+                    let t = (started.elapsed().as_secs_f32() / NOW_SLIDE.as_secs_f32()).min(1.);
+                    // Ease-out cubic: settles gently onto NOW rather than
+                    // covering most of the way in the first few frames.
+                    let want = from * (1. - t).powi(3);
+                    let by = off - want;
+                    if by.abs() > 0.25 {
+                        self.list.scroll_by(px(by));
+                    }
+                    if t < 1. || want.abs() > 1. {
+                        self.to_now = Some(slide);
                     }
                 }
-                // Scrolled above it: put it at the top and measure again.
+                // Not laid out yet: give it a frame or two; past that it is
+                // out of reach (scrolled well away), so go to it.
+                None if slide.tries > 0 => {
+                    slide.tries -= 1;
+                    self.to_now = Some(slide);
+                }
                 None => {
                     self.list.scroll_to(gpui::ListOffset {
-                        item_ix: ix + 1,
+                        item_ix: slide.ix + 1,
                         offset_in_item: px(0.),
                     });
-                    self.to_now = again;
+                    self.to_now = Some(NowMove {
+                        tries: NOW_TRIES,
+                        ..slide
+                    });
                 }
             }
             if self.to_now.is_some() {
@@ -2421,9 +2394,21 @@ fn cards_in(n: usize) -> std::time::Duration {
     CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// How many frames may correct a line onto NOW before giving up — a few
-/// is plenty; the bound keeps a list that cannot settle from looping.
+/// How many frames a new line may take to be laid out before the list is
+/// scrolled to it outright.
 const NOW_TRIES: u8 = 4;
+
+/// How long the transcript slides up to bring a new line to NOW.
+const NOW_SLIDE: std::time::Duration = std::time::Duration::from_millis(220);
+
+/// A story line on its way to NOW: which, and — once it is laid out —
+/// where the slide began and when.
+#[derive(Clone, Copy)]
+struct NowMove {
+    ix: usize,
+    slide: Option<(f32, std::time::Instant)>,
+    tries: u8,
+}
 
 /// How many saves each section of the header's saves menu lists.
 const SAVES_IN_MENU: usize = 8;
