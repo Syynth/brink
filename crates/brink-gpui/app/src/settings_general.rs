@@ -5,10 +5,11 @@
 //! The native studio differs by the maintainer's call (2026-09-05):
 //! **`brink.toml` opens in Code view like any file**, and Settings holds
 //! only the form — the `[project] name` field (decision log 2026-10-09),
-//! the `entry` / `conventions` / `dialect` / `types` selects, and the drafts list in the dictionary's shape (ruled
-//! 2026-08-29, each glob reporting what it matched). Everything the form
-//! does not model, `[lints]` and `[prose]` included, is edited in the file,
-//! which the section opens on request.
+//! the `entry` / `conventions` / `dialect` / `types` selects, and the
+//! drafts list in the dictionary's shape (ruled 2026-08-29, each glob
+//! reporting what it matched). Everything the form does not model,
+//! `[lints]` and `[prose]` included, is edited in the file, which the
+//! section opens on request.
 //!
 //! **One text, every view.** `brink.toml` is a file in the project's
 //! shared buffer (`Project::config_path`): the form's edits and a Code
