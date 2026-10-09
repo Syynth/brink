@@ -66,6 +66,21 @@ pub enum PlayCommand {
     /// says while autoplaying ("stops at ● tower.ink 6"). Answered with a
     /// [`PlayOutcome`] whose `stop` is that place (and no steps).
     Lookahead,
+    /// Capture a checkpoint of the running story (W14's Save state): its
+    /// durable game state and its transcript, structural, both as the
+    /// studio's JSON. Answered with a [`PlayOutcome`] whose `saved` holds
+    /// it.
+    Save,
+    /// Start from a checkpoint: a fresh start at `knot` (the place it was
+    /// saved — the runtime's save carries no execution position), its game
+    /// state reconciled in, and its transcript re-rendered against the
+    /// CURRENT compile so edited prose shows edited (RULED 2026-08-30). A
+    /// load that could not place everything says so in `warnings`.
+    Load {
+        state: String,
+        transcript: Option<String>,
+        knot: Option<String>,
+    },
     /// Read the running story's state without advancing it — what the
     /// State View shows. Answered with a [`PlayOutcome`] carrying no
     /// steps and a `state`; a session that is not running answers with
@@ -232,6 +247,25 @@ pub struct PlayOutcome {
     /// Lines from `SetBreakpoints` that bound to nothing, so the studio
     /// can report them rather than leave a mark that will never hit.
     pub unbound: Vec<(String, u32)>,
+    /// A `Save`'s checkpoint.
+    pub saved: Option<SavedState>,
+}
+
+/// A checkpoint, as the studio stores it (W14): JSON a person can read,
+/// in the web studio's own shapes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedState {
+    /// The runtime's `SaveState` — globals, visits, turns, RNG.
+    pub state: String,
+    /// The structural transcript (`brink_runtime::transcript_json`).
+    pub transcript: String,
+    /// The turn it was saved on.
+    pub turn: u32,
+    /// Where the story was — the knot (or `knot.stitch`) a load resumes at.
+    pub knot: Option<String>,
+    /// The program it was saved against, so a list can mark a save made
+    /// before the last edit.
+    pub checksum: u32,
 }
 
 /// What kind of place a command stopped at.
@@ -386,6 +420,20 @@ pub fn run(
         // it: the panel that asks this is the one an author opens to find
         // out WHY the story died.
         PlayCommand::Lookahead => lookahead(slot),
+        PlayCommand::Save => save(slot),
+        PlayCommand::Load {
+            state,
+            transcript,
+            knot,
+        } => load(
+            session,
+            entry,
+            files,
+            slot,
+            &state,
+            transcript.as_deref(),
+            knot,
+        ),
         PlayCommand::Snapshot => PlayOutcome {
             state: slot
                 .play
@@ -691,6 +739,117 @@ fn line_of(story: &Story<FastRng>, program: &brink_runtime::Program) -> Option<(
     let file = loc.file?;
     let line0 = program.line_at(&file, loc.range_start)?;
     Some((file, line0 + 1))
+}
+
+/// Capture the running story's checkpoint.
+fn save(slot: &PlaySlot) -> PlayOutcome {
+    let Some(running) = slot.play.as_ref() else {
+        return PlayOutcome::failed(PlayError::NotStarted);
+    };
+    let story = &running.story;
+    let checksum = running.program.source_checksum();
+    let transcript = brink_runtime::transcript_json::export_transcript_json(
+        story.transcript(),
+        story.fragments(),
+        checksum,
+    );
+    let (Ok(state), Ok(transcript)) = (
+        serde_json::to_string(&story.save_state()),
+        serde_json::to_string(&transcript),
+    ) else {
+        return PlayOutcome::failed(PlayError::Unavailable);
+    };
+    PlayOutcome {
+        saved: Some(SavedState {
+            state,
+            transcript,
+            turn: story.debug_snapshot().turn_index,
+            knot: story.current_path(),
+            checksum,
+        }),
+        ..PlayOutcome::default()
+    }
+}
+
+/// Start from a checkpoint: see [`PlayCommand::Load`].
+fn load(
+    session: &mut IdeSession,
+    entry: Option<&str>,
+    files: &[String],
+    slot: &mut PlaySlot,
+    state: &str,
+    transcript: Option<&str>,
+    knot: Option<String>,
+) -> PlayOutcome {
+    let Ok(state) = serde_json::from_str::<brink_format::SaveState>(state) else {
+        return PlayOutcome {
+            warnings: vec!["that save could not be read".to_owned()],
+            ..PlayOutcome::failed(PlayError::Unavailable)
+        };
+    };
+    slot.play = None;
+    slot.fault = None;
+    let started = match start(session, entry, files, knot.as_deref()) {
+        Ok(started) => started,
+        Err(e) => return PlayOutcome::failed(e),
+    };
+    let running = slot.play.insert(started);
+    let report = running.story.load_state(&state);
+    let unbound = arm(running, &slot.wanted);
+    // The story so far, re-rendered against the current compile.
+    let mut steps: Vec<PlayStep> = transcript
+        .and_then(|t| {
+            serde_json::from_str::<brink_runtime::transcript_json::TranscriptJson>(t).ok()
+        })
+        .map(|t| {
+            let (parts, fragments) = brink_runtime::transcript_json::decode_transcript_json(
+                t,
+                running.program.container_count(),
+            );
+            brink_runtime::transcript::render_transcript_with_source(
+                &parts,
+                &running.program,
+                running.story.line_tables(),
+                None,
+                &fragments,
+            )
+            .into_iter()
+            .filter(|(text, _, _)| !text.trim().is_empty())
+            .map(|(text, tags, source)| PlayStep::Line {
+                text,
+                tags,
+                source: location(source),
+            })
+            .collect()
+        })
+        .unwrap_or_default();
+    let mut outcome = debug_command(slot, DebugVerb::Line);
+    steps.append(&mut outcome.steps);
+    outcome.steps = steps;
+    outcome.unbound = unbound;
+    if !report.is_clean() {
+        let mut lost = Vec::new();
+        if !report.unknown_globals.is_empty() {
+            lost.push(format!(
+                "unknown globals: {}",
+                report.unknown_globals.join(", ")
+            ));
+        }
+        if !report.unresolved_renames.is_empty() {
+            lost.extend(report.unresolved_renames.iter().cloned());
+        }
+        if report.anonymous_states_dropped > 0 {
+            lost.push(format!(
+                "{} unnamed choice/sequence state(s) could not be placed",
+                report.anonymous_states_dropped
+            ));
+        }
+        outcome.warnings.insert(
+            0,
+            format!("the save did not load cleanly — {}", lost.join("; ")),
+        );
+    }
+    outcome
 }
 
 /// Run a copy of the story to where a `Continue` would stop, and say
@@ -1129,6 +1288,58 @@ mod tests {
         assert!(
             !left.contains(&Some(StopKind::Breakpoint)),
             "taking the other choice runs past it: {left:?}"
+        );
+    }
+
+    /// Save state round-trips (W14): the transcript comes back re-rendered,
+    /// the game state holds, and play resumes at the knot it was saved in.
+    #[test]
+    fn a_save_loads_back_with_its_transcript_state_and_place() {
+        let src = "VAR gold = 0\n-> shore\n=== shore ===\nThe tide was out.\n* [Dig]\n  ~ gold = 5\n  -> cove\n=== cove ===\nA cave mouth.\nWater drips.\n-> END\n";
+        let mut d = Driver::new(src);
+        let mut out = d.go(PlayCommand::Start { at: None });
+        while out.stop.as_ref().map(|s| s.kind) != Some(StopKind::Choices) {
+            out = d.go(PlayCommand::Next);
+        }
+        let _ = d.go(PlayCommand::Choose(0));
+        let saved = d.go(PlayCommand::Save).saved.expect("a checkpoint");
+        assert_eq!(saved.knot.as_deref(), Some("cove"), "{saved:?}");
+
+        // A fresh run, then the load.
+        let _ = d.go(PlayCommand::Stop);
+        let loaded = d.go(PlayCommand::Load {
+            state: saved.state.clone(),
+            transcript: Some(saved.transcript.clone()),
+            knot: saved.knot.clone(),
+        });
+        assert!(
+            loaded.error.is_none() && loaded.warnings.is_empty(),
+            "{loaded:?}"
+        );
+        let texts: Vec<&str> = loaded
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                PlayStep::Line { text, .. } => Some(text.trim_end()),
+                _ => None,
+            })
+            .collect();
+        assert!(
+            texts.starts_with(&["The tide was out."]),
+            "the story so far comes back first: {texts:?}"
+        );
+        assert!(
+            texts.contains(&"A cave mouth."),
+            "then play resumes in cove: {texts:?}"
+        );
+        let state = d.go(PlayCommand::Snapshot).state.expect("running");
+        assert!(
+            state
+                .globals
+                .iter()
+                .any(|(name, value)| name == "gold" && value == "5"),
+            "the game state held: {:?}",
+            state.globals
         );
     }
 
