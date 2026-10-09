@@ -126,6 +126,9 @@ pub struct Player {
     /// Where the next line starts, as the last line's stop says: what ▶
     /// plays next, for the manuscript.
     next_at: Option<(String, u32)>,
+    /// Why the story is held, for the header: a breakpoint, a write, a
+    /// step.
+    held_why: Option<String>,
     /// Drawn for Write mode: the transport has no Step there (decision
     /// log 2026-10-08, "line-level breakpoints").
     write_mode: bool,
@@ -180,6 +183,7 @@ impl Player {
             autoplay: false,
             autoplay_timer: None,
             next_at: None,
+            held_why: None,
             write_mode: false,
             reader: None,
             looks: Vec::new(),
@@ -575,6 +579,16 @@ impl Player {
         self.paused = kind.is_some_and(StopKind::holds);
         let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
         self.held_at = if self.paused { at.clone() } else { None };
+        self.held_why = outcome
+            .stop
+            .as_ref()
+            .filter(|_| self.paused)
+            .map(|stop| match stop.kind {
+                StopKind::Breakpoint => "Held at a breakpoint".to_owned(),
+                StopKind::Watchpoint => format!("Held at a {}", stop.reason),
+                StopKind::Step => "Stepped".to_owned(),
+                _ => "Held".to_owned(),
+            });
         self.next_at = if kind == Some(StopKind::Line) {
             at
         } else {
@@ -1017,48 +1031,63 @@ impl Player {
     }
 
     /// What the header says about the session, and in what colour.
-    fn status(&self, cx: &App) -> (SharedString, Hsla) {
+    /// What the header says about the session, in what colour, and
+    /// whether its dot is hollow (following paused — not a state of the
+    /// story, a state of the editor). The canvas's states, 2026-10-09.
+    fn status(&self, cx: &App) -> (SharedString, Hsla, bool) {
         let theme = cx.theme();
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
         let hsla = brink_gpui_shell::theme::hsla;
-        let place = |loc: &Location| {
-            let line = self
-                .project
+        let line_of = |path: &str, offset: u32| {
+            self.project
                 .read(cx)
-                .loaded_source(&loc.path)
-                .and_then(|text| text.get(..loc.start as usize))
-                .map_or(0, |before| before.matches('\n').count() + 1);
-            format!("{} {line}", loc.path)
+                .loaded_source(path)
+                .and_then(|text| text.get(..offset as usize))
+                .map_or(0, |before| before.matches('\n').count() + 1)
+        };
+        let here = self
+            .current_source()
+            .map(|loc| format!("{} {}", loc.path, line_of(&loc.path, loc.start)));
+        let with_here = |what: &str| match &here {
+            Some(at) => format!("{what} · {at}"),
+            None => what.to_owned(),
         };
         if self.stale {
-            return ("Sources changed — Restart".into(), theme.warning);
+            return ("Sources changed — Restart".into(), theme.warning, false);
         }
-        if self.busy {
-            return ("Working\u{2026}".into(), theme.muted_foreground);
+        // A line in flight is a beat, not a state: only a start says so.
+        if self.busy && self.entries.is_empty() {
+            return ("Starting\u{2026}".into(), theme.muted_foreground, false);
         }
-        if let Some((path, line)) = &self.held_at
-            && self.paused
-        {
-            return (format!("Held · {path} {line}").into(), hsla(tokens.warning));
+        if self.paused {
+            let why = self.held_why.as_deref().unwrap_or("Held");
+            let label = match &self.held_at {
+                Some((path, line)) => format!("{why} · {path} {line}"),
+                None => why.to_owned(),
+            };
+            return (label.into(), hsla(tokens.warning), false);
         }
         if !self.choices.is_empty() {
-            return ("Choose".into(), hsla(tokens.symbol_knot));
+            return ("Choose".into(), hsla(tokens.symbol_knot), false);
         }
         if self.autoplay {
-            return ("Autoplaying".into(), hsla(tokens.info));
+            return (with_here("Autoplaying").into(), hsla(tokens.info), false);
         }
         if self.running {
-            let at = self.current_source().map(place);
-            return (
-                at.map_or_else(|| "Playing".to_owned(), |at| format!("Playing · {at}"))
-                    .into(),
-                hsla(tokens.success),
-            );
+            let following = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
+            if following && self.follow_paused {
+                return (
+                    "Paused following — you\u{2019}re editing".into(),
+                    hsla(tokens.warning),
+                    true,
+                );
+            }
+            return (with_here("Playing").into(), hsla(tokens.success), false);
         }
         if self.entries.is_empty() {
-            ("Ready".into(), theme.muted_foreground)
+            ("Ready".into(), theme.muted_foreground, false)
         } else {
-            ("Ended".into(), theme.muted_foreground)
+            ("Ended".into(), theme.muted_foreground, false)
         }
     }
 
@@ -1075,7 +1104,11 @@ impl Player {
         );
         let amber =
             brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.warning);
-        let (label, colour) = self.status(cx);
+        let (label, colour, hollow) = self.status(cx);
+        // The list's width as last laid out — the panel's; 0 before it has
+        // laid out, which reads as wide.
+        let width = f32::from(self.list.viewport_bounds().size.width);
+        let narrow = width > 0. && width < NARROW_HEADER;
         let follow_on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
         let (follow_icon, follow_lit, follow_tip) = match (follow_on, self.follow_paused) {
             (true, true) => (
@@ -1109,7 +1142,14 @@ impl Player {
                     .text_xs()
                     .text_color(fg)
                     .cursor_pointer()
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(colour))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .when(hollow, |el| el.border_1().border_color(colour))
+                            .when(!hollow, |el| el.bg(colour)),
+                    )
                     .child(div().truncate().child(label))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         if let Some(loc) = this.current_source().cloned() {
@@ -1132,41 +1172,43 @@ impl Player {
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_follow(cx))),
             )
-            .child(
-                Self::icon_button(
-                    "player-tags",
-                    BrinkIcon::PlayerTags,
-                    "Show tags",
-                    self.show_tags.then_some(primary),
-                    true,
-                    cx,
+            // Narrow, Tags and Save fold into ⋯; Follow stays out, since
+            // it is the one toggle used mid-play (canvas, 2026-10-09).
+            .when(!narrow, |el| {
+                el.child(
+                    Self::icon_button(
+                        "player-tags",
+                        BrinkIcon::PlayerTags,
+                        "Show tags",
+                        self.show_tags.then_some(primary),
+                        true,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tags(cx))),
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.show_tags = !this.show_tags;
-                    cx.notify();
-                })),
-            )
-            .child(Self::icon_button(
-                "player-save",
-                BrinkIcon::PlayerSave,
-                "Save state (coming)",
-                None,
-                false,
-                cx,
-            ))
-            .child(
-                Self::icon_button(
-                    "player-more",
-                    BrinkIcon::Dots,
-                    "Player settings",
+                .child(Self::icon_button(
+                    "player-save",
+                    BrinkIcon::PlayerSave,
+                    "Save state (coming)",
                     None,
-                    true,
+                    false,
                     cx,
+                ))
+                .child(
+                    Self::icon_button(
+                        "player-more",
+                        BrinkIcon::Dots,
+                        "Player settings",
+                        None,
+                        true,
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::OpenSettings)),
+                    ),
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::OpenSettings)),
-                ),
-            )
+            })
+            .when(narrow, |el| el.child(self.render_more_menu(cx)))
             .when(self.write_mode, |el| {
                 el.child(
                     Self::icon_button(
@@ -1179,6 +1221,49 @@ impl Player {
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::Close))),
                 )
+            })
+            .into_any_element()
+    }
+
+    /// Show or hide the transcript's tags.
+    fn toggle_tags(&mut self, cx: &mut Context<Self>) {
+        self.show_tags = !self.show_tags;
+        cx.notify();
+    }
+
+    /// The narrow header's ⋯: what folded out of the bar, then settings.
+    fn render_more_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_component::button::{Button, ButtonVariants as _};
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        use gpui_component::{IconName, Sizable as _};
+        let me = cx.entity().downgrade();
+        let tags = self.show_tags;
+        Button::new("player-more")
+            .ghost()
+            .small()
+            .icon(IconName::Ellipsis)
+            .tooltip("More")
+            .dropdown_menu(move |menu, _, _| {
+                let toggle_tags = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |this, cx| this.toggle_tags(cx));
+                    }
+                };
+                let settings = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |_, cx| cx.emit(PlayerEvent::OpenSettings));
+                    }
+                };
+                menu.item(
+                    PopupMenuItem::new("Show tags")
+                        .checked(tags)
+                        .on_click(toggle_tags),
+                )
+                .item(PopupMenuItem::new("Save state (coming)").disabled(true))
+                .separator()
+                .item(PopupMenuItem::new("Player settings").on_click(settings))
             })
             .into_any_element()
     }
@@ -1198,6 +1283,8 @@ impl Player {
             theme.background,
         );
         let started = !self.entries.is_empty();
+        let width = f32::from(self.list.viewport_bounds().size.width);
+        let roomy = width == 0. || width >= HINT_MIN_WIDTH;
         let can_primary = !self.running || self.autoplay || self.can_advance();
         let advance = self.can_advance();
         let hint: SharedString = if self.autoplay {
@@ -1337,14 +1424,17 @@ impl Player {
                     })),
                 )
             })
-            .child(
-                div()
-                    .absolute()
-                    .right(px(14.))
-                    .text_xs()
-                    .text_color(muted)
-                    .child(hint),
-            )
+            // The hint gives way before it would run into the transport.
+            .when(roomy, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .right(px(14.))
+                        .text_xs()
+                        .text_color(muted)
+                        .child(hint),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1543,6 +1633,12 @@ impl Render for Player {
             .child(strip)
     }
 }
+
+/// Below this width the header folds Tags and Save into ⋯.
+const NARROW_HEADER: f32 = 380.;
+/// Below this width the strip drops its hint: the centred transport needs
+/// the room.
+const HINT_MIN_WIDTH: f32 = 560.;
 
 /// Where the NOW line sits, as a share of the window's height: the Player
 /// and the manuscript both put the current line's top there.
