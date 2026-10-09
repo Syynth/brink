@@ -145,6 +145,15 @@ fn resolve_analysis_options(
         for warning in &lint_warnings {
             let _ = writeln!(io::stderr(), "warning: [{config_path}] {warning}");
         }
+        // The host manifest the file names (#1784), through the one loader
+        // `brink build` uses (`Project::load`), so the two agree on what it
+        // means — and a named manifest that cannot be loaded fails the
+        // command rather than quietly checking without it.
+        options.host_manifest =
+            brink_environment::load_host_manifest(&config, &config_key, &|path| {
+                tree.read(path).map_err(|e| e.to_string())
+            })
+            .map_err(|e| e.to_string())?;
     }
     let override_warnings = options.apply_lint_overrides(&overrides.lints, overrides.deny_warnings);
     for warning in &override_warnings {

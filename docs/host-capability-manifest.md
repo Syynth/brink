@@ -73,6 +73,40 @@ RMMZ plugin emitting 50 verbs). Per-external signatures *may* also be registered
 | Semantic type *definitions* (item_id, color, enums) | registered (project-wide vocab) |
 | Value providers, host-rendered editors | registered (host-owned) |
 
+### Loading the registered manifest from `brink.toml` (#1784, #3666)
+
+A project can also name its manifest in `brink.toml`, so tools that have no
+host to register one still see it:
+
+```toml
+[host]
+manifest = "build/host-manifest.json"
+```
+
+- **One file, the same JSON** `set_host_manifest` takes. The path is relative
+  to the `brink.toml` that names it. On native mounts `..` may climb out of
+  the source tree, so a host can write the file into a build-output folder.
+- **One loader:** `brink_environment::load_host_manifest`. `Project::load`
+  collects the manifest into the `Environment`, so it is part of the
+  content-hashed input. The CLI's `ide` commands, brink-lsp and the native
+  studio call the same function with their own file readers.
+- **A named manifest that cannot be loaded:**
+  - `brink build`/`check` and `brink ide` **fail**: CI must not quietly stop
+    enforcing what the manifest gates.
+  - Editors show a **warning** on `brink.toml` and analyse without one.
+- **Precedence:** a manifest registered through the API (`set_host_manifest`,
+  `mountStudio({ hostManifest })`, `ManifestSource::Registered`) wins over the
+  file.
+- **Not for the runtime:** the manifest is tooling-only, so `bevy-brink` loads
+  stories with `ManifestSource::NotLoaded`.
+- **Reloading:** brink-lsp watches the file and re-applies it when it changes.
+  Byte-identical rewrites re-analyse nothing. The native studio follows it as
+  a file the config reads, provided it lives under the project root.
+- **Web and desktop studios:** they do not read the file yet. A manifest
+  reaches them only through `setHostManifest`.
+
+Decision log 2026-10-09, "Host manifest from brink.toml".
+
 The author always still writes `EXTERNAL foo(x)` in ink (existence + arity, for
 the compiler) — the manifest/inline annotations only *enrich* it. So nothing
 downstream (compiler, runtime, another host) ever depends on the manifest; a
@@ -89,6 +123,7 @@ that source files already use** — no LSP crate; `brink-ide` is the query layer
 | TS mirror of the schema | `@brink/wasm-types` |
 | Parse inline `///` tags → `ExternalDoc` | `brink-ir` HIR lowering (from `EXTERNAL_DECL` trivia) |
 | Register the manifest | host → `EditorSession::set_host_manifest` → `IdeSession`/`ProjectDb` |
+| Load it from `brink.toml`'s `[host] manifest` | `brink_environment::load_host_manifest`: `Project::load`, `brink ide`, brink-lsp, native studio |
 | Merge both sources, enrich `SymbolInfo`, new diagnostics | `brink_analyzer::analyze` |
 | Surface it (completion/hover/signature/diagnostics + code-action) | `brink-ide` (mostly already reads `index.symbols`) |
 | Widgets / broker host data | brink-studio + a host-callback path — **Tier 3, separate, later** |

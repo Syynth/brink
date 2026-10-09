@@ -80,6 +80,12 @@ fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
         // `bevy-brink` compile into debug info today — that's D9's studio
         // wiring, not this loader's.
         debug_info: false,
+        // The host manifest is tooling-only, "never the runtime" (decision
+        // log, Track B): a game loading its story does not read the file a
+        // `[host] manifest` names, and its asset tree need not hold it.
+        // bevy-brink reads the same file for its own `effects` through
+        // `CapabilityManifest`, which is a different consumer.
+        host_manifest: brink_environment::ManifestSource::NotLoaded,
     }
 }
 
