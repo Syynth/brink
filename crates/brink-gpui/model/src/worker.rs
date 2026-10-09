@@ -152,6 +152,8 @@ pub struct Opened {
     pub sources: Vec<String>,
     /// `[project] entry` from `brink.toml`, if one was found.
     pub entry: Option<String>,
+    /// `[project] name` from `brink.toml`, if one was found and sets it.
+    pub name: Option<String>,
     /// Config-file warnings, already prefixed with their source.
     pub warnings: Vec<String>,
     /// Files the config POINTS AT and the session never sees as
@@ -227,6 +229,9 @@ pub struct Analyzed {
     /// `[project] entry` as the config currently applied resolves it. Rides
     /// every analysis because an edit to `brink.toml` can move it.
     pub entry: Option<String>,
+    /// `[project] name` as the config currently applied sets it. Rides
+    /// every analysis for the same reason `entry` does.
+    pub name: Option<String>,
     /// The applied config's warnings, unprefixed. Also reported as
     /// `diagnostics` rows under the config's own path.
     pub config_warnings: Vec<String>,
@@ -282,6 +287,8 @@ pub struct ConfigState {
     /// The entry a human opened the project by (the story-file door).
     /// Survives every re-application of the config.
     explicit_entry: Option<String>,
+    /// `[project] name` as applied — what the studio calls the project.
+    name: Option<String>,
     /// The applied config's warnings, unprefixed.
     warnings: Vec<String>,
     /// The current text's parse error, if it has one: its byte span in
@@ -760,6 +767,7 @@ fn open(
             files,
             sources,
             entry: state.entry.clone(),
+            name: state.name.clone(),
             warnings,
             artifacts,
             config_reads: state.read_artifacts.iter().cloned().collect(),
@@ -880,6 +888,7 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 .explicit_entry
                 .clone()
                 .or_else(|| config.entry.clone());
+            state.name.clone_from(&config.name);
             state.prose = Some(ProseState {
                 // Unset means on: a project that has said nothing about
                 // prose still wants its prose checked.
@@ -1039,6 +1048,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         drafts: session.draft_paths(),
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
+        name: config.name.clone(),
         config_warnings: config.warnings.clone(),
         config_reads: config.read_artifacts.iter().cloned().collect(),
         draft_globs: report
@@ -1339,6 +1349,54 @@ mod tests {
         let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("side.ink")));
         assert_eq!(analyzed.entry.as_deref(), Some("side.ink"));
         assert_eq!(analyzed.closure, ["side.ink"]);
+    }
+
+    #[test]
+    fn the_configs_name_rides_the_open_and_every_analysis() {
+        let tree = Tree::new(
+            "named",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nname = \"Harbour Lights\"\nentry = \"main.ink\"\n",
+                ),
+                ("main.ink", "Main.\n-> DONE\n"),
+            ],
+        );
+        let worker = drive(&tree);
+        let Response::Opened(opened) = next(&worker) else {
+            panic!("expected Opened first");
+        };
+        let opened = opened.expect("the open must succeed");
+        assert_eq!(opened.name.as_deref(), Some("Harbour Lights"));
+        let Response::Analyzed(analyzed) = next(&worker) else {
+            panic!("expected Analyzed after the open");
+        };
+        assert_eq!(analyzed.name.as_deref(), Some("Harbour Lights"));
+
+        // An edit to the config renames the project.
+        let edit = |text: &str, revision| {
+            worker.send(Request::Edit {
+                path: "brink.toml".to_owned(),
+                text: text.to_owned(),
+                revision,
+            });
+            match next(&worker) {
+                Response::Analyzed(analyzed) => analyzed.name,
+                other => panic!("expected Analyzed, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            edit("[project]\nname = \"Lanterns\"\nentry = \"main.ink\"\n", 1).as_deref(),
+            Some("Lanterns")
+        );
+        // Text that does not parse keeps the last good config's name.
+        assert_eq!(
+            edit("[project]\nname = \"Lan", 2).as_deref(),
+            Some("Lanterns")
+        );
+        // Deleting the key drops the name: the folder is the fallback again.
+        assert_eq!(edit("[project]\nentry = \"main.ink\"\n", 3), None);
     }
 
     #[test]

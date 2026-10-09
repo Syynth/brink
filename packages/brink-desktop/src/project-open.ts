@@ -117,15 +117,23 @@ export function anchorForPath(path: string): ProjectAnchor | { error: string } {
 /** Landing-screen presentation for one recents entry. */
 export interface RecentDisplay {
   kind: RecentKind;
-  /** The prominent name: file basename for the file doors, folder name
-   *  for the legacy door. */
+  /** The prominent name: the config's `[project] name` for the toml door
+   *  when it sets one (decision log 2026-10-09), else the file basename for
+   *  the file doors and the folder name for the legacy door. */
   name: string;
   /** The dimmed detail: the containing folder, `~`-contracted. For the
    *  toml door the project is the folder, so the detail is that folder. */
   detail: string;
 }
 
-export function recentDisplayFor(path: string, home: string | null): RecentDisplay {
+/** `projectName` is the toml recent's `[project] name`, read by the caller
+ *  when the landing draws; it is ignored for the other doors, since a
+ *  story file is the door the author chose. */
+export function recentDisplayFor(
+  path: string,
+  home: string | null,
+  projectName: string | null = null,
+): RecentDisplay {
   const kind = recentKindFor(path);
   const contract = (p: string): string =>
     home !== null && (p === home || p.startsWith(`${home}/`))
@@ -134,7 +142,8 @@ export function recentDisplayFor(path: string, home: string | null): RecentDispl
   if (kind === "folder") {
     return { kind, name: baseName(path) || path, detail: contract(parentDir(path)) };
   }
-  return { kind, name: baseName(path), detail: contract(parentDir(path)) };
+  const name = kind === "toml" && projectName !== null ? projectName : baseName(path);
+  return { kind, name, detail: contract(parentDir(path)) };
 }
 
 // ── Conflict banner model (the story door's governing-config warning) ──

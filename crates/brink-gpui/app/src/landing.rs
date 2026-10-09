@@ -126,8 +126,11 @@ pub struct RecentDisplay {
     pub detail: String,
 }
 
-/// The row for recent `path`. A config is named by its folder, since every
-/// config is called `brink.toml`; a story file by its own name.
+/// The row for recent `path`. A config is named by its `[project] name`,
+/// read from the file now so the row is never stale (decision log
+/// 2026-10-09), or else by its folder, since every config is called
+/// `brink.toml`; a story file by its own name, which is the door the author
+/// chose.
 pub fn recent_display(path: &str, home: Option<&Path>) -> RecentDisplay {
     let path = Path::new(path);
     let door = match path.file_name().map(|n| n.to_string_lossy().into_owned()) {
@@ -145,7 +148,11 @@ pub fn recent_display(path: &str, home: Option<&Path>) -> RecentDisplay {
     let (name, place) = match door {
         Door::Toml => {
             let folder = path.parent().unwrap_or(path);
-            (file_name(folder), folder.parent().unwrap_or(folder))
+            let name = config_name(path);
+            (
+                crate::project::display_name(name.as_deref(), folder),
+                folder.parent().unwrap_or(folder),
+            )
         }
         Door::Folder => (file_name(path), path.parent().unwrap_or(path)),
         Door::Ink | Door::Native => (file_name(path), path.parent().unwrap_or(path)),
@@ -158,6 +165,14 @@ pub fn recent_display(path: &str, home: Option<&Path>) -> RecentDisplay {
         _ => place.display().to_string(),
     };
     RecentDisplay { door, name, detail }
+}
+
+/// The `[project] name` the `brink.toml` at `path` sets, if it can be read
+/// and parsed and sets one. Anything less is `None`, and the caller falls
+/// back to the folder: a recents row is no place to report a broken config.
+pub fn config_name(path: &Path) -> Option<String> {
+    let text = std::fs::read_to_string(path).ok()?;
+    brink_project_config::parse_str(&text).ok()?.0.name
 }
 
 /// What launching does.
@@ -802,6 +817,34 @@ mod tests {
         );
         let elsewhere = recent_display("/srv/story.ink", Some(home));
         assert_eq!(elsewhere.detail, "/srv");
+    }
+
+    #[test]
+    fn a_recent_config_row_reads_the_projects_name_now() {
+        let dir = scratch(&[
+            ("brink.toml", "[project]\nname = \"Harbour Lights\"\n"),
+            ("main.ink", ""),
+        ]);
+        let config = dir.join("brink.toml");
+        let row = |path: &Path| recent_display(&path.display().to_string(), None).name;
+        assert_eq!(row(&config), "Harbour Lights");
+
+        // Renamed while closed: the row follows the file, never a cache.
+        std::fs::write(&config, "[project]\nname = \"Lanterns\"\n").expect("rewrite");
+        assert_eq!(row(&config), "Lanterns");
+
+        // No name, a config that does not parse, and a story-file recent
+        // whose folder has a named config all fall back as before.
+        let folder = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("a named scratch folder");
+        std::fs::write(&config, "[project]\nentry = \"main.ink\"\n").expect("rewrite");
+        assert_eq!(row(&config), folder);
+        std::fs::write(&config, "[project\nname = \"Broken\"").expect("rewrite");
+        assert_eq!(row(&config), folder);
+        std::fs::write(&config, "[project]\nname = \"Harbour Lights\"\n").expect("rewrite");
+        assert_eq!(row(&dir.join("main.ink")), "main.ink");
     }
 
     #[test]

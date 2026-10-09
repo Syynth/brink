@@ -53,6 +53,7 @@ import {
 import type { FileChange } from "@brink-lang/editor";
 import {
   TauriFileProvider,
+  configProjectName,
   createProject,
   discoverProjectConfig,
   pickProjectFile,
@@ -76,8 +77,17 @@ import {
   anchorForPath,
   buildConflictModel,
   recentDisplayFor,
+  recentKindFor,
   resolveBootAction,
 } from "./project-open.js";
+import {
+  APP_TITLE,
+  CONFIG_FILE,
+  ProjectTitle,
+  configTextIn,
+  readProjectName,
+  windowTitle,
+} from "./project-title.js";
 import { clearConflictBanner, renderConflictBanner } from "./conflict-banner.js";
 import { confirmBundleBoot, rollbackMessage } from "./bundle-boot.js";
 import { showNewProjectDialog } from "./new-project-dialog.js";
@@ -151,6 +161,9 @@ let currentRoot: string | null = null;
  * (`handleQuitRequested`, #2517) — never left armed past the `StudioHandle`
  * it closes over. */
 let autosaveTimer: ReturnType<typeof setInterval> | null = null;
+/** The open project's window title (its `[project] name`, else its
+ *  folder); disposed on close so a late answer cannot retitle the landing. */
+let projectTitle: ProjectTitle | null = null;
 /**
  * The open project's EFFECTIVE entry file — `StudioHandle.entryFile`,
  * i.e. `ProjectSession.getEntryFile()`'s result with `[project] entry`
@@ -310,8 +323,21 @@ async function renderLanding(error?: string): Promise<void> {
     empty.textContent = "No recent projects yet — anything you open shows up here.";
     list.appendChild(empty);
   }
-  for (const path of recents) {
-    const display = recentDisplayFor(path, null);
+  // A toml recent shows its `[project] name`, read now rather than cached
+  // so a project renamed while closed is never listed by its old name.
+  const names = await Promise.all(
+    recents.map((path) =>
+      recentKindFor(path) === "toml"
+        ? readProjectName(
+            path,
+            (root, rel) => new TauriFileProvider(root).readFile(rel),
+            configProjectName,
+          )
+        : Promise.resolve(null),
+    ),
+  );
+  for (const [i, path] of recents.entries()) {
+    const display = recentDisplayFor(path, null, names[i] ?? null);
     const item = document.createElement("li");
     const entry = document.createElement("button");
     entry.className = "recent-project";
@@ -395,8 +421,15 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
   el.append(banner, studioHost);
   bannerHost = banner;
 
-  const folderName = root.split("/").at(-1) ?? root;
-  document.title = `${folderName} — Brink Studio`;
+  // The folder's name at once, the config's `[project] name` as soon as
+  // the shell has parsed it (decision log 2026-10-09), and again on every
+  // edit to `brink.toml` (`onFilesChanged` below).
+  const title = new ProjectTitle(root, configProjectName, (t) => {
+    document.title = t;
+  });
+  projectTitle = title;
+  document.title = windowTitle(null, root);
+  void title.update(files[CONFIG_FILE] ?? null);
 
   // A configless-project fallback ONLY — `ProjectSession.initialize()` may
   // supersede this with a `brink.toml`-named entry the instant mountStudio
@@ -443,6 +476,8 @@ export async function openProject(root: string, opts: OpenProjectOptions = {}): 
     // granularity, bounded (25 entries / 10 MB) in the shell, orthogonal
     // to dirty. Backups never clear dirty; ⌘S does.
     onFilesChanged: (changes: FileChange[]) => {
+      const config = configTextIn(changes);
+      if (config !== undefined) void title.update(config);
       void provider.ringBackups(changes).catch((e: unknown) => {
         // Ring failures must never block editing — but after two silent
         // -failure hunts (the unregistered command; the unwired hook),
@@ -658,9 +693,11 @@ export async function closeProject(): Promise<void> {
     clearInterval(autosaveTimer);
     autosaveTimer = null;
   }
+  projectTitle?.dispose();
+  projectTitle = null;
   await awaitSaveAllBeforeQuit(handle.api);
   handle.unmount();
-  document.title = "Brink Studio";
+  document.title = APP_TITLE;
   void renderLanding();
 }
 

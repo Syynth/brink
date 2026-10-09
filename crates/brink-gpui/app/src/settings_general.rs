@@ -4,11 +4,12 @@
 //! AND the raw text, because there `brink.toml` has no editor of its own.
 //! The native studio differs by the maintainer's call (2026-09-05):
 //! **`brink.toml` opens in Code view like any file**, and Settings holds
-//! only the form — the `[project] entry` / `conventions` / `dialect` /
-//! `types` selects, and the drafts list in the dictionary's shape (ruled
-//! 2026-08-29, each glob reporting what it matched). Everything the form
-//! does not model, `[lints]` and `[prose]` included, is edited in the file,
-//! which the section opens on request.
+//! only the form — the `[project] name` field (decision log 2026-10-09),
+//! the `entry` / `conventions` / `dialect` / `types` selects, and the
+//! drafts list in the dictionary's shape (ruled 2026-08-29, each glob
+//! reporting what it matched). Everything the form does not model,
+//! `[lints]` and `[prose]` included, is edited in the file, which the
+//! section opens on request.
 //!
 //! **One text, every view.** `brink.toml` is a file in the project's
 //! shared buffer (`Project::config_path`): the form's edits and a Code
@@ -29,8 +30,8 @@ use brink_gpui_shell::settings_modal::{setting_group, setting_row};
 use brink_project_config::edit::{ConfigDocument, EditError};
 use gpui::prelude::*;
 use gpui::{
-    AnyElement, ClickEvent, Context, Entity, EventEmitter, IntoElement, Render, SharedString,
-    Subscription, Window, div, px,
+    AnyElement, ClickEvent, Context, Entity, EventEmitter, Focusable as _, IntoElement, Render,
+    SharedString, Subscription, Window, div, px,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -119,6 +120,8 @@ impl SearchableListItem for Opt {
 /// text could not be read.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Form {
+    /// `[project] name`, which has a text field rather than a select.
+    pub name: Option<String>,
     pub entry: Option<String>,
     pub conventions: Option<String>,
     pub dialect: Option<String>,
@@ -142,6 +145,7 @@ impl Form {
 pub fn read_form(text: &str) -> Result<Form, String> {
     let doc = ConfigDocument::parse(text).map_err(|e| e.to_string())?;
     Ok(Form {
+        name: doc.string("project", "name"),
         entry: doc.string("project", "entry"),
         conventions: doc.string("project", "conventions"),
         dialect: doc.string("project", "dialect"),
@@ -159,6 +163,26 @@ pub fn with_key(text: &str, key: Key, value: Option<&str>) -> Result<String, Edi
         }
     }
     Ok(doc.to_toml_string())
+}
+
+/// Set `[project] name` from the Name field: trimmed, and removed when
+/// blank, since the folder's name is what an unset name shows. `None` when
+/// the file already says it.
+pub fn with_name(text: &str, typed: &str) -> Result<Option<String>, EditError> {
+    let typed = typed.trim();
+    let mut doc = ConfigDocument::parse(text)?;
+    let current = doc.string("project", "name");
+    if typed.is_empty() {
+        if current.is_none() || !doc.remove_key("project", "name")? {
+            return Ok(None);
+        }
+    } else {
+        if current.as_deref() == Some(typed) {
+            return Ok(None);
+        }
+        doc.set_string("project", "name", typed)?;
+    }
+    Ok(Some(doc.to_toml_string()))
 }
 
 /// Add or remove one `[project] drafts` glob. `None` when nothing changed.
@@ -236,6 +260,7 @@ pub fn in_story_note(glob: &DraftGlob) -> Option<String> {
 pub struct GeneralSection {
     project: Entity<Project>,
     selects: [Entity<SelectState<Vec<Opt>>>; 4],
+    name_input: Entity<InputState>,
     draft_input: Entity<InputState>,
     form: Result<Form, String>,
     /// True while the selects are being set from the text, whose Confirm
@@ -250,6 +275,7 @@ impl GeneralSection {
     pub fn new(project: Entity<Project>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let selects = Key::ALL.map(|_| cx.new(|cx| SelectState::new(Vec::new(), None, window, cx)));
         let draft_input = cx.new(|cx| InputState::new(window, cx).placeholder("notes/**"));
+        let name_input = cx.new(|cx| InputState::new(window, cx));
 
         let mut subscriptions = Vec::new();
         for (ix, key) in Key::ALL.iter().enumerate() {
@@ -267,6 +293,18 @@ impl GeneralSection {
                 },
             ));
         }
+        // The name is written when the author is done with it — Enter or
+        // leaving the field — not per keystroke, which would re-analyse
+        // the project and re-sync this field under the caret each time.
+        subscriptions.push(cx.subscribe_in(
+            &name_input,
+            window,
+            |this, _, event: &InputEvent, window, cx| {
+                if matches!(event, InputEvent::PressEnter { .. } | InputEvent::Blur) {
+                    this.apply_name(window, cx);
+                }
+            },
+        ));
         subscriptions.push(cx.subscribe_in(
             &draft_input,
             window,
@@ -300,6 +338,7 @@ impl GeneralSection {
         let mut this = Self {
             project,
             selects,
+            name_input,
             draft_input,
             form: Ok(Form::default()),
             syncing: false,
@@ -344,6 +383,21 @@ impl GeneralSection {
             });
         }
         self.syncing = false;
+        // The fallback is the placeholder: what the title bar shows while
+        // the field is empty. Left alone while the author is typing in it.
+        let folder = crate::project::display_name(None, self.project.read(cx).root());
+        let name = form
+            .as_ref()
+            .ok()
+            .and_then(|f| f.name.clone())
+            .unwrap_or_default();
+        let typing = self.name_input.read(cx).focus_handle(cx).is_focused(window);
+        self.name_input.update(cx, |input, cx| {
+            input.set_placeholder(folder, window, cx);
+            if !typing && input.value() != name {
+                input.set_value(name, window, cx);
+            }
+        });
         self.form = form;
         cx.notify();
     }
@@ -371,6 +425,21 @@ impl GeneralSection {
         match with_key(&text, key, value) {
             Ok(next) if next != text => self.write(next, cx),
             Ok(_) => {}
+            Err(err) => eprintln!("brink.toml: {err}"),
+        }
+    }
+
+    fn apply_name(&mut self, _window: &mut Window, cx: &mut Context<Self>) {
+        if self.form.is_err() {
+            return;
+        }
+        let Some((_, text)) = self.config_text(cx) else {
+            return;
+        };
+        let typed = self.name_input.read(cx).value().to_string();
+        match with_name(&text, &typed) {
+            Ok(Some(next)) => self.write(next, cx),
+            Ok(None) => {}
             Err(err) => eprintln!("brink.toml: {err}"),
         }
     }
@@ -523,6 +592,7 @@ impl Render for GeneralSection {
                 .into_any_element();
         };
         let broken = self.form.as_ref().err().cloned();
+        let disabled = broken.is_some();
         let rows: Vec<AnyElement> = Key::ALL
             .iter()
             .enumerate()
@@ -581,6 +651,15 @@ impl Render for GeneralSection {
                         "The form is off until the text parses: {reason}"
                     )))
             }))
+            .child(setting_row(
+                "Name",
+                "What the title bar and the recents call the project. Default: the folder's name.",
+                Input::new(&self.name_input)
+                    .small()
+                    .w(px(260.))
+                    .disabled(disabled),
+                cx,
+            ))
             .children(rows)
             .child(setting_group("Drafts", cx))
             .child(self.render_drafts(cx))
@@ -625,6 +704,33 @@ mod tests {
             with_key(TEXT, Key::Types, None).expect("edit"),
             TEXT,
             "removing an absent key changes nothing"
+        );
+    }
+
+    #[test]
+    fn the_name_field_writes_one_key_and_blank_removes_it() {
+        assert_eq!(read_form(TEXT).expect("valid").name, None);
+        let named = with_name(TEXT, "  Harbour Lights ")
+            .expect("edit")
+            .expect("changed");
+        assert_eq!(
+            read_form(&named).expect("valid").name.as_deref(),
+            Some("Harbour Lights"),
+            "trimmed"
+        );
+        assert!(named.contains("# the entry") && named.contains("E063 = \"allow\""));
+        assert_eq!(
+            with_name(&named, "Harbour Lights").expect("edit"),
+            None,
+            "the same name again writes nothing"
+        );
+        let cleared = with_name(&named, "   ").expect("edit").expect("changed");
+        assert_eq!(read_form(&cleared).expect("valid").name, None);
+        assert_eq!(cleared, TEXT, "clearing it gives back the text it was");
+        assert_eq!(
+            with_name(TEXT, "").expect("edit"),
+            None,
+            "nothing to remove"
         );
     }
 

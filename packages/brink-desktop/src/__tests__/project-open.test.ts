@@ -97,6 +97,16 @@ describe("recentDisplayFor", () => {
     });
   });
 
+  it("names a toml recent by its [project] name, and only a toml recent", () => {
+    expect(
+      recentDisplayFor("/Users/b/stories/harbour/brink.toml", "/Users/b", "Harbour Lights"),
+    ).toEqual({ kind: "toml", name: "Harbour Lights", detail: "~/stories/harbour" });
+    // A story file is the door the author chose: its own name stays.
+    expect(recentDisplayFor("/Users/b/drafts/prologue.ink", "/Users/b", "Harbour").name).toBe(
+      "prologue.ink",
+    );
+  });
+
   it("leaves paths outside home uncontracted", () => {
     expect(recentDisplayFor("/srv/stories/x.ink", "/Users/b").detail).toBe("/srv/stories");
   });
