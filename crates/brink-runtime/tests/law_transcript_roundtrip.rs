@@ -183,6 +183,7 @@ fn arb_output_part() -> impl Strategy<Value = OutputPart> {
                     line_idx,
                     slots,
                     flags: LineFlags::from_bits_truncate(flag_bits),
+                    site: None,
                 }
             ),
         arb_value().prop_map(OutputPart::ValueRef),

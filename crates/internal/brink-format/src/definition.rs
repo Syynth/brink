@@ -635,6 +635,35 @@ pub struct DebugContainerTable {
     pub entries: Vec<DebugEntry>,
     /// D7's payload (see [`DebugLocalEntry`]) — empty until D7 lands.
     pub locals: Vec<DebugLocalEntry>,
+    /// Where each `EmitLine` in this container was written (#3670) —
+    /// sorted ascending by `bytecode_offset`, one row per emitting
+    /// instruction. Separate from [`Self::entries`], whose granularity is
+    /// the statement (§2.1, ruled); see [`DebugLineSite`]. Empty in a
+    /// version-2 section.
+    pub line_sites: Vec<DebugLineSite>,
+}
+
+/// Where one `EmitLine` instruction's text was written (#3670): the exact
+/// source range of *that use*.
+///
+/// The line table cannot say this. Deduplication shares one entry across
+/// every repeat of a text, and that entry's `source_location` is the first
+/// use's. The statement entries cannot say it either: they are
+/// statement-granular, and a choice set's second display text is not its
+/// first choice's statement. So a played line resolves each fragment
+/// through the row for the instruction that emitted it, keyed by that
+/// instruction's offset in its container (exact match, not a floor
+/// lookup), and falls back to the line table when there is none.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DebugLineSite {
+    /// The `EmitLine`'s byte offset within the owning container.
+    pub bytecode_offset: u32,
+    /// Index into the section's file table (§2.3).
+    pub file_idx: u32,
+    /// Absolute source byte offset within the file at `file_idx`.
+    pub range_start: u32,
+    /// Length in bytes of the source range.
+    pub range_len: u32,
 }
 
 /// The `DebugInfo` section (`docs/debugger-spec.md` §2, `.inkb` tag

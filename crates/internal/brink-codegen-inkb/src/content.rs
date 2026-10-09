@@ -15,9 +15,9 @@ impl ContainerEmitter<'_> {
                     text,
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
-                self.emit(Opcode::EmitLine(idx, 0));
+                self.emit_line_op(idx, 0, source_location.as_ref());
             }
             lir::RecognizedLine::Template {
                 parts: template_parts,
@@ -34,10 +34,10 @@ impl ContainerEmitter<'_> {
                     template_parts.clone(),
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 #[expect(clippy::cast_possible_truncation)]
-                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+                self.emit_line_op(idx, slot_exprs.len() as u8, source_location.as_ref());
             }
         }
 
@@ -66,10 +66,10 @@ impl ContainerEmitter<'_> {
                     text,
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 self.emit(Opcode::BeginFragment);
-                self.emit(Opcode::EmitLine(idx, 0));
+                self.emit_line_op(idx, 0, source_location.as_ref());
                 self.emit_tags(&emission.tags);
                 self.emit_tags(extra_tags);
                 self.emit(Opcode::EndFragment);
@@ -85,11 +85,11 @@ impl ContainerEmitter<'_> {
                     template_parts.clone(),
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 self.emit(Opcode::BeginFragment);
                 #[expect(clippy::cast_possible_truncation)]
-                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+                self.emit_line_op(idx, slot_exprs.len() as u8, source_location.as_ref());
                 self.emit_tags(&emission.tags);
                 self.emit_tags(extra_tags);
                 self.emit(Opcode::EndFragment);
@@ -118,7 +118,7 @@ impl ContainerEmitter<'_> {
                     text,
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 self.emit(Opcode::EvalLine(idx, 0));
             }
@@ -133,7 +133,7 @@ impl ContainerEmitter<'_> {
                     template_parts.clone(),
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 #[expect(clippy::cast_possible_truncation)]
                 self.emit(Opcode::EvalLine(idx, slot_exprs.len() as u8));
@@ -190,7 +190,7 @@ impl ContainerEmitter<'_> {
                     }
                     if !trimmed.is_empty() {
                         let idx = self.add_line(trimmed, source_location.cloned());
-                        self.emit(Opcode::EmitLine(idx, 0));
+                        self.emit_line_op(idx, 0, source_location);
                     }
                     if has_trailing_ws && !trimmed.is_empty() {
                         self.emit(Opcode::Spring);
@@ -395,9 +395,9 @@ impl ContainerEmitter<'_> {
                     text,
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
-                self.emit(Opcode::EmitLine(idx, 0));
+                self.emit_line_op(idx, 0, source_location.as_ref());
             }
             lir::RecognizedLine::Template {
                 parts: template_parts,
@@ -410,10 +410,10 @@ impl ContainerEmitter<'_> {
                     template_parts.clone(),
                     emission.metadata.source_hash,
                     slot_info,
-                    source_location,
+                    source_location.clone(),
                 );
                 #[expect(clippy::cast_possible_truncation)]
-                self.emit(Opcode::EmitLine(idx, slot_exprs.len() as u8));
+                self.emit_line_op(idx, slot_exprs.len() as u8, source_location.as_ref());
             }
         }
     }

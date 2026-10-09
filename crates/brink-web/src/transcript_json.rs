@@ -74,11 +74,14 @@ pub(crate) struct FragmentJson {
 fn part_to_json(part: &OutputPart) -> Option<PartJson> {
     match part {
         OutputPart::Text(s) => Some(PartJson::Text { text: s.clone() }),
+        // `site` stays in memory (#3670): a restored transcript resolves
+        // its lines' sources through the line table, as before.
         OutputPart::LineRef {
             container_idx,
             line_idx,
             slots,
             flags,
+            site: _,
         } => Some(PartJson::Line {
             container: *container_idx,
             line: *line_idx,
@@ -109,6 +112,7 @@ fn part_from_json(part: PartJson) -> OutputPart {
             line_idx: line,
             slots,
             flags: LineFlags::from_bits_truncate(flags),
+            site: None,
         },
         PartJson::Value { value } => OutputPart::ValueRef(value),
         PartJson::Newline => OutputPart::Newline,
