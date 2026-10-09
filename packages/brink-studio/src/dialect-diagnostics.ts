@@ -16,6 +16,7 @@ import type { Diagnostic } from "@brink/wasm-types";
 
 export const CONFIG_FILE = "brink.toml";
 const DIALOGUE_CONFIG_CODE = "dialogue:config";
+const CONFIG_CODE = "config";
 const DIALOGUE_MALFORMED_CODE = "dialogue:malformed";
 
 /** `brink.toml` rows from the session's config warnings + a discovery
@@ -27,14 +28,20 @@ export function configDiagnostics(
   warnings: readonly string[],
   error: string | null,
 ): Diagnostic[] {
-  const rows: Diagnostic[] = warnings.map((w) => ({
-    start: 0,
-    end: 0,
-    message: w,
-    severity: w.startsWith("[dialogue]") ? ("Error" as const) : ("Warning" as const),
-    code: DIALOGUE_CONFIG_CODE,
-    file: CONFIG_FILE,
-  }));
+  const rows: Diagnostic[] = warnings.map((w) => {
+    const dialogue = w.startsWith("[dialogue]");
+    return {
+      start: 0,
+      end: 0,
+      message: w,
+      severity: dialogue ? ("Error" as const) : ("Warning" as const),
+      // Every other config warning (#3671: a host manifest that cannot be
+      // loaded, an unknown key, a bad lint code) is the config's, not the
+      // dialect's.
+      code: dialogue ? DIALOGUE_CONFIG_CODE : CONFIG_CODE,
+      file: CONFIG_FILE,
+    };
+  });
   if (error !== null) {
     rows.push({
       start: 0,

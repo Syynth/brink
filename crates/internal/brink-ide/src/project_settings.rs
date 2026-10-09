@@ -45,6 +45,14 @@ pub struct ProjectSettings {
     /// the previous dialect is dropped rather than left stale under a config
     /// the author is actively editing.
     pub dialogue_error: Option<String>,
+    /// Why the manifest `[host] manifest` names could not be loaded, if it
+    /// could not (#3671). The session carries on without one.
+    pub host_manifest_error: Option<String>,
+    /// Every file this config reads — `[dialogue]`'s file, the host
+    /// manifest — as session keys. A host loads these into the session if
+    /// it does not hold them, and applies the config again when one changes
+    /// (decision log 2026-10-09, #3671).
+    pub config_reads: Vec<String>,
 }
 
 impl IdeSession {
@@ -146,6 +154,7 @@ impl IdeSession {
 
         let mut warnings: Vec<String> = Vec::new();
         self.apply_dialogue_config(config, config_dir, read_file, &mut warnings);
+        self.apply_host_manifest_config(config, config_dir, read_file, &mut warnings);
         warnings.extend(lint_warnings.into_iter().map(|w| w.0));
         warnings
     }
@@ -197,6 +206,74 @@ impl IdeSession {
         }
     }
 
+    /// `[host] manifest` (#1784, #3671): load the file it names through
+    /// `brink_environment::load_host_manifest`, the loader every producer
+    /// shares, looking in the session's own documents first and then
+    /// `extra`. A manifest that cannot be loaded is a warning, and the
+    /// session goes on without one; a registered manifest still wins over
+    /// whatever this finds (decision log 2026-10-09).
+    fn apply_host_manifest_config(
+        &mut self,
+        config: &ProjectConfig,
+        config_dir: Option<&str>,
+        extra: &dyn Fn(&str) -> Option<String>,
+        warnings: &mut Vec<String>,
+    ) {
+        let config_key = match config_dir {
+            Some("") | None => brink_project_config::CONFIG_FILE_NAME.to_owned(),
+            Some(dir) => format!("{dir}/{}", brink_project_config::CONFIG_FILE_NAME),
+        };
+        // Wholesale, like every setting: what the previous config read is
+        // not what this one reads.
+        self.settings.config_reads.clear();
+        if let Some(dialogue) = config.dialogue.as_ref().and_then(|d| d.file.as_deref()) {
+            let candidates = match config_dir {
+                Some("") | None => vec![dialogue.to_owned()],
+                Some(dir) => vec![format!("{dir}/{dialogue}"), dialogue.to_owned()],
+            };
+            self.settings.config_reads.extend(candidates);
+        }
+        let Some(written) = config.host_manifest.as_deref() else {
+            self.settings.host_manifest_error = None;
+            self.set_config_host_manifest(None);
+            return;
+        };
+        let path = brink_environment::host_manifest_path(&config_key, written);
+        self.settings.config_reads.push(path);
+        let db = self.db();
+        let lookup = |key: &str| -> Result<String, String> {
+            db.file_ids()
+                .find_map(|id| {
+                    (db.file_path(id)? == key).then(|| db.source(id).map(str::to_owned))?
+                })
+                .or_else(|| extra(key))
+                .ok_or_else(|| {
+                    if key.starts_with("../")
+                        || key == ".."
+                        || std::path::Path::new(key).is_absolute()
+                    {
+                        "it is outside the project folder, which the studio does not read; \
+                         open the folder that holds both"
+                            .to_owned()
+                    } else {
+                        "it is not in the project".to_owned()
+                    }
+                })
+        };
+        match brink_environment::load_host_manifest(config, &config_key, &lookup) {
+            Ok(manifest) => {
+                self.settings.host_manifest_error = None;
+                self.set_config_host_manifest(manifest);
+            }
+            Err(e) => {
+                let message = e.to_string();
+                warnings.push(message.clone());
+                self.settings.host_manifest_error = Some(message);
+                self.set_config_host_manifest(None);
+            }
+        }
+    }
+
     /// Forget everything a `brink.toml` had set — for a host whose config
     /// file vanished or moved out of reach.
     ///
@@ -207,11 +284,129 @@ impl IdeSession {
         self.settings = ProjectSettings::default();
         self.set_draft_globs(Vec::new());
         self.clear_dialect();
+        // The file's manifest goes with the file; a registered one stays.
+        self.set_config_host_manifest(None);
     }
 
     /// The settings the last applied `brink.toml` resolved to.
     #[must_use]
     pub fn project_settings(&self) -> &ProjectSettings {
         &self.settings
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NAMES_MANIFEST: &str = "[host]\nmanifest = \"build/host.json\"\n";
+
+    fn manifest(type_name: &str) -> String {
+        format!(r#"{{ "types": [{{ "name": "{type_name}", "base": "string" }}] }}"#)
+    }
+
+    fn apply(session: &mut IdeSession, toml: &str) -> Vec<String> {
+        let (config, _) = brink_project_config::parse_str(toml).expect("valid brink.toml");
+        session.apply_project_config(&config, false, false, Some(""))
+    }
+
+    fn manifest_type(session: &IdeSession) -> Option<String> {
+        session
+            .analysis_options()
+            .host_manifest
+            .map(|m| m.types[0].name.clone())
+    }
+
+    #[test]
+    fn the_manifest_brink_toml_names_is_loaded_from_the_session() {
+        let mut session = IdeSession::new();
+        session.update_source("build/host.json", manifest("FromFile"));
+        let warnings = apply(&mut session, NAMES_MANIFEST);
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert_eq!(manifest_type(&session).as_deref(), Some("FromFile"));
+        assert_eq!(
+            session.project_settings().config_reads,
+            vec!["build/host.json".to_owned()],
+            "what a host watches"
+        );
+        assert_eq!(session.project_settings().host_manifest_error, None);
+    }
+
+    #[test]
+    fn a_registered_manifest_wins_and_survives_the_config() {
+        let mut session = IdeSession::new();
+        session.update_source("build/host.json", manifest("FromFile"));
+        session.set_host_manifest(
+            serde_json::from_str(&manifest("Registered")).expect("valid manifest"),
+        );
+        apply(&mut session, NAMES_MANIFEST);
+        assert_eq!(manifest_type(&session).as_deref(), Some("Registered"));
+
+        // Clearing the config drops the file's, never the registered one.
+        session.clear_project_config();
+        assert_eq!(manifest_type(&session).as_deref(), Some("Registered"));
+
+        // And with the registered one gone, the file's applies again.
+        apply(&mut session, NAMES_MANIFEST);
+        session.clear_host_manifest();
+        assert_eq!(manifest_type(&session).as_deref(), Some("FromFile"));
+    }
+
+    #[test]
+    fn a_missing_manifest_is_a_warning_and_analysis_goes_on_without_one() {
+        let mut session = IdeSession::new();
+        session.update_source("build/host.json", manifest("FromFile"));
+        apply(&mut session, NAMES_MANIFEST);
+        session.remove_file("build/host.json");
+        let warnings = apply(&mut session, NAMES_MANIFEST);
+        assert_eq!(manifest_type(&session), None, "the old one is not kept");
+        assert!(
+            warnings.iter().any(|w| w.contains("build/host.json")),
+            "{warnings:?}"
+        );
+        let error = session.project_settings().host_manifest_error.clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("not in the project")),
+            "{error:?}"
+        );
+        assert_eq!(
+            session.project_settings().config_reads,
+            vec!["build/host.json".to_owned()],
+            "still watched, so it is picked up when it appears"
+        );
+    }
+
+    #[test]
+    fn a_manifest_outside_the_folder_says_so() {
+        let mut session = IdeSession::new();
+        apply(&mut session, "[host]\nmanifest = \"../build/host.json\"\n");
+        let error = session.project_settings().host_manifest_error.clone();
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|e| e.contains("outside the project folder")),
+            "{error:?}"
+        );
+    }
+
+    #[test]
+    fn the_config_reads_follow_the_config() {
+        let mut session = IdeSession::new();
+        apply(
+            &mut session,
+            "[dialogue]\nfile = \"dialect.json\"\n[host]\nmanifest = \"build/host.json\"\n",
+        );
+        assert_eq!(
+            session.project_settings().config_reads,
+            vec!["dialect.json".to_owned(), "build/host.json".to_owned()]
+        );
+        // A config that names nothing reads nothing — not what the last one read.
+        apply(&mut session, "[project]\ndialect = \"brink\"\n");
+        assert_eq!(
+            session.project_settings().config_reads,
+            Vec::<String>::new()
+        );
     }
 }

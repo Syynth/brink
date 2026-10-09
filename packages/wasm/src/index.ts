@@ -746,6 +746,32 @@ export class EditorSessionHandle {
     return raw.configured_dialogue_error() ?? null;
   }
 
+  /** Why the manifest `brink.toml`'s `[host] manifest` names could not be
+   * loaded (#3671), or `null` when it loaded or none is named. */
+  getConfiguredHostManifestError(): string | null {
+    const raw = this.session as { configured_host_manifest_error?: () => string | undefined };
+    if (typeof raw.configured_host_manifest_error !== "function") return null;
+    return raw.configured_host_manifest_error() ?? null;
+  }
+
+  /** Every file the applied config reads — `[dialogue]`'s file, the host
+   * manifest — as project-relative paths (#3671). A host loads the ones
+   * the session does not hold and re-applies the config when one changes. */
+  getConfiguredConfigReads(): string[] {
+    const raw = this.session as { configured_config_reads?: () => string };
+    if (typeof raw.configured_config_reads !== "function") return [];
+    return JSON.parse(raw.configured_config_reads()) as string[];
+  }
+
+  /** The applied config's WHOLE warning set (#3671) — state for a Problems
+   * panel, unlike the delta {@link discoverProjectConfig} returns. `null`
+   * from a wasm build that predates it. */
+  getConfiguredWarnings(): string[] | null {
+    const raw = this.session as { configured_warnings?: () => string };
+    if (typeof raw.configured_warnings !== "function") return null;
+    return JSON.parse(raw.configured_warnings()) as string[];
+  }
+
   getConfiguredDialogueDialect(): DialogueDialect | null {
     // Feature-detected on the raw session too: `session` is an injection
     // seam and stubs that predate this accessor must read as "declares
