@@ -95,6 +95,10 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// The source under the pointer — a row or a choice card — for the
+    /// manuscript's bracket (decision log 2026-10-09), and whether it is a
+    /// choice.
+    hovered: Option<(Location, bool)>,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -185,6 +189,7 @@ impl Player {
             entries: Vec::new(),
             arrivals: Vec::new(),
             choices_at: None,
+            hovered: None,
             choices: Vec::new(),
             list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
@@ -483,6 +488,7 @@ impl Player {
             }),
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
+            hover: self.hovered.clone(),
         }
     }
 
@@ -909,7 +915,7 @@ impl Player {
                     )
                 });
                 let row = row.when(!active, |el| el.hover(move |s| s.bg(hover)));
-                self.linked(row, source.as_ref(), cx)
+                self.linked(row, source.as_ref(), false, cx)
             }
             Entry::Chosen {
                 text,
@@ -933,7 +939,7 @@ impl Player {
                             .child(text.clone()),
                     )
                     .hover(move |s| s.bg(hover));
-                self.linked(row, source.as_ref(), cx)
+                self.linked(row, source.as_ref(), true, cx)
             }
             Entry::Notice(text) => row
                 .child(
@@ -1003,6 +1009,7 @@ impl Player {
         &self,
         row: gpui::Stateful<gpui::Div>,
         source: Option<&Location>,
+        choice: bool,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
         let Some(loc) = source.cloned() else {
@@ -1065,12 +1072,32 @@ impl Player {
         };
         row.group(ROW_GROUP)
             .child(chip)
+            .on_hover(Self::hover_listener(loc.clone(), choice, cx))
             .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
                 if event.modifiers().platform {
                     open(cx);
                 }
             }))
             .into_any_element()
+    }
+
+    /// Track the pointer over a row or card with `loc` for its source:
+    /// the manuscript brackets it while it is hovered.
+    fn hover_listener(
+        loc: Location,
+        choice: bool,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, hovered: &bool, _, cx| {
+            if *hovered {
+                this.hovered = Some((loc.clone(), choice));
+            } else if this.hovered.as_ref().is_some_and(|(l, _)| *l == loc) {
+                this.hovered = None;
+            } else {
+                return;
+            }
+            cx.notify();
+        })
     }
 
     /// The live choices as cards above the transport strip, each with its
@@ -1109,6 +1136,9 @@ impl Player {
                         .border_1()
                         .border_color(border)
                         .bg(card)
+                        .when_some(choice.source.clone(), |el, loc| {
+                            el.on_hover(Self::hover_listener(loc, true, cx))
+                        })
                         .text_color(fg)
                         .when(!busy, |el| {
                             el.cursor_pointer()
@@ -1603,6 +1633,9 @@ pub struct PlayTrail {
     pub active: Option<Location>,
     pub held: Option<(String, u32)>,
     pub next: Option<(String, u32)>,
+    /// The source of the transcript row (or choice card) under the
+    /// pointer, and whether it is a choice — the manuscript brackets it.
+    pub hover: Option<(Location, bool)>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`

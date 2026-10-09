@@ -97,6 +97,12 @@ const MANUSCRIPT_GUTTER_DIGITS: usize = 4;
 /// Height of the chapter break that opens each file, and the space above
 /// its title. Fixed, so a reveal can count rows from a section's top.
 const SEPARATOR_HEIGHT: f32 = 92.0;
+
+/// The hover bracket: its width, how far in from the text column's right
+/// edge, and how far inside the first and last line it starts and ends.
+const BRACKET_WIDTH: f32 = 8.;
+const BRACKET_INSET: f32 = 12.;
+const BRACKET_PAD: f32 = 3.;
 const SEPARATOR_SPACE_ABOVE: f32 = 36.0;
 
 /// Frames a caret move may take to be brought on screen (`reveal_caret`).
@@ -767,6 +773,64 @@ impl ContinuousView {
                 editor.update(cx, |_, cx| cx.notify());
             }
         }
+        // The hover bracket is drawn here, over the sections.
+        cx.notify();
+    }
+
+    /// The bracket beside the source lines of the Player row under the
+    /// pointer (decision log 2026-10-09, the canvas's glue bracket put to a
+    /// wider use): on the text column's right edge, from the first line's
+    /// top to the last line's bottom (wrapped rows counted), in the accent —
+    /// or the choice colour for a choice. In this view's own coordinates.
+    fn hover_bracket(&self, column: Option<gpui::Pixels>, cx: &App) -> Option<gpui::AnyElement> {
+        let (loc, choice) = self.trail.borrow().hover.clone()?;
+        let index = self.files.iter().position(|f| *f == loc.path)?;
+        let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+        let state = editor.read(cx);
+        let line_height = f32::from(state.line_height()?);
+        let text = state.value();
+        let line_of = |at: u32| {
+            text.get(..(at as usize).min(text.len()))
+                .map_or(0, |before| before.matches('\n').count())
+        };
+        let first = line_of(loc.start);
+        let last = line_of(loc.end.saturating_sub(1).max(loc.start));
+        let top_row = state.display_row_of_buffer_line(first);
+        let lines = text.matches('\n').count() + 1;
+        let end_row = if last + 1 < lines {
+            state.display_row_of_buffer_line(last + 1)
+        } else {
+            state.display_row_count()
+        };
+        let item = self.list.bounds_for_item(index)?;
+        let view = self.last_view.get()?;
+        let top =
+            f32::from(item.top() - view.top()) + SEPARATOR_HEIGHT + top_row as f32 * line_height;
+        let height = (end_row.saturating_sub(top_row)).max(1) as f32 * line_height;
+        let width = f32::from(view.size.width);
+        let right = match column {
+            Some(c) if f32::from(c) < width => (width + f32::from(c)) / 2.,
+            _ => width,
+        };
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let colour = brink_gpui_shell::theme::hsla(if choice {
+            tokens.symbol_knot
+        } else {
+            tokens.accent
+        });
+        Some(
+            div()
+                .absolute()
+                .left(px(right - BRACKET_INSET - BRACKET_WIDTH))
+                .top(px(top + BRACKET_PAD))
+                .h(px((height - 2. * BRACKET_PAD).max(4.)))
+                .w(px(BRACKET_WIDTH))
+                .border_2()
+                .border_l_0()
+                .rounded_r(px(6.))
+                .border_color(colour)
+                .into_any_element(),
+        )
     }
 
     /// Read every section's breakpoints afresh and redraw its gutter.
@@ -1340,6 +1404,7 @@ impl Render for ContinuousView {
         let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
+        let bracket = self.hover_bracket(column, cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
             let (path, lines, pushes) = self
@@ -1486,6 +1551,7 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
+            .children(bracket)
             // After layout: where the text starts, for the title bar's
             // crumb, and whether the caret is still on screen.
             .child({
