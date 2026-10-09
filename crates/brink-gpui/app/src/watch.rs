@@ -135,12 +135,19 @@ pub fn start(project: Entity<Project>, root: PathBuf, cx: &mut App) -> gpui::Tas
             let relative: Vec<String> = paths
                 .iter()
                 .filter_map(|path| relative_to(&root, path))
-                .filter(|path| is_watched(path))
                 .collect();
-            if relative.is_empty() {
-                continue;
-            }
-            project.update(cx, |project, cx| project.disk_changed(&relative, cx));
+            // Sources and the config, plus the files the config reads —
+            // which only the project knows (#3666: a host regenerating its
+            // manifest is the point of reading one from disk).
+            project.update(cx, |project, cx| {
+                let watched: Vec<String> = relative
+                    .into_iter()
+                    .filter(|path| is_watched(path) || project.reads_config(path))
+                    .collect();
+                if !watched.is_empty() {
+                    project.disk_changed(&watched, cx);
+                }
+            });
         }
     })
 }

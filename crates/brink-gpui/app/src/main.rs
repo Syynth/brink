@@ -3602,6 +3602,82 @@ mod modes_driven {
         eprintln!("hover screenshot: {}", shot.display());
     }
 
+    /// #3666: a host manifest the host generates after the project opened
+    /// is picked up from disk — as the config's file, not a new story
+    /// source — and its markup vocabulary reaches analysis.
+    #[test]
+    fn a_host_manifest_written_after_open_reaches_analysis() {
+        let mut h = Harness::new();
+        let dir = scratch_dir("host-manifest");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\nentry = \"story.brink\"\n\n[host]\nmanifest = \"build/host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            dir.join("story.brink"),
+            "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let codes = |h: &mut Harness| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .diagnostics_for("story.brink")
+                    .iter()
+                    .map(|d| d.code.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let warned = h.settle_until(wait, |h| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .diagnostics_for("brink.toml")
+                    .iter()
+                    .any(|d| d.message.contains("build/host.json"))
+            })
+        });
+        assert!(warned, "a missing manifest is a warning on brink.toml");
+        assert!(
+            !codes(&mut h).contains(&"E164".to_owned()),
+            "freeform until then"
+        );
+
+        // The host writes it; the watcher reports the path.
+        std::fs::create_dir_all(dir.join("build")).expect("mkdir");
+        std::fs::write(
+            dir.join("build/host.json"),
+            r#"{ "markup": [{ "name": "b" }] }"#,
+        )
+        .expect("manifest");
+        // Through the window: `Harness::update` does not flush the effects
+        // it pushes (#3663).
+        h.app_window(window, |_, cx| {
+            project.update(cx, |project, cx| {
+                assert!(
+                    project.reads_config("build/host.json"),
+                    "the watcher follows it"
+                );
+                project.disk_changed(&["build/host.json".to_owned()], cx);
+            });
+        });
+        let checked = h.settle_until(wait, |h| codes(h).contains(&"E164".to_owned()));
+        assert!(checked, "its vocabulary applies: {:?}", codes(&mut h));
+        let not_a_source = h.read(|cx| {
+            !project
+                .read(cx)
+                .files()
+                .iter()
+                .any(|f| f == "build/host.json")
+        });
+        assert!(not_a_source, "the config's file, never a story source");
+    }
+
     /// Write mode draws the same squiggles as Script: a bad reference is
     /// marked where it is, not only counted. (The manuscript's sections
     /// never received the analysis's diagnostics at all.)
