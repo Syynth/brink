@@ -370,6 +370,12 @@ pub struct DialogueElementConfig {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProjectConfig {
+    /// `[project] name`, if set: what the studios call the project — the
+    /// title bar and the landing's recents — in place of its folder's name
+    /// (decision log 2026-10-09). Free text as written; never an
+    /// identifier, so nothing compiles against it. A blank string is
+    /// dropped with a warning, leaving the folder-name fallback.
+    pub name: Option<String>,
     /// `[project] dialect`, if set.
     pub dialect: Option<Dialect>,
     /// `[project] types`, if set.
@@ -516,7 +522,8 @@ impl ProjectConfig {
     /// `[project]`/`[lints]` table, or neither table present).
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.dialect.is_none()
+        self.name.is_none()
+            && self.dialect.is_none()
             && self.types.is_none()
             && self.lints.is_empty()
             && self.deny_warnings.is_none()
@@ -868,6 +875,18 @@ fn parse_project_table(
     let mut elements_value: Option<String> = None;
     for (pkey, pvalue) in project {
         match pkey.as_str() {
+            "name" => {
+                let s = parse_path_like_string(path, pkey, pvalue)?;
+                if s.trim().is_empty() {
+                    warnings.push(ConfigWarning(format!(
+                        "`project.name` in {CONFIG_FILE_NAME} is blank (ignored) — expected the \
+                         project's display name (e.g. \"Harbour Lights\"); the studios fall back \
+                         to the folder's name"
+                    )));
+                } else {
+                    config.name = Some(s);
+                }
+            }
             "dialect" => config.dialect = Some(parse_dialect(path, pkey, pvalue)?),
             "types" => config.types = Some(parse_types(path, pkey, pvalue)?),
             "indent" => {
@@ -2169,6 +2188,34 @@ mod tests {
     fn unset_entry_leaves_config_empty_by_itself() {
         let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
         assert_eq!(config.entry, None);
+    }
+
+    #[test]
+    fn parses_name_as_written() {
+        let (config, warnings) = parse_str("[project]\nname = \"Harbour Lights\"\n").unwrap();
+        assert_eq!(config.name.as_deref(), Some("Harbour Lights"));
+        assert!(!config.is_empty(), "a name alone is a non-empty config");
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn blank_name_warns_and_is_not_set() {
+        for blank in ["\"\"", "\"   \""] {
+            let (config, warnings) = parse_str(&format!("[project]\nname = {blank}\n")).unwrap();
+            assert_eq!(config.name, None, "{blank}");
+            assert!(config.is_empty(), "{blank}");
+            assert_eq!(warnings.len(), 1, "{blank}: {warnings:?}");
+            assert!(warnings[0].0.contains("project.name"), "{warnings:?}");
+        }
+    }
+
+    #[test]
+    fn name_wrong_type_is_an_error() {
+        let err = parse_str("[project]\nname = 3\n").unwrap_err();
+        assert!(
+            matches!(&err, ConfigError::WrongType { key, .. } if key == "project.name"),
+            "{err:?}"
+        );
     }
 
     #[test]

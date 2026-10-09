@@ -18,6 +18,11 @@ config every mount reads.
 
 ```toml
 [project]
+name = "Harbour Lights"  # the project's display name: the desktop and
+                         # native studios show it in the title bar and the
+                         # landing's recents instead of the folder's name
+                         # (default: the folder's name). Free text; blank is
+                         # ignored with a warning.
 dialect = "brink"      # "brink" | "strict-ink" (default: "strict-ink")
 types   = "gradual"    # "gradual" | "strict"   (default: dialect-keyed —
                        # strict for "brink", gradual for "strict-ink")
