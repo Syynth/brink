@@ -3277,6 +3277,46 @@ mod modes_driven {
         assert_eq!(lines, 2, "one press, one more line");
     }
 
+    /// Beside the manuscript, the current line's top sits on the NOW line
+    /// — from the first line on, and as the transcript grows past it.
+    #[test]
+    fn the_current_line_sits_on_now() {
+        let mut h = Harness::new();
+        let (_, player) = stage_started(&mut h);
+        for press in 0..4 {
+            if press > 0 {
+                h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+                assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+            }
+            // Let the correction frames run.
+            for _ in 0..6 {
+                h.advance(std::time::Duration::from_millis(20));
+            }
+            let (top, now) = h
+                .read(|cx| player.read(cx).now_gap())
+                .expect("the current row is laid out");
+            assert!(
+                (top - now).abs() <= 2.,
+                "line {press}: its top is at {top}, NOW at {now}"
+            );
+        }
+        // The choice cards take room from the transcript; the line before
+        // them still sits on NOW.
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        for _ in 0..6 {
+            h.advance(std::time::Duration::from_millis(20));
+        }
+        let (top, now) = h
+            .read(|cx| player.read(cx).now_gap())
+            .expect("the current row is laid out");
+        assert!(
+            (top - now).abs() <= 2.,
+            "with choices: its top is at {top}, NOW at {now}"
+        );
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {
