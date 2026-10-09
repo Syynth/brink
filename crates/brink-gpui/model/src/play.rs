@@ -81,6 +81,14 @@ pub enum PlayCommand {
         transcript: Option<String>,
         knot: Option<String>,
     },
+    /// Rewind one step (#3665's `<<`): the story as it was before the last
+    /// line played, or before the last choice was taken. Answered with
+    /// `rewound` — how much of the transcript to keep — and, at a choice
+    /// point, the choices again.
+    Back,
+    /// Rewind to just before the last choice was taken (`|<`) — the
+    /// choices offered again.
+    BackToChoice,
     /// Read the running story's state without advancing it — what the
     /// State View shows. Answered with a [`PlayOutcome`] carrying no
     /// steps and a `state`; a session that is not running answers with
@@ -249,6 +257,37 @@ pub struct PlayOutcome {
     pub unbound: Vec<(String, u32)>,
     /// A `Save`'s checkpoint.
     pub saved: Option<SavedState>,
+    /// A rewind's result.
+    pub rewound: Option<Rewound>,
+    /// How many steps back the history holds now — whether `|<` / `<<`
+    /// have anything to go back to.
+    pub history: usize,
+}
+
+/// Where a rewind landed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Rewound {
+    /// How many story lines the session had delivered at that point: the
+    /// transcript keeps that many and drops what came after.
+    pub lines: usize,
+    /// Whether it landed at a choice point (the choices are in `steps`).
+    pub at_choice: bool,
+}
+
+/// How many steps back the rewind history keeps (decision log
+/// 2026-10-09: a copy of the story at every line, capped). Each copy
+/// carries its transcript, so the cap bounds the memory as much as the
+/// reach.
+pub const HISTORY_CAP: usize = 500;
+
+/// One rewind point: the story as it was, and how many lines it had
+/// delivered.
+#[derive(Clone)]
+struct Rewind {
+    story: Story<FastRng>,
+    lines: usize,
+    /// Taken just before a choice was made — what `|<` goes back to.
+    choice: bool,
 }
 
 /// A checkpoint, as the studio stores it (W14): JSON a person can read,
@@ -338,6 +377,10 @@ impl PlayOutcome {
 /// The running story. Lives in the worker loop beside the session.
 pub struct Play {
     story: Story<FastRng>,
+    /// The rewind history, oldest first (#3665).
+    history: std::collections::VecDeque<Rewind>,
+    /// Story lines delivered so far this session.
+    lines: usize,
     /// Held for `resolve_source_line` (arming a breakpoint) and
     /// `resolve_debug_position` (reporting where a stop landed) — the
     /// story owns its own copy, but neither is reachable through it.
@@ -409,7 +452,7 @@ pub fn run(
                     // To the first line, on the debug road whether or not
                     // anything is armed: one road, so a breakpoint on the
                     // first line holds and the delivery stream is one.
-                    let mut outcome = debug_command(slot, DebugVerb::Line);
+                    let mut outcome = played_line(slot);
                     outcome.unbound = unbound;
                     outcome
                 }
@@ -446,6 +489,7 @@ pub fn run(
             let Some(running) = slot.play.as_mut() else {
                 return PlayOutcome::failed(PlayError::NotStarted);
             };
+            running.remember(true);
             if let Err(e) = running.story.choose(index) {
                 let outcome = faulted(running, e.to_string());
                 slot.park(outcome.state.clone());
@@ -471,8 +515,18 @@ pub fn run(
                     ..PlayOutcome::default()
                 };
             }
-            // On to the choice's first line.
-            debug_command(slot, DebugVerb::Line)
+            // On to the choice's first line — the rewind point is the one
+            // taken before the choice.
+            let mut outcome = debug_command(slot, DebugVerb::Line);
+            if let Some(running) = slot.play.as_mut() {
+                running.lines += outcome
+                    .steps
+                    .iter()
+                    .filter(|s| matches!(s, PlayStep::Line { .. }))
+                    .count();
+                outcome.history = running.history.len();
+            }
+            outcome
         }
         PlayCommand::Stop => {
             slot.play = None;
@@ -496,8 +550,32 @@ pub fn run(
             slot.watched = names;
             PlayOutcome::default()
         }
-        PlayCommand::Next => debug_command(slot, DebugVerb::Line),
-        PlayCommand::Continue => debug_command(slot, DebugVerb::Continue),
+        PlayCommand::Next => played_line(slot),
+        // Line by line, so every line it passes can be rewound to one at a
+        // time: `debug_run_to_line` stops everywhere `debug_run` does, and
+        // after each line besides.
+        PlayCommand::Continue => {
+            let mut outcome = played_line(slot);
+            for _ in 0..CONTINUE_LINES {
+                let on = outcome.error.is_none()
+                    && outcome
+                        .stop
+                        .as_ref()
+                        .is_some_and(|s| s.kind == StopKind::Line);
+                if !on {
+                    break;
+                }
+                let mut next = played_line(slot);
+                outcome.steps.append(&mut next.steps);
+                outcome.warnings.append(&mut next.warnings);
+                next.steps = std::mem::take(&mut outcome.steps);
+                next.warnings = std::mem::take(&mut outcome.warnings);
+                outcome = next;
+            }
+            outcome
+        }
+        PlayCommand::Back => rewind(slot, false),
+        PlayCommand::BackToChoice => rewind(slot, true),
         PlayCommand::StepLine => debug_command(slot, DebugVerb::StepLine),
         PlayCommand::StepInstruction => debug_command(slot, DebugVerb::StepInstruction),
     }
@@ -542,7 +620,6 @@ fn faulted(play: &Play, message: String) -> PlayOutcome {
 enum DebugVerb {
     /// To the next completed line (`debug_run_to_line`).
     Line,
-    Continue,
     StepLine,
     StepInstruction,
 }
@@ -602,17 +679,6 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
         DebugVerb::Line => running
             .story
             .debug_run_to_line(&running.breakpoints, DEFAULT_DEBUG_BUDGET),
-        DebugVerb::Continue if !watching.is_empty() => {
-            let mut observer = brink_runtime::WatchpointObserver::new(watching);
-            running.story.debug_run_watching(
-                &running.breakpoints,
-                &mut observer,
-                DEFAULT_DEBUG_BUDGET,
-            )
-        }
-        DebugVerb::Continue => running
-            .story
-            .debug_run(&running.breakpoints, DEFAULT_DEBUG_BUDGET),
         DebugVerb::StepLine => running.story.debug_step_line(
             StepMode::Into,
             &running.breakpoints,
@@ -741,6 +807,79 @@ fn line_of(story: &Story<FastRng>, program: &brink_runtime::Program) -> Option<(
     Some((file, line0 + 1))
 }
 
+/// How many lines one `Continue` may play before it gives the turn back —
+/// a story that never stops must not hold the worker.
+const CONTINUE_LINES: usize = 100_000;
+
+impl Play {
+    /// Remember the story as it is now, as a rewind point.
+    fn remember(&mut self, choice: bool) {
+        if self.history.len() == HISTORY_CAP {
+            self.history.pop_front();
+        }
+        self.history.push_back(Rewind {
+            story: self.story.clone(),
+            lines: self.lines,
+            choice,
+        });
+    }
+}
+
+/// Play the next line, remembering where it started from.
+fn played_line(slot: &mut PlaySlot) -> PlayOutcome {
+    if let Some(running) = slot.play.as_mut() {
+        running.remember(false);
+    }
+    let mut outcome = debug_command(slot, DebugVerb::Line);
+    if let Some(running) = slot.play.as_mut() {
+        running.lines += outcome
+            .steps
+            .iter()
+            .filter(|s| matches!(s, PlayStep::Line { .. }))
+            .count();
+        outcome.history = running.history.len();
+    }
+    outcome
+}
+
+/// Go back one step, or — `to_choice` — to just before the last choice.
+fn rewind(slot: &mut PlaySlot, to_choice: bool) -> PlayOutcome {
+    let Some(running) = slot.play.as_mut() else {
+        return PlayOutcome::failed(PlayError::NotStarted);
+    };
+    let mut landed = None;
+    while let Some(point) = running.history.pop_back() {
+        let stop_here = !to_choice || point.choice;
+        landed = Some(point);
+        if stop_here {
+            break;
+        }
+    }
+    let Some(point) = landed else {
+        return PlayOutcome {
+            history: 0,
+            ..PlayOutcome::default()
+        };
+    };
+    running.story = point.story;
+    running.lines = point.lines;
+    let at_choice = running.story.debug_snapshot().status == "waiting_for_choice";
+    let steps = if at_choice {
+        vec![convert(Step::Choices(running.story.pending_choices()))]
+    } else {
+        Vec::new()
+    };
+    PlayOutcome {
+        steps,
+        rewound: Some(Rewound {
+            lines: point.lines,
+            at_choice,
+        }),
+        history: running.history.len(),
+        ..PlayOutcome::default()
+    }
+}
+
 /// Capture the running story's checkpoint.
 fn save(slot: &PlaySlot) -> PlayOutcome {
     let Some(running) = slot.play.as_ref() else {
@@ -823,7 +962,7 @@ fn load(
             .collect()
         })
         .unwrap_or_default();
-    let mut outcome = debug_command(slot, DebugVerb::Line);
+    let mut outcome = played_line(slot);
     steps.append(&mut outcome.steps);
     outcome.steps = steps;
     outcome.unbound = unbound;
@@ -969,6 +1108,8 @@ fn start(
     }
     Ok(Play {
         story,
+        history: std::collections::VecDeque::new(),
+        lines: 0,
         program,
         breakpoints: BreakpointSet::new(),
     })
@@ -1341,6 +1482,52 @@ mod tests {
             "the game state held: {:?}",
             state.globals
         );
+    }
+
+    /// Rewind (#3665): `Back` returns to before the last line — playing
+    /// on replays it — and `BackToChoice` to just before the last choice,
+    /// the choices offered again.
+    #[test]
+    fn rewind_steps_back_a_line_and_back_to_the_last_choice() {
+        let src = "-> top\n=== top ===\nOne.\nTwo.\n* [Go]\n  Three.\n  Four.\n  -> END\n";
+        let mut d = Driver::new(src);
+        let text = |o: &PlayOutcome| -> Vec<String> {
+            o.steps
+                .iter()
+                .filter_map(|s| match s {
+                    PlayStep::Line { text, .. } => Some(text.trim_end().to_owned()),
+                    _ => None,
+                })
+                .collect()
+        };
+        let first = d.go(PlayCommand::Start { at: None });
+        assert_eq!(text(&first), ["One."]);
+        let second = d.go(PlayCommand::Next);
+        assert_eq!(text(&second), ["Two."], "{second:?}");
+        assert!(
+            second.history >= 2,
+            "two lines to go back over: {}",
+            second.history
+        );
+
+        // One line back, and on again: the same line again.
+        let back = d.go(PlayCommand::Back);
+        assert_eq!(back.rewound.map(|r| r.lines), Some(1), "{back:?}");
+        assert_eq!(text(&d.go(PlayCommand::Next)), ["Two."]);
+
+        // Take the choice, play on, then back to just before the choice.
+        let _ = d.go(PlayCommand::Choose(0));
+        let _ = d.go(PlayCommand::Next);
+        let to_choice = d.go(PlayCommand::BackToChoice);
+        let landed = to_choice.rewound.expect("rewound");
+        assert!(landed.at_choice, "{to_choice:?}");
+        assert_eq!(landed.lines, 2, "One. and Two. stay");
+        assert!(
+            matches!(to_choice.steps.last(), Some(PlayStep::Choices(c)) if c.len() == 1),
+            "the choice is offered again: {to_choice:?}"
+        );
+        let again = d.go(PlayCommand::Choose(0));
+        assert_eq!(text(&again), ["Three."], "and can be taken again");
     }
 
     #[test]

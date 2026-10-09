@@ -79,6 +79,9 @@ enum Entry {
         text: SharedString,
         sticky: bool,
         source: Option<Location>,
+        /// The rest of the offer, passed by — the manuscript dims them.
+        /// Kept on the echo, so a rewind past it takes them back too.
+        passed: Vec<Location>,
     },
     /// A turn boundary or a runtime warning.
     Notice(SharedString),
@@ -104,9 +107,15 @@ pub struct Player {
     attached: Option<(crate::saves::Store, String)>,
     /// Both stores' slots as last read, for the idle Player's list.
     saves: Vec<(crate::saves::Store, crate::saves::SlotMeta)>,
-    /// Every choice offered and passed by this session (taken later or
-    /// not — `trail` subtracts the taken ones).
-    passed: Vec<Location>,
+    /// Lines rewound past: the manuscript keeps a dashed rail on them
+    /// until the story moves on (#3665).
+    undone: Vec<Location>,
+    /// How many steps back the worker can rewind.
+    history: usize,
+    /// `<<`: rewinding at the autoplay pace, until paused or at the start.
+    rewinding: bool,
+    /// The wait before the next step back.
+    rewind_timer: Option<gpui::Task<()>>,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -202,7 +211,10 @@ impl Player {
             arrivals: Vec::new(),
             choices_at: None,
             hovered: None,
-            passed: Vec::new(),
+            undone: Vec::new(),
+            history: 0,
+            rewinding: false,
+            rewind_timer: None,
             attached: None,
             saves,
             choices: Vec::new(),
@@ -318,7 +330,9 @@ impl Player {
         self.generation += 1;
         self.entries.clear();
         self.arrivals.clear();
-        self.passed.clear();
+        self.undone.clear();
+        self.history = 0;
+        self.halt_rewind();
         self.choices.clear();
         // One item before the transcript and one past it — the head and the
         // tail, the room that lets its first and last rows reach NOW.
@@ -486,8 +500,9 @@ impl Player {
         if !self.running {
             let at = self.start_at.clone();
             self.start(at, cx);
-        } else if self.autoplay {
+        } else if self.autoplay || self.rewinding {
             self.halt_autoplay();
+            self.halt_rewind();
             cx.notify();
         } else if self.can_advance() {
             self.send(PlayCommand::Next, cx);
@@ -595,6 +610,81 @@ impl Player {
         .detach();
     }
 
+    /// `|<`: back to just before the last choice — choose again.
+    pub(crate) fn back_to_choice(&mut self, cx: &mut Context<Self>) {
+        if self.history > 0 && !self.busy {
+            self.halt_autoplay();
+            self.halt_rewind();
+            self.send(PlayCommand::BackToChoice, cx);
+        }
+    }
+
+    /// `<<`: rewind a line at a time at the autoplay pace until paused (▶,
+    /// now ❚❚) or at the start; a second press pauses.
+    pub(crate) fn toggle_rewind(&mut self, cx: &mut Context<Self>) {
+        if self.rewinding {
+            self.halt_rewind();
+        } else if self.history > 0 && !self.busy {
+            self.halt_autoplay();
+            self.rewinding = true;
+            self.send(PlayCommand::Back, cx);
+        }
+        cx.notify();
+    }
+
+    fn halt_rewind(&mut self) {
+        self.rewinding = false;
+        self.rewind_timer = None;
+    }
+
+    /// The next step back, after the pace's wait.
+    fn schedule_rewind(&mut self, cx: &mut Context<Self>) {
+        let wait = std::time::Duration::from_secs_f32(
+            brink_gpui_shell::settings::AppSettings::get(cx).autoplay_ms / 1000.,
+        );
+        let generation = self.generation;
+        self.rewind_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.rewinding && this.generation == generation && !this.busy {
+                    this.send(PlayCommand::Back, cx);
+                }
+            });
+        }));
+    }
+
+    /// Keep the transcript up to the `lines`-th story line, and set what
+    /// came after aside as undone.
+    fn rewind_to(&mut self, lines: usize) {
+        let cut = if lines == 0 {
+            self.entries
+                .iter()
+                .position(|e| matches!(e, Entry::Line { .. }))
+                .unwrap_or(self.entries.len())
+        } else {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| matches!(e, Entry::Line { .. }))
+                .nth(lines - 1)
+                .map_or(self.entries.len(), |(ix, _)| ix + 1)
+        };
+        let old = self.entries.len();
+        if cut >= old {
+            return;
+        }
+        let removed: Vec<Entry> = self.entries.drain(cut..).collect();
+        self.arrivals.truncate(cut);
+        self.list.splice(cut + 1..old + 1, 0);
+        self.undone
+            .extend(removed.into_iter().filter_map(|e| match e {
+                Entry::Line {
+                    source: Some(loc), ..
+                } => Some(loc),
+                _ => None,
+            }));
+    }
+
     fn halt_autoplay(&mut self) {
         self.autoplay = false;
         self.autoplay_timer = None;
@@ -690,12 +780,18 @@ impl Player {
             chosen: self.chosen_sources(),
             not_taken: {
                 let chosen = self.chosen_sources();
-                self.passed
+                self.entries
                     .iter()
+                    .filter_map(|e| match e {
+                        Entry::Chosen { passed, .. } => Some(passed),
+                        _ => None,
+                    })
+                    .flatten()
                     .filter(|loc| !chosen.contains(loc))
                     .cloned()
                     .collect()
             },
+            undone: self.undone.clone(),
         }
     }
 
@@ -768,18 +864,18 @@ impl Player {
         let Some(choice) = self.choices.iter().find(|c| c.index == index).cloned() else {
             return;
         };
-        // The rest of the offer, passed by — the manuscript dims them.
-        self.passed.extend(
-            self.choices
-                .iter()
-                .filter(|c| c.index != index)
-                .filter_map(|c| c.source.clone()),
-        );
+        let passed = self
+            .choices
+            .iter()
+            .filter(|c| c.index != index)
+            .filter_map(|c| c.source.clone())
+            .collect();
         self.choices.clear();
         self.push(Entry::Chosen {
             text: choice.text.into(),
             sticky: choice.sticky,
             source: choice.source.clone(),
+            passed,
         });
         self.send(PlayCommand::Choose(index), cx);
     }
@@ -808,7 +904,15 @@ impl Player {
                                     .stop
                                     .as_ref()
                                     .is_some_and(|stop| stop.kind == StopKind::Line);
+                            let rewound = outcome.rewound.is_some();
                             this.apply(outcome, cx);
+                            if this.rewinding {
+                                if rewound && this.history > 0 {
+                                    this.schedule_rewind(cx);
+                                } else {
+                                    this.halt_rewind();
+                                }
+                            }
                             if this.autoplay {
                                 if line && this.can_advance() {
                                     this.schedule_autoplay(cx);
@@ -843,6 +947,14 @@ impl Player {
         // Every outcome says afresh whether the flow is held by the
         // debugger — a breakpoint, a watch, a step — rather than resting
         // after a line or at a place the story itself yields.
+        if let Some(back) = outcome.rewound {
+            self.rewind_to(back.lines);
+            self.choices.clear();
+            self.running = true;
+        }
+        if outcome.rewound.is_some() || outcome.history > 0 || outcome.steps.is_empty() {
+            self.history = outcome.history;
+        }
         let kind = outcome.stop.as_ref().map(|stop| stop.kind);
         self.paused = kind.is_some_and(StopKind::holds);
         let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
@@ -983,6 +1095,10 @@ impl Player {
     fn push(&mut self, entry: Entry) {
         let ix = self.entries.len();
         let line = matches!(entry, Entry::Line { .. });
+        // The story moving on settles what was rewound past.
+        if line {
+            self.undone.clear();
+        }
         self.entries.push(entry);
         self.arrivals.push(std::time::Instant::now());
         // Item 0 is the head spacer, so entry `ix` is item `ix + 1`.
@@ -1153,6 +1269,7 @@ impl Player {
                 text,
                 sticky,
                 source,
+                ..
             } => {
                 let row = row
                     .py(px(6.))
@@ -1516,6 +1633,9 @@ impl Player {
         }
         if !self.choices.is_empty() {
             return ("Choose".into(), hsla(tokens.symbol_knot), false);
+        }
+        if self.rewinding {
+            return (with_here("Rewinding").into(), hsla(tokens.info), false);
         }
         if self.autoplay {
             // Where it will stop, as the lookahead found (the canvas's
@@ -1885,9 +2005,10 @@ impl Player {
         let started = !self.entries.is_empty();
         let width = f32::from(self.list.viewport_bounds().size.width);
         let roomy = width == 0. || width >= HINT_MIN_WIDTH;
-        let can_primary = !self.running || self.autoplay || self.can_advance();
+        let can_primary = !self.running || self.autoplay || self.rewinding || self.can_advance();
+        let can_back = self.history > 0 && !self.busy;
         let advance = self.can_advance();
-        let hint: SharedString = if self.autoplay {
+        let hint: SharedString = if self.autoplay || self.rewinding {
             "space · pause".into()
         } else if !self.choices.is_empty() {
             format!("1\u{2013}{} · choose", self.choices.len()).into()
@@ -1898,7 +2019,7 @@ impl Player {
         } else {
             "space · continue".into()
         };
-        let (primary_icon, primary_tip) = if self.autoplay {
+        let (primary_icon, primary_tip) = if self.autoplay || self.rewinding {
             (BrinkIcon::TransportPause, "Pause (space)")
         } else {
             (BrinkIcon::TransportPlay, "Continue (space)")
@@ -1942,22 +2063,28 @@ impl Player {
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx))),
                     ),
             )
-            .child(Self::icon_button(
-                "player-prev",
-                BrinkIcon::TransportPrev,
-                "Back to just before the last choice (coming)",
-                None,
-                false,
-                cx,
-            ))
-            .child(Self::icon_button(
-                "player-back",
-                BrinkIcon::TransportBack,
-                "Rewind (coming)",
-                None,
-                false,
-                cx,
-            ))
+            .child(
+                Self::icon_button(
+                    "player-prev",
+                    BrinkIcon::TransportPrev,
+                    "Back to just before the last choice",
+                    None,
+                    can_back,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.back_to_choice(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-back",
+                    BrinkIcon::TransportBack,
+                    "Rewind — a line at a time, at the autoplay pace",
+                    self.rewinding.then_some(primary),
+                    self.rewinding || can_back,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_rewind(cx))),
+            )
             .child(
                 div()
                     .id("player-primary")
@@ -2052,6 +2179,8 @@ pub struct PlayTrail {
     /// The choices taken, and the ones offered beside them and passed by.
     pub chosen: Vec<Location>,
     pub not_taken: Vec<Location>,
+    /// Lines rewound past, until the story moves on.
+    pub undone: Vec<Location>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`

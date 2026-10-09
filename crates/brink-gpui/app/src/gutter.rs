@@ -69,6 +69,8 @@ pub(crate) struct Trail {
     pub played: Vec<usize>,
     pub active: Vec<usize>,
     pub held: Option<usize>,
+    /// Lines rewound past (#3665): a dashed rail until the story moves on.
+    pub undone: Vec<usize>,
     /// Where the next line starts — what ▶ plays. A promise, not a fact:
     /// an edit or a choice can change it, so it is only a faint band.
     pub next: Option<usize>,
@@ -115,6 +117,17 @@ pub(crate) fn trail_in(trail: &crate::player::PlayTrail, path: &str, text: &str)
             .as_ref()
             .filter(|(p, _)| p == path)
             .and_then(|(_, line)| (*line as usize).checked_sub(1)),
+        undone: {
+            let mut undone: Vec<usize> = trail
+                .undone
+                .iter()
+                .filter(|loc| loc.path == path)
+                .flat_map(lines)
+                .collect();
+            undone.sort_unstable();
+            undone.dedup();
+            undone
+        },
         next: trail
             .next
             .as_ref()
@@ -127,6 +140,7 @@ pub(crate) fn trail_in(trail: &crate::player::PlayTrail, path: &str, text: &str)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stand {
     Next,
+    Undone,
     Played,
     Active,
     Held,
@@ -140,6 +154,8 @@ impl Trail {
             Some(Stand::Active)
         } else if self.played.binary_search(&line).is_ok() {
             Some(Stand::Played)
+        } else if self.undone.contains(&line) {
+            Some(Stand::Undone)
         } else if self.next == Some(line) {
             Some(Stand::Next)
         } else {
@@ -200,17 +216,22 @@ impl Marks {
             .stand(line)
             .and_then(|stand| match stand {
                 Stand::Next => None,
-                Stand::Played => Some(colours.played),
+                Stand::Undone | Stand::Played => Some(colours.played),
                 Stand::Active => Some(colours.active),
                 Stand::Held => Some(colours.held),
             })
+    }
+
+    /// Whether a line was rewound past.
+    fn is_undone(&self, line: usize) -> bool {
+        self.trail.borrow().stand(line) == Some(Stand::Undone)
     }
 
     /// A line's band, if it has one: the active and held lines do.
     fn band(&self, line: usize) -> Option<Hsla> {
         let colours = self.trail_colours.get();
         match self.trail.borrow().stand(line)? {
-            Stand::Played => None,
+            Stand::Played | Stand::Undone => None,
             // Outlined by the manuscript (dashed, a promise), not banded.
             Stand::Next => None,
             Stand::Active => Some(colours.active.opacity(0.16)),
@@ -313,14 +334,15 @@ pub(crate) fn install(
                     .group_hover(GUTTER_MARK_GROUP, |s| s.visible())
                     .into_any_element(),
             };
+            let undone = marks.is_undone(line);
             let rail = marks.rail(line).map(|colour| {
-                div()
-                    .absolute()
-                    .left_0()
-                    .top_0()
-                    .bottom_0()
-                    .w(px(RAIL))
-                    .bg(colour)
+                let rail = div().absolute().left_0().top_0().bottom_0();
+                if undone {
+                    // Rewound past: the played rail, dashed.
+                    rail.border_l(px(RAIL)).border_dashed().border_color(colour)
+                } else {
+                    rail.w(px(RAIL)).bg(colour)
+                }
             });
             cell.relative()
                 .children(rail)

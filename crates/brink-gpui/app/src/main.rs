@@ -3649,6 +3649,63 @@ mod modes_driven {
         );
     }
 
+    /// Rewind (#3665): `<<` steps lines off at the autoplay pace until
+    /// paused, marking them undone until the story moves on; `|<` goes back
+    /// to just before the last choice — the cards again, the echo gone.
+    #[test]
+    fn rewind_steps_back_and_returns_to_the_choice() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            brink_gpui_shell::settings::update(cx, |s| {
+                s.autoplay_ms = brink_gpui_shell::settings::MIN_AUTOPLAY_MS;
+            });
+        });
+        let (_, player) = stage_started(&mut h);
+        for _ in 0..3 {
+            h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        }
+        let lines = |h: &mut Harness| h.read(|cx| player.read(cx).line_count());
+        let before = lines(&mut h);
+        assert!(before >= 3, "{before} lines");
+
+        // << rewinds on its own, a line per pace, until paused.
+        h.update(|cx| player.update(cx, |p, cx| p.toggle_rewind(cx)));
+        assert!(autoplay_until(&mut h, &player, |p| p.line_count() <= before - 2));
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        let paused_at = lines(&mut h);
+        h.advance(std::time::Duration::from_millis(1000));
+        assert_eq!(lines(&mut h), paused_at, "▶ paused the rewind");
+        assert!(
+            !h.read(|cx| player.read(cx).trail().undone).is_empty(),
+            "the lines rewound past are marked undone"
+        );
+        // Playing on settles them.
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        assert!(
+            h.read(|cx| player.read(cx).trail().undone).is_empty(),
+            "moved on"
+        );
+
+        // Take a choice, then |< back to it.
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.back_to_choice(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let trail = h.read(|cx| player.read(cx).trail());
+        assert!(
+            trail.chosen.is_empty(),
+            "the choice is untaken again: {:?}",
+            trail.chosen
+        );
+        assert!(trail.not_taken.is_empty(), "and nothing is dimmed");
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {

@@ -6007,3 +6007,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The native player's Save state follows the web's W14 model (two stores, Load attaches so Save writes back, Fork starts unattached, a save carries its structural transcript, the payload is the runtime's durable `SaveState` plus the knot to resume at). The PROJECT store is `<project>/.brink/saves/`, one JSON file per slot; the LOCAL store is per-computer app data. Saves are reachable both from a Saves menu in the Player header while playing and from a list on the idle Player.
 - **WHY:** A hidden project folder keeps saves shareable through the repo without showing among the story files, and the desktop app can adopt the same path later; the maintainer wanted saves to load both mid-play and from a stopped Player.
+
+## Rewind keeps a snapshot of the story at every line
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** moderate
+- **WHAT:** The Player's rewind (#3665: `|<` back to just before the last choice, `<<` back a line at a time at autoplay pace, rewound lines keep a dashed "undone" rail until the story moves on) restores from a capped history of story copies the worker keeps — one before every line it plays and one before each choice taken. The oldest copies drop off past the cap.
+- **WHY:** Chosen over replaying from the start (unbounded history, but slow to rewind a long story and dependent on everything replaying identically) and over choice-only snapshots (exact `|<`, but `<<` would replay forward): a copy per line makes both gestures exact and instant, at a memory cost the cap bounds.
