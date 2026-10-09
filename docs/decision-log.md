@@ -5991,3 +5991,11 @@
 
   **Recents read the name when the landing draws.** It is never cached in the recents list, so a project renamed while closed is not listed under its old name. Only a `brink.toml` recent shows a name. A `.ink` recent keeps its file name, because the story file is the door the author chose.
 - **WHY:** The maintainer asked for a project name in `brink.toml` to replace the folder name in the title bar and on the startup screen, and chose these options from a survey of the code (2026-10-09). The rationale is the options' own. `name` is the spelling Cargo and npm use. Reading the name at display time keeps the recents schema unchanged and can never be stale, at the cost of reading a handful of small files when the landing draws. The Name field puts the one `[project]` key an author is most likely to want to change into the form.
+
+## Hovering a Player row brackets its source lines in the manuscript
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** The canvas's glue bracket (a rounded bracket on the right of a run of source lines) is repurposed: hovering any row in the Player transcript draws it in the manuscript beside exactly the source lines that row came from, for as long as the hover lasts. Story lines and their echoes use the accent colour; a choice — a card waiting to be picked, or the echo of one picked — uses the choice colour. The provenance chip on the hovered Player row stays, for now.
+- **WHY:** Maintainer: "i like that visual element, but i actually want it shown in the editor on the hover of any line in the player transcript, not just for glued lines" — the bracket answers "where did this come from" without moving anything, while the chip still takes you there; a different colour for choices separates what played from what you could pick.

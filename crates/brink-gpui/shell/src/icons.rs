@@ -169,7 +169,7 @@ mod tests {
     fn every_icon_file_became_a_variant() {
         let files = Assets::iter().filter(|p| p.starts_with("icons/")).count();
         assert_eq!(
-            files, 43,
+            files, 44,
             "expected the ported set, the two mode glyphs, the label dash, and the \
              Player's transport and header set; found {files}"
         );

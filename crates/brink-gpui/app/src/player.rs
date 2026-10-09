@@ -73,7 +73,13 @@ enum Entry {
         source: Option<Location>,
     },
     /// The choice the player took, echoed the way it was written.
-    Chosen { text: SharedString, sticky: bool },
+    /// The reader's pick, and where the choice was written (a choice echo
+    /// links back the way a line does — ruled 2026-09-02).
+    Chosen {
+        text: SharedString,
+        sticky: bool,
+        source: Option<Location>,
+    },
     /// A turn boundary or a runtime warning.
     Notice(SharedString),
     /// A failure. `at` is the site a RUNTIME fault resolved, which makes
@@ -89,6 +95,10 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// The source under the pointer — a row or a choice card — for the
+    /// manuscript's bracket (decision log 2026-10-09), and whether it is a
+    /// choice.
+    hovered: Option<(Location, bool)>,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -179,6 +189,7 @@ impl Player {
             entries: Vec::new(),
             arrivals: Vec::new(),
             choices_at: None,
+            hovered: None,
             choices: Vec::new(),
             list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
@@ -361,6 +372,12 @@ impl Player {
             .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
     }
 
+    /// Where the current row was laid out, in window coordinates.
+    #[cfg(test)]
+    pub(crate) fn active_row_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.list.bounds_for_item(self.active_row()? + 1)
+    }
+
     /// The current row's top and the NOW line, in window coordinates.
     #[cfg(test)]
     pub(crate) fn now_gap(&self) -> Option<(f32, f32)> {
@@ -471,6 +488,7 @@ impl Player {
             }),
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
+            hover: self.hovered.clone(),
         }
     }
 
@@ -534,6 +552,7 @@ impl Player {
         self.push(Entry::Chosen {
             text: choice.text.into(),
             sticky: choice.sticky,
+            source: choice.source.clone(),
         });
         self.send(PlayCommand::Choose(index), cx);
     }
@@ -895,37 +914,33 @@ impl Player {
                             .bg(primary),
                     )
                 });
-                match source.clone() {
-                    Some(loc) => row
-                        .cursor_pointer()
-                        .when(!active, |el| el.hover(move |s| s.bg(hover)))
-                        .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
-                            cx.emit(PlayerEvent::Navigate {
-                                path: loc.path.clone(),
-                                span: loc.start as usize..loc.end as usize,
-                            });
-                        }))
-                        .into_any_element(),
-                    None => row.into_any_element(),
-                }
+                let row = row.when(!active, |el| el.hover(move |s| s.bg(hover)));
+                self.linked(row, source.as_ref(), false, cx)
             }
-            Entry::Chosen { text, sticky } => row
-                .py(px(6.))
-                .child(
-                    Self::choice_mark(*sticky, 24., knot)
-                        .absolute()
-                        .left(px(SPINE_X - 11.))
-                        .top(px(5.))
-                        .bg(theme.background),
-                )
-                .child(
-                    div()
-                        .pl(px(TEXT_X))
-                        .py(px(2.))
-                        .text_color(knot)
-                        .child(text.clone()),
-                )
-                .into_any_element(),
+            Entry::Chosen {
+                text,
+                sticky,
+                source,
+            } => {
+                let row = row
+                    .py(px(6.))
+                    .child(
+                        Self::choice_mark(*sticky, 24., knot)
+                            .absolute()
+                            .left(px(SPINE_X - 11.))
+                            .top(px(5.))
+                            .bg(theme.background),
+                    )
+                    .child(
+                        div()
+                            .pl(px(TEXT_X))
+                            .py(px(2.))
+                            .text_color(knot)
+                            .child(text.clone()),
+                    )
+                    .hover(move |s| s.bg(hover));
+                self.linked(row, source.as_ref(), true, cx)
+            }
             Entry::Notice(text) => row
                 .child(
                     div()
@@ -985,6 +1000,106 @@ impl Player {
             ))
     }
 
+    /// Link a row back to where it was written (#3436, ruled 2026-09-02):
+    /// while the row is hovered, a small go-to-source button in its
+    /// top-right corner — inside the row, never over its text — with
+    /// `file:line` for a tooltip; ⌘-click on the row does the same. A
+    /// plain click does nothing, so reading never jumps the manuscript.
+    fn linked(
+        &self,
+        row: gpui::Stateful<gpui::Div>,
+        source: Option<&Location>,
+        choice: bool,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let Some(loc) = source.cloned() else {
+            return row.into_any_element();
+        };
+        let theme = cx.theme();
+        let (muted, panel, border, accent) = (
+            theme.muted_foreground,
+            theme.background,
+            theme.border,
+            theme.primary,
+        );
+        let line = self
+            .project
+            .read(cx)
+            .loaded_source(&loc.path)
+            .and_then(|text| text.get(..loc.start as usize))
+            .map_or(0, |before| before.matches('\n').count() + 1);
+        let name = loc.path.rsplit('/').next().unwrap_or(&loc.path).to_owned();
+        let tip = SharedString::from(format!("{name}:{line} · ⌘-click to open"));
+        let open = {
+            let loc = loc.clone();
+            move |cx: &mut Context<Self>| {
+                cx.emit(PlayerEvent::Navigate {
+                    path: loc.path.clone(),
+                    span: loc.start as usize..loc.end as usize,
+                });
+            }
+        };
+        let chip = {
+            let open = open.clone();
+            div()
+                .id("player-provenance")
+                .absolute()
+                .right(px(6.))
+                .top(px(4.))
+                .size(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded(px(6.))
+                .border_1()
+                .border_color(border)
+                .bg(panel)
+                .shadow_md()
+                .cursor_pointer()
+                .invisible()
+                .group_hover(ROW_GROUP, |s| s.visible())
+                .hover(move |s| s.border_color(accent))
+                .tooltip(move |window, cx| Tooltip::new(tip.clone()).build(window, cx))
+                .child(brink_gpui_shell::icons::icon(
+                    BrinkIcon::GoToSource,
+                    px(12.),
+                    muted,
+                ))
+                .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
+                    cx.stop_propagation();
+                    open(cx);
+                }))
+        };
+        row.group(ROW_GROUP)
+            .child(chip)
+            .on_hover(Self::hover_listener(loc.clone(), choice, cx))
+            .on_click(cx.listener(move |_, event: &ClickEvent, _, cx| {
+                if event.modifiers().platform {
+                    open(cx);
+                }
+            }))
+            .into_any_element()
+    }
+
+    /// Track the pointer over a row or card with `loc` for its source:
+    /// the manuscript brackets it while it is hovered.
+    fn hover_listener(
+        loc: Location,
+        choice: bool,
+        cx: &mut Context<Self>,
+    ) -> impl Fn(&bool, &mut Window, &mut App) + 'static {
+        cx.listener(move |this, hovered: &bool, _, cx| {
+            if *hovered {
+                this.hovered = Some((loc.clone(), choice));
+            } else if this.hovered.as_ref().is_some_and(|(l, _)| *l == loc) {
+                this.hovered = None;
+            } else {
+                return;
+            }
+            cx.notify();
+        })
+    }
+
     /// The live choices as cards above the transport strip, each with its
     /// `*` / `+` and its number (the digit picks it).
     fn render_cards(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
@@ -1021,6 +1136,9 @@ impl Player {
                         .border_1()
                         .border_color(border)
                         .bg(card)
+                        .when_some(choice.source.clone(), |el, loc| {
+                            el.on_hover(Self::hover_listener(loc, true, cx))
+                        })
                         .text_color(fg)
                         .when(!busy, |el| {
                             el.cursor_pointer()
@@ -1515,6 +1633,9 @@ pub struct PlayTrail {
     pub active: Option<Location>,
     pub held: Option<(String, u32)>,
     pub next: Option<(String, u32)>,
+    /// The source of the transcript row (or choice card) under the
+    /// pointer, and whether it is a choice — the manuscript brackets it.
+    pub hover: Option<(Location, bool)>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`
@@ -1753,6 +1874,9 @@ fn cards_in(n: usize) -> std::time::Duration {
 /// How many frames may correct a line onto NOW before giving up — a few
 /// is plenty; the bound keeps a list that cannot settle from looping.
 const NOW_TRIES: u8 = 4;
+
+/// The hover group of a transcript row, for its go-to-source button.
+const ROW_GROUP: &str = "player-row";
 
 /// Below this width the header folds Tags and Save into ⋯.
 const NARROW_HEADER: f32 = 380.;

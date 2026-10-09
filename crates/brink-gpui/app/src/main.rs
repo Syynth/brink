@@ -3384,6 +3384,116 @@ mod modes_driven {
         );
     }
 
+    /// A transcript row links back to its source (#3436, ruled 2026-09-02):
+    /// hovering shows a go-to-source button in its top-right corner, and
+    /// it — or ⌘-click on the row — opens the line; a plain click does
+    /// not, so reading never jumps the manuscript.
+    #[test]
+    fn a_row_opens_its_source_from_its_chip_or_a_cmd_click() {
+        use std::{cell::Cell, rc::Rc};
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        h.advance(std::time::Duration::from_millis(600));
+        let opened = Rc::new(Cell::new(0));
+        let _watch = {
+            let opened = opened.clone();
+            h.update(|cx| {
+                cx.subscribe(&player, move |_, event: &crate::player::PlayerEvent, _| {
+                    if matches!(event, crate::player::PlayerEvent::Navigate { .. }) {
+                        opened.set(opened.get() + 1);
+                    }
+                })
+            })
+        };
+        // Where the row is now — measured again before each click, since a
+        // frame of NOW correction or the arrival's rise can still move it.
+        let row_at = |h: &mut Harness| {
+            for _ in 0..4 {
+                h.advance(std::time::Duration::from_millis(50));
+            }
+            h.read(|cx| player.read(cx).active_row_bounds())
+                .expect("the first line is laid out")
+        };
+        let middle = |row: gpui::Bounds<gpui::Pixels>| {
+            (
+                f32::from(row.left() + row.size.width / 3.),
+                f32::from(row.center().y),
+            )
+        };
+
+        let (x, y) = middle(row_at(&mut h));
+        h.click_with(window, x, y, gpui::Modifiers::default());
+        assert_eq!(opened.get(), 0, "a plain click only reads");
+
+        let (x, y) = middle(row_at(&mut h));
+        h.click_with(window, x, y, gpui::Modifiers::command());
+        assert_eq!(opened.get(), 1, "⌘-click opens the line's source");
+
+        // The chip: 22px in the row's top-right corner, 6px in and 4px down.
+        let row = row_at(&mut h);
+        let (x, y) = middle(row);
+        let (cx_, cy) = (
+            f32::from(row.right()) - 6. - 11.,
+            f32::from(row.top()) + 4. + 11.,
+        );
+        h.hover(window, x, y);
+        let shot = scratch_dir("shot").join("provenance.png");
+        h.screenshot(window, &shot);
+        eprintln!("provenance screenshot: {}", shot.display());
+        h.click_with(window, cx_, cy, gpui::Modifiers::default());
+        assert_eq!(opened.get(), 2, "the chip opens it too");
+    }
+
+    /// Hovering a Player row brackets its source lines in the manuscript
+    /// (decision log 2026-10-09) — a story line in the accent, a choice in
+    /// the choice colour — and only while the pointer is on it.
+    #[test]
+    fn hovering_a_row_or_choice_brackets_its_source() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        h.advance(std::time::Duration::from_millis(600));
+        let hover = |h: &mut Harness| h.read(|cx| player.read(cx).trail().hover);
+
+        let row = h
+            .read(|cx| player.read(cx).active_row_bounds())
+            .expect("the first line is laid out");
+        h.hover(window, f32::from(row.center().x), f32::from(row.center().y));
+        let (loc, choice) = hover(&mut h).expect("the hovered row's source");
+        assert!(!choice, "a story line");
+        assert_eq!(loc.path, "tower.ink");
+        let shot = scratch_dir("shot").join("bracket-line.png");
+        h.screenshot(window, &shot);
+        eprintln!("bracket screenshot: {}", shot.display());
+
+        // Off the row: nothing bracketed.
+        h.hover(window, 5., 5.);
+        assert_eq!(hover(&mut h), None, "the bracket goes with the pointer");
+
+        // A choice card, in the choice colour.
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.advance(std::time::Duration::from_millis(800));
+        let bounds = h.read(|cx| {
+            let window = cx
+                .windows()
+                .into_iter()
+                .find(|w| w.window_id() == window.window_id())
+                .expect("the window");
+            window
+                .update(cx, |_, w, _| w.viewport_size())
+                .expect("open")
+        });
+        // The first card sits just above the 58px strip and the second card.
+        let card_y = f32::from(bounds.height) - 58. - 10. - 40. - 8. - 20.;
+        h.hover(window, f32::from(bounds.width) * 0.75, card_y);
+        let shot = scratch_dir("shot").join("bracket-choice.png");
+        h.screenshot(window, &shot);
+        eprintln!("bracket screenshot: {}", shot.display());
+        let (_, choice) = hover(&mut h).expect("the hovered card's source");
+        assert!(choice, "a choice is bracketed as one");
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {
