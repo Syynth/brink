@@ -1,0 +1,753 @@
+//! Prose checking — spelling and light grammar over the file's PROSE, and
+//! nothing else (`docs/prose-checking.md`).
+//!
+//! `brink-prose` is the checker; this is the part that decides what to
+//! hand it. The unit of checking is a **content span minus the machinery
+//! nested inside it**: an interpolation lives inside a content span, so
+//! taking content spans whole would hand `{gold}` to a spell checker and
+//! get `gold` reported as a word the author invented. The subtraction is
+//! the whole trick, and it is the same one `packages/ink-editor/src/
+//! prose.ts` performs on the web.
+//!
+//! **Offsets cross two coordinate systems.** brink speaks bytes;
+//! `brink-prose` (and CodeMirror, and LSP) speak UTF-16 code units. Both
+//! conversions happen here, in one place, against one prefix table — so a
+//! lint's range is a byte range by the time it leaves this module and
+//! nothing downstream has to know the checker's units.
+//!
+//! **The dictionary is the project's own names.** Without it every
+//! invented character, place and cue reports as a misspelling, which is
+//! indistinguishable from the feature being broken (#3210). The knots,
+//! stitches and labels the analysis already knows are added to whatever
+//! `[prose] dictionary` lists.
+//!
+//! **The checkers sit behind this module.** This file decides what is
+//! prose and what the result looks like; an engine module decides how it
+//! is checked (`docs/gpui-prose-checker-spec.md`). On macOS the spelling
+//! is the OS's own (`macos`) and the grammar Harper's; elsewhere Harper
+//! does both. Which grammar runs while typing is an app setting
+//! ([`Grammar`]).
+
+use std::collections::BTreeSet;
+
+use brink_ide::session::IdeSession;
+use brink_ir::hir::projection::SpanKind;
+
+mod harper;
+#[cfg(target_os = "macos")]
+mod macos;
+
+/// Which grammar the editor checks while the author types.
+///
+/// An APP setting (`AppSettings.prose_grammar`), not `[prose]`: it picks
+/// between the checkers on this machine, and a collaborator on another
+/// platform may not have the same ones to pick from
+/// (`docs/gpui-prose-checker-spec.md` §6). Spelling is not affected —
+/// switching grammar off leaves the misspellings underlined.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Grammar {
+    /// Harper's rules.
+    #[default]
+    Harper,
+    /// macOS's quick grammar rules, plus whatever the system's grammar
+    /// model has already worked out for the same sentences.
+    #[cfg(target_os = "macos")]
+    MacOs,
+    /// None: spelling only.
+    Off,
+}
+
+impl Grammar {
+    /// The choices this build has. A settings file naming one it lacks
+    /// reads as the default ([`Grammar::parse`] does not know it).
+    #[cfg(target_os = "macos")]
+    pub const ALL: [Self; 3] = [Self::Harper, Self::MacOs, Self::Off];
+    #[cfg(not(target_os = "macos"))]
+    pub const ALL: [Self; 2] = [Self::Harper, Self::Off];
+
+    /// The spelling in the app's settings file.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Harper => "harper",
+            #[cfg(target_os = "macos")]
+            Self::MacOs => "macos",
+            Self::Off => "off",
+        }
+    }
+
+    /// Read back what [`Grammar::as_str`] wrote; `None` for anything else.
+    #[must_use]
+    pub fn parse(value: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|g| g.as_str() == value)
+    }
+}
+
+/// Whether "Check Grammar with Apple Intelligence" can run on this Mac
+/// (`docs/gpui-prose-checker-spec.md` §8). Process-wide, found out once per
+/// launch in the background: `Unknown` until then, and on every other
+/// platform `Unavailable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelState {
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+/// Whether the grammar model answers here, as far as is known.
+#[must_use]
+pub fn model_state() -> ModelState {
+    #[cfg(target_os = "macos")]
+    return macos::model_state();
+    #[cfg(not(target_os = "macos"))]
+    ModelState::Unavailable
+}
+
+/// Start finding out whether the grammar model answers here — once per
+/// launch, in the background; later calls do nothing. Also started by the
+/// first prose check, so this only makes the answer arrive sooner (the
+/// settings say so before any file is open).
+pub fn probe_model() {
+    #[cfg(target_os = "macos")]
+    macos::probe_model();
+}
+
+/// How a "Check Grammar with Apple Intelligence" ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCheck {
+    /// The model read the selection's prose; its findings are now among the
+    /// file's prose lints. `timed_out` when some of it never answered.
+    Checked { found: usize, timed_out: bool },
+    /// The selection holds no prose — only machinery, or nothing.
+    NoProse,
+    /// `[prose] enable = false` for this project.
+    ProseOff,
+    /// The model does not answer on this Mac.
+    Unavailable,
+}
+
+/// One chunk of a model check answered (or given up on), as the thread
+/// that waited for it reports it back to the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelChunk {
+    pub job: u64,
+    pub chunk: usize,
+    pub answered: bool,
+}
+
+/// How a waiting thread hands a [`ModelChunk`] back to the worker loop.
+pub type ModelReport = std::sync::Arc<dyn Fn(ModelChunk) + Send + Sync>;
+
+/// The rule category every engine reports a misspelling under. Everything
+/// else a checker says is grammar, for [`Grammar`]'s purposes.
+const SPELLING: &str = "Spelling";
+
+/// A finding as an engine reports it: in UTF-16 code units of the file,
+/// the unit every checker here speaks. [`check`] turns it into a
+/// [`ProseLint`] in bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Lint16 {
+    start: u32,
+    end: u32,
+    kind: String,
+    message: String,
+    fixes: Vec<ProseFix>,
+}
+
+/// One finding, in BYTE offsets of the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProseLint {
+    pub start: u32,
+    pub end: u32,
+    /// Harper's rule category — `Spelling`, `Repetition`, … Carried
+    /// through rather than flattened, so the editor can style or filter
+    /// by kind without this module inventing a taxonomy.
+    pub kind: String,
+    pub message: String,
+    /// The checker's ready-to-apply fixes, best first: at most
+    /// [`MAX_FIXES`], replacements and removals only, as the web studio
+    /// offers them. An "insert after" is dropped rather than shown as a
+    /// replacement, which would delete the word it was meant to follow.
+    pub fixes: Vec<ProseFix>,
+}
+
+/// One quick fix for a prose lint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProseFix {
+    /// Swap the lint's span for this text.
+    Replace(String),
+    /// Delete the lint's span.
+    Remove,
+}
+
+/// How many fixes a lint offers, as the web studio caps them.
+pub const MAX_FIXES: usize = 3;
+
+/// The prose ranges of `source`, as BYTE ranges: content spans, minus
+/// every non-content span nested inside them.
+#[must_use]
+pub fn prose_ranges(spans: &[brink_ir::hir::projection::ProjectedSpan]) -> Vec<(u32, u32)> {
+    let mut content: Vec<(u32, u32)> = Vec::new();
+    let mut holes: Vec<(u32, u32)> = Vec::new();
+    for span in spans {
+        if span.kind.is_container() {
+            continue;
+        }
+        let range = (span.range.start().into(), span.range.end().into());
+        if span.kind == SpanKind::Content {
+            content.push(range);
+        } else {
+            holes.push(range);
+        }
+    }
+    subtract(&content, &holes)
+}
+
+/// The prose as Writing mode's Read view reads it (decision log
+/// 2026-10-03): [`prose_ranges`], except that a convention-claimed line
+/// stays whole.
+///
+/// A claimed line (`VENDOR` under a `cue` handler) projects as a content
+/// span with a call span over exactly the same bytes — the line IS the
+/// call's argument — so the checker's cut removes it entirely. That is
+/// right for spelling, where a character's name is not a word to check,
+/// and wrong for reading, where the name is what the reader reads.
+#[must_use]
+pub fn read_ranges(spans: &[brink_ir::hir::projection::ProjectedSpan]) -> Vec<(u32, u32)> {
+    let kept: Vec<brink_ir::hir::projection::ProjectedSpan> = spans
+        .iter()
+        .filter(|s| {
+            !(s.kind == SpanKind::Call
+                && spans
+                    .iter()
+                    .any(|c| c.kind == SpanKind::Content && c.range == s.range))
+        })
+        .copied()
+        .collect();
+    prose_ranges(&kept)
+}
+
+/// `content` minus `holes` — the gaps left over, in order. One interval
+/// walk; the second one written independently is the one that gets the
+/// boundary conditions wrong.
+fn subtract(content: &[(u32, u32)], holes: &[(u32, u32)]) -> Vec<(u32, u32)> {
+    let mut out = Vec::new();
+    for &(from, to) in content {
+        let mut inside: Vec<(u32, u32)> = holes
+            .iter()
+            .copied()
+            .filter(|&(hf, ht)| ht > from && hf < to)
+            .collect();
+        inside.sort_unstable();
+        let mut cursor = from;
+        for (hf, ht) in inside {
+            if hf > cursor {
+                out.push((cursor, hf.min(to)));
+            }
+            cursor = cursor.max(ht);
+            if cursor >= to {
+                break;
+            }
+        }
+        if cursor < to {
+            out.push((cursor, to));
+        }
+    }
+    out.retain(|(a, b)| b > a);
+    out
+}
+
+/// Byte offset → UTF-16 code-unit offset, and back.
+///
+/// One prefix table per check rather than a scan per span: a file is read
+/// once and both directions are a binary search.
+struct Units {
+    /// `(byte, utf16)` at every char boundary, ascending.
+    marks: Vec<(u32, u32)>,
+}
+
+impl Units {
+    fn new(text: &str) -> Self {
+        let mut marks = Vec::with_capacity(text.len() / 4 + 2);
+        let mut utf16 = 0u32;
+        for (byte, ch) in text.char_indices() {
+            marks.push((byte as u32, utf16));
+            utf16 += ch.len_utf16() as u32;
+        }
+        marks.push((text.len() as u32, utf16));
+        Self { marks }
+    }
+
+    fn to_utf16(&self, byte: u32) -> u32 {
+        match self.marks.binary_search_by_key(&byte, |(b, _)| *b) {
+            Ok(i) => self.marks[i].1,
+            // Inside a character: the code unit that character starts at.
+            Err(i) => self.marks[i.saturating_sub(1)].1,
+        }
+    }
+
+    fn to_byte(&self, utf16: u32) -> u32 {
+        match self.marks.binary_search_by_key(&utf16, |(_, u)| *u) {
+            Ok(i) => self.marks[i].0,
+            Err(i) => self.marks[i.saturating_sub(1)].0,
+        }
+    }
+}
+
+/// The words a project's own manuscript is allowed to contain: every knot,
+/// stitch and label the analysis knows, plus `[prose] dictionary`.
+#[must_use]
+pub fn project_dictionary(session: &IdeSession, extra: &[String]) -> Vec<String> {
+    let mut words: BTreeSet<String> = extra.iter().cloned().collect();
+    if let Some(analysis) = session.analysis() {
+        for info in analysis.index.symbols.values() {
+            // A qualified name (`knot.stitch`) is not a word; its parts
+            // are, and a checker only ever sees the parts.
+            for part in info.name.split(['.', '_']) {
+                if part.len() > 1 && part.chars().all(char::is_alphanumeric) {
+                    words.insert(part.to_owned());
+                }
+            }
+        }
+    }
+    words.into_iter().collect()
+}
+
+/// The prose checkers, and what they keep between checks. One per open
+/// project, owned by the worker loop: on macOS it holds the project's
+/// spell document and its caches, so a new project gets a new one.
+#[derive(Default)]
+pub struct Checker {
+    #[cfg(target_os = "macos")]
+    os: Option<macos::OsChecker>,
+}
+
+impl Checker {
+    /// Check one file. `None` when the file is not in the session.
+    pub fn check(
+        &mut self,
+        session: &IdeSession,
+        path: &str,
+        dictionary: &[String],
+        dialect: Option<&str>,
+        grammar: Grammar,
+    ) -> Option<Vec<ProseLint>> {
+        let id = session.file_id(path)?;
+        let source = session.source(id)?.to_owned();
+        let projection = session.projection(id)?;
+        let ranges = prose_ranges(&projection.spans);
+        if ranges.is_empty() {
+            return Some(Vec::new());
+        }
+        let units = Units::new(&source);
+        let spans: Vec<(u32, u32)> = ranges
+            .iter()
+            .map(|&(a, b)| (units.to_utf16(a), units.to_utf16(b)))
+            .collect();
+        let found = self.run(&source, &ranges, &spans, dictionary, dialect, grammar);
+        Some(
+            found
+                .into_iter()
+                .map(|lint| ProseLint {
+                    start: units.to_byte(lint.start),
+                    end: units.to_byte(lint.end),
+                    kind: lint.kind,
+                    message: lint.message,
+                    fixes: lint.fixes,
+                })
+                .collect(),
+        )
+    }
+
+    /// "Check Grammar with Apple Intelligence" over the prose spans that
+    /// `start..end` (bytes) touches — whole spans, because grammar is read
+    /// a sentence at a time and the findings are kept per span (spec §7).
+    /// `Some` when it is answered at once; otherwise the answer comes from
+    /// [`Checker::model_chunk_done`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_grammar(
+        &mut self,
+        session: &IdeSession,
+        path: &str,
+        start: u32,
+        end: u32,
+        dictionary: &[String],
+        dialect: Option<&str>,
+        report: &ModelReport,
+    ) -> Option<ModelCheck> {
+        // A file the session does not have holds no prose to check; `None`
+        // here would read as "started".
+        let Some((source, projection)) = session
+            .file_id(path)
+            .and_then(|id| Some((session.source(id)?.to_owned(), session.projection(id)?)))
+        else {
+            return Some(ModelCheck::NoProse);
+        };
+        let touched = spans_touching(&prose_ranges(&projection.spans), start, end);
+        let mut seen = BTreeSet::new();
+        let texts: Vec<String> = touched
+            .iter()
+            .filter_map(|&(a, b)| source.get(a as usize..b as usize))
+            .filter(|text| !text.trim().is_empty() && seen.insert(*text))
+            .map(str::to_owned)
+            .collect();
+        if texts.is_empty() {
+            return Some(ModelCheck::NoProse);
+        }
+        #[cfg(target_os = "macos")]
+        return self
+            .os
+            .get_or_insert_with(macos::OsChecker::new)
+            .start_model_check(path, texts, dictionary, dialect, report);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (dictionary, dialect, report);
+            Some(ModelCheck::Unavailable)
+        }
+    }
+
+    /// A chunk of a model check came back: `Some((path, outcome))` when it
+    /// finished its check.
+    pub fn model_chunk_done(
+        &mut self,
+        done: ModelChunk,
+        report: &ModelReport,
+    ) -> Option<(String, ModelCheck)> {
+        #[cfg(target_os = "macos")]
+        return self.os.as_mut()?.model_chunk_done(done, report);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (done, report);
+            None
+        }
+    }
+
+    /// Harper, for both halves.
+    #[cfg(not(target_os = "macos"))]
+    fn run(
+        &mut self,
+        source: &str,
+        _ranges: &[(u32, u32)],
+        spans: &[(u32, u32)],
+        dictionary: &[String],
+        dialect: Option<&str>,
+        grammar: Grammar,
+    ) -> Vec<Lint16> {
+        compose(harper::check(source, spans, dictionary, dialect), grammar)
+    }
+
+    /// The OS for spelling; the grammar from whichever checker the
+    /// setting names.
+    #[cfg(target_os = "macos")]
+    fn run(
+        &mut self,
+        source: &str,
+        ranges: &[(u32, u32)],
+        spans: &[(u32, u32)],
+        dictionary: &[String],
+        dialect: Option<&str>,
+        grammar: Grammar,
+    ) -> Vec<Lint16> {
+        // Each span's own text, and where it starts in UTF-16. The byte
+        // ranges come from the syntax tree, so they sit on char boundaries;
+        // `get` keeps a surprise from becoming a panic.
+        let texts: Vec<(&str, u32)> = ranges
+            .iter()
+            .zip(spans)
+            .filter_map(|(&(a, b), &(at, _))| Some((source.get(a as usize..b as usize)?, at)))
+            .collect();
+        let (spelling, os_grammar, model) = self
+            .os
+            .get_or_insert_with(macos::OsChecker::new)
+            .check(&texts, dictionary, dialect, grammar == Grammar::MacOs);
+        let typing = match grammar {
+            Grammar::Harper => harper::check(source, spans, dictionary, dialect)
+                .into_iter()
+                .filter(|lint| lint.kind != SPELLING)
+                .collect(),
+            Grammar::MacOs => os_grammar,
+            Grammar::Off => Vec::new(),
+        };
+        // When the author has asked for the model's reading, it wins where
+        // the two say something about the same words (spec §4.3).
+        let typing: Vec<Lint16> = typing
+            .into_iter()
+            .filter(|lint| !model.iter().any(|seen| overlaps(seen, lint)))
+            .collect();
+        let mut grammar = model;
+        grammar.extend(typing);
+        merge(spelling, grammar)
+    }
+}
+
+/// One engine's findings, as the grammar setting asks for them: all of
+/// them, or its misspellings only, in the order it reported.
+#[cfg(any(not(target_os = "macos"), test))]
+fn compose(found: Vec<Lint16>, grammar: Grammar) -> Vec<Lint16> {
+    found
+        .into_iter()
+        .filter(|lint| grammar == Grammar::Harper || lint.kind == SPELLING)
+        .collect()
+}
+
+/// Whether two findings cover any of the same text. Touching is not
+/// overlapping: a doubled word right after a misspelled one is a second
+/// finding, not the same one.
+#[cfg(any(target_os = "macos", test))]
+fn overlaps(a: &Lint16, b: &Lint16) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+/// The prose spans `start..end` touches, whole. A selection of nothing is
+/// the span the caret sits in.
+fn spans_touching(ranges: &[(u32, u32)], start: u32, end: u32) -> Vec<(u32, u32)> {
+    ranges
+        .iter()
+        .copied()
+        .filter(|&(a, b)| {
+            if start == end {
+                a <= start && start <= b
+            } else {
+                a < end && start < b
+            }
+        })
+        .collect()
+}
+
+/// `texts` grouped, in order, into runs of about `size` bytes each. A text
+/// longer than `size` is a run of its own rather than split: a span cut in
+/// two would be two fragments of a sentence.
+#[cfg(any(target_os = "macos", test))]
+fn chunks(texts: Vec<String>, size: usize) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut bytes = 0;
+    for text in texts {
+        if out.is_empty() || bytes + text.len() > size {
+            out.push(Vec::new());
+            bytes = 0;
+        }
+        bytes += text.len();
+        if let Some(run) = out.last_mut() {
+            run.push(text);
+        }
+    }
+    out
+}
+
+/// Spelling from one engine and grammar from another (spec §4.3).
+///
+/// A grammar finding over a misspelling is the same word seen twice —
+/// Harper's `Typo` or `BoundaryError` on a word the OS already flagged —
+/// so it is not shown on its own: its fixes go FIRST in the misspelling's
+/// list, because a fix that read the sentence (`alot` → `a lot`) beats a
+/// dictionary's nearest words. Ordered by position, so the result does not
+/// depend on which engine answered first.
+#[cfg(any(target_os = "macos", test))]
+fn merge(mut spelling: Vec<Lint16>, grammar: Vec<Lint16>) -> Vec<Lint16> {
+    let mut out = Vec::with_capacity(spelling.len() + grammar.len());
+    for found in grammar {
+        let over = spelling.iter_mut().find(|miss| overlaps(miss, &found));
+        if let Some(miss) = over {
+            let mut fixes = found.fixes;
+            for fix in std::mem::take(&mut miss.fixes) {
+                if !fixes.contains(&fix) {
+                    fixes.push(fix);
+                }
+            }
+            fixes.truncate(MAX_FIXES);
+            miss.fixes = fixes;
+        } else {
+            out.push(found);
+        }
+    }
+    out.extend(spelling);
+    out.sort_by_key(|lint| (lint.start, lint.end));
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_hole_splits_the_content_around_it() {
+        // `You have {gold} coins.` — the interpolation is inside the
+        // content span, and handing it to a spell checker is how `gold`
+        // becomes a word the author invented.
+        let content = [(0, 22)];
+        let holes = [(9, 15)];
+        assert_eq!(subtract(&content, &holes), vec![(0, 9), (15, 22)]);
+    }
+
+    #[test]
+    fn holes_at_the_edges_shorten_rather_than_split() {
+        assert_eq!(subtract(&[(0, 10)], &[(0, 4)]), vec![(4, 10)]);
+        assert_eq!(subtract(&[(0, 10)], &[(6, 10)]), vec![(0, 6)]);
+        assert_eq!(subtract(&[(0, 10)], &[(0, 10)]), Vec::new());
+        // A hole outside the span leaves it whole.
+        assert_eq!(subtract(&[(4, 10)], &[(0, 4), (10, 12)]), vec![(4, 10)]);
+    }
+
+    #[test]
+    fn overlapping_holes_are_walked_once() {
+        assert_eq!(
+            subtract(&[(0, 20)], &[(4, 9), (6, 12), (15, 18)]),
+            vec![(0, 4), (12, 15), (18, 20)]
+        );
+    }
+
+    #[test]
+    fn offsets_cross_to_utf16_and_back() {
+        // `é` is two bytes and one code unit; `🌊` is four bytes and TWO.
+        let text = "aé🌊b";
+        let units = Units::new(text);
+        assert_eq!(units.to_utf16(0), 0);
+        assert_eq!(units.to_utf16(1), 1, "after `a`");
+        assert_eq!(units.to_utf16(3), 2, "after `é`");
+        assert_eq!(units.to_utf16(7), 4, "after the surrogate pair");
+        for byte in [0u32, 1, 3, 7, 8] {
+            assert_eq!(
+                units.to_byte(units.to_utf16(byte)),
+                byte,
+                "round trip at {byte}"
+            );
+        }
+    }
+
+    #[test]
+    fn the_grammar_setting_keeps_its_name_in_the_settings_file() {
+        for grammar in Grammar::ALL {
+            assert_eq!(Grammar::parse(grammar.as_str()), Some(grammar));
+        }
+        assert_eq!(Grammar::parse("languagetool"), None);
+        assert_eq!(Grammar::default(), Grammar::Harper);
+    }
+
+    #[test]
+    fn grammar_off_keeps_the_misspellings_and_nothing_else() {
+        // A misspelling and a doubled word, through the real checker.
+        let text = "She recieve the letter. He opened the the door.";
+        let units = Units::new(text);
+        let spans = [(0, units.to_utf16(text.len() as u32))];
+        let found = harper::check(text, &spans, &[], None);
+        let kinds =
+            |lints: &[Lint16]| -> Vec<String> { lints.iter().map(|l| l.kind.clone()).collect() };
+        assert!(
+            kinds(&found).contains(&SPELLING.to_owned())
+                && kinds(&found).iter().any(|k| k != SPELLING),
+            "the probe text should draw both halves, got {:?}",
+            kinds(&found)
+        );
+
+        let with = compose(found.clone(), Grammar::Harper);
+        assert_eq!(with, found, "Harper keeps everything, in order");
+
+        let without = compose(found, Grammar::Off);
+        assert!(!without.is_empty());
+        assert!(
+            without.iter().all(|l| l.kind == SPELLING),
+            "only spelling survives, got {:?}",
+            kinds(&without)
+        );
+    }
+
+    fn lint(start: u32, end: u32, kind: &str, fixes: &[&str]) -> Lint16 {
+        Lint16 {
+            start,
+            end,
+            kind: kind.to_owned(),
+            message: String::new(),
+            fixes: fixes
+                .iter()
+                .map(|f| ProseFix::Replace((*f).to_owned()))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn grammar_over_a_misspelling_lends_it_its_fixes_first() {
+        // "There's alot of rain": the OS flags `alot`, Harper calls it a
+        // boundary error with the fix that read the sentence.
+        let spelling = vec![lint(8, 12, SPELLING, &["allot", "aloft", "alt"])];
+        let grammar = vec![lint(8, 12, "BoundaryError", &["a lot"])];
+        let merged = merge(spelling, grammar);
+        assert_eq!(merged.len(), 1, "one word, one squiggle: {merged:?}");
+        assert_eq!(
+            merged[0].kind, SPELLING,
+            "still a misspelling, for Add to dictionary"
+        );
+        assert_eq!(
+            merged[0].fixes,
+            vec![
+                ProseFix::Replace("a lot".to_owned()),
+                ProseFix::Replace("allot".to_owned()),
+                ProseFix::Replace("aloft".to_owned()),
+            ],
+            "the sentence-aware fix first, capped at MAX_FIXES"
+        );
+    }
+
+    #[test]
+    fn grammar_elsewhere_stands_and_everything_is_in_order() {
+        let spelling = vec![lint(20, 27, SPELLING, &["receive"])];
+        let grammar = vec![
+            lint(30, 37, "Repetition", &["the"]),
+            lint(0, 3, "Agreement", &["was"]),
+        ];
+        let merged = merge(spelling, grammar);
+        let at: Vec<(u32, &str)> = merged.iter().map(|l| (l.start, l.kind.as_str())).collect();
+        assert_eq!(
+            at,
+            vec![(0, "Agreement"), (20, SPELLING), (30, "Repetition")]
+        );
+    }
+
+    #[test]
+    fn a_selection_takes_the_spans_it_touches_whole() {
+        let spans = [(0, 10), (12, 30), (40, 50)];
+        assert_eq!(spans_touching(&spans, 15, 18), vec![(12, 30)], "inside one");
+        assert_eq!(
+            spans_touching(&spans, 5, 45),
+            vec![(0, 10), (12, 30), (40, 50)]
+        );
+        assert_eq!(
+            spans_touching(&spans, 10, 12),
+            Vec::new(),
+            "the gap between"
+        );
+        assert_eq!(spans_touching(&spans, 31, 39), Vec::new(), "machinery only");
+        assert_eq!(spans_touching(&spans, 20, 20), vec![(12, 30)], "a caret");
+    }
+
+    #[test]
+    fn chunks_keep_order_and_never_split_a_span() {
+        let texts = |xs: &[&str]| xs.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            chunks(texts(&["aaaa", "bbb", "cc", "dddddddddd", "e"]), 8),
+            vec![
+                texts(&["aaaa", "bbb"]),
+                texts(&["cc"]),
+                texts(&["dddddddddd"]),
+                texts(&["e"]),
+            ]
+        );
+        assert!(chunks(Vec::new(), 8).is_empty());
+    }
+
+    #[test]
+    fn touching_is_not_overlapping() {
+        // `the the` right after a misspelled word: adjacent, not the same.
+        let merged = merge(
+            vec![lint(0, 5, SPELLING, &[])],
+            vec![lint(5, 12, "Repetition", &[])],
+        );
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn a_byte_inside_a_character_lands_on_its_start() {
+        let units = Units::new("aé");
+        // Byte 2 is the second byte of `é`; there is no code unit there.
+        assert_eq!(units.to_utf16(2), 1);
+    }
+}

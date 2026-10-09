@@ -419,7 +419,9 @@ impl OutputLog {
                 }
                 ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
-                | ProjectEvent::ProseChanged => return,
+                | ProjectEvent::ProseChanged
+                | ProjectEvent::ProseOptionsChanged
+                | ProjectEvent::GrammarChecked { .. } => return,
             }
             cx.notify();
         });

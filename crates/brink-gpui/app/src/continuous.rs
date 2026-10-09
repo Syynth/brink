@@ -263,6 +263,18 @@ impl ContinuousView {
                     this.outlines.clear();
                     cx.notify();
                 }
+                // The kept lints are keyed by text, which did not move, so
+                // they go before every section is checked again.
+                ProjectEvent::ProseOptionsChanged => {
+                    this.prose.0.borrow_mut().clear();
+                    this.refresh_diagnostics(cx);
+                }
+                // The same, for the one file the model read: its text did
+                // not move, so its kept lints would otherwise stand.
+                ProjectEvent::GrammarChecked { path, .. } => {
+                    this.prose.0.borrow_mut().remove(path);
+                    this.refresh_diagnostics(cx);
+                }
                 // The separators' unsaved dots.
                 ProjectEvent::Saved => cx.notify(),
                 ProjectEvent::BreakpointsChanged => this.refresh_gutters(cx),

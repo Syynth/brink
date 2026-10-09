@@ -501,6 +501,57 @@ pub fn setting_stepper_by(
 
 /// A subordinate group heading inside a section — the pane header is the
 /// only title; sections use these.
+/// What choosing a [`Segment`] does.
+pub type Choose = Box<dyn Fn(&ClickEvent, &mut Window, &mut App)>;
+
+/// One segment of a [`setting_segments`] choice.
+pub struct Segment {
+    pub id: SharedString,
+    pub label: SharedString,
+    pub on: bool,
+    pub choose: Choose,
+}
+
+/// A one-of-N choice drawn as the Project / App switch is: the chosen
+/// segment filled. A ghost button's `toggled` state barely shows against
+/// the settings panel, and a choice whose current value cannot be seen is
+/// not much of a setting.
+pub fn setting_segments(segments: Vec<Segment>, cx: &App) -> impl IntoElement {
+    let theme = cx.theme();
+    let (accent, on_accent, muted, trough) = (
+        theme.primary,
+        theme.primary_foreground,
+        theme.muted_foreground,
+        theme.border.opacity(0.45),
+    );
+    h_flex()
+        .p(px(2.))
+        .gap(px(2.))
+        .rounded_md()
+        .bg(trough)
+        .children(segments.into_iter().map(move |segment| {
+            let choose = segment.choose;
+            div()
+                .id(segment.id)
+                .px_3()
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .justify_center()
+                .rounded_sm()
+                .cursor_pointer()
+                .text_xs()
+                .when(segment.on, |el| {
+                    el.bg(accent)
+                        .text_color(on_accent)
+                        .font_weight(gpui::FontWeight::SEMIBOLD)
+                })
+                .when(!segment.on, |el| el.text_color(muted))
+                .child(segment.label)
+                .on_click(move |event, window, cx| choose(event, window, cx))
+        }))
+}
+
 pub fn setting_group(title: impl Into<SharedString>, cx: &App) -> impl IntoElement {
     div()
         .pt_3()
