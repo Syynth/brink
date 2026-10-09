@@ -5999,3 +5999,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The canvas's glue bracket (a rounded bracket on the right of a run of source lines) is repurposed: hovering any row in the Player transcript draws it in the manuscript beside exactly the source lines that row came from, for as long as the hover lasts. Story lines and their echoes use the accent colour; a choice — a card waiting to be picked, or the echo of one picked — uses the choice colour. The provenance chip on the hovered Player row stays, for now.
 - **WHY:** Maintainer: "i like that visual element, but i actually want it shown in the editor on the hover of any line in the player transcript, not just for glued lines" — the bracket answers "where did this come from" without moving anything, while the chip still takes you there; a different colour for choices separates what played from what you could pick.
+
+## Native Save state: project saves in `.brink/saves/`, loaded from the header and the idle Player
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** moderate
+- **WHAT:** The native player's Save state follows the web's W14 model (two stores, Load attaches so Save writes back, Fork starts unattached, a save carries its structural transcript, the payload is the runtime's durable `SaveState` plus the knot to resume at). The PROJECT store is `<project>/.brink/saves/`, one JSON file per slot; the LOCAL store is per-computer app data. Saves are reachable both from a Saves menu in the Player header while playing and from a list on the idle Player.
+- **WHY:** A hidden project folder keeps saves shareable through the repo without showing among the story files, and the desktop app can adopt the same path later; the maintainer wanted saves to load both mid-play and from a stopped Player.

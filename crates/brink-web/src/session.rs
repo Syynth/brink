@@ -1098,7 +1098,7 @@ impl WebSession {
             .as_ref()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let story = session.story();
-        let json = crate::transcript_json::export_transcript_json(
+        let json = brink_runtime::transcript_json::export_transcript_json(
             story.transcript(),
             story.fragments(),
             story.program().source_checksum(),
@@ -1114,15 +1114,17 @@ impl WebSession {
     /// point (edit → reload re-renders the story-so-far); a `LineRef`
     /// whose container no longer exists is dropped rather than erroring.
     pub fn render_transcript(&self, json: &str) -> Result<String, JsError> {
-        let t: crate::transcript_json::TranscriptJson =
+        let t: brink_runtime::transcript_json::TranscriptJson =
             serde_json::from_str(json).map_err(|e| JsError::new(&format!("decode error: {e}")))?;
         let borrow = self.session.borrow();
         let session = borrow
             .as_ref()
             .ok_or_else(|| JsError::new("session not initialized"))?;
         let story = session.story();
-        let (parts, fragments) =
-            crate::transcript_json::decode_transcript_json(t, story.program().container_count());
+        let (parts, fragments) = brink_runtime::transcript_json::decode_transcript_json(
+            t,
+            story.program().container_count(),
+        );
         let lines: Vec<crate::value_marshal::DebugOutputLineJs> =
             brink_runtime::transcript::render_transcript_with_source(
                 &parts,

@@ -80,6 +80,7 @@ mod story;
 mod string_ops;
 mod tower_ops;
 pub mod transcript;
+pub mod transcript_json;
 mod value_ops;
 mod vm;
 mod world;
