@@ -36,6 +36,8 @@ const COLUMN: f32 = 16.;
 const DOT: f32 = 10.;
 /// The ▶'s size.
 const PLAY: f32 = 12.;
+/// The trail's rail, at the column's left edge.
+const RAIL: f32 = 3.;
 
 /// How much wider the gutter is for the column — for a host that sizes
 /// its text column from the gutter's width.
@@ -51,6 +53,88 @@ pub(crate) struct Marks {
     /// there enters at (`knot` or `knot.stitch`).
     headers: RefCell<Vec<(usize, String)>>,
     play: Cell<Hsla>,
+    /// Where the running story has been in this file (Write mode's
+    /// manuscript only), and the colours it is drawn in.
+    trail: RefCell<Trail>,
+    trail_colours: Cell<TrailColours>,
+}
+
+/// A file's lines as the running story has used them, 0-based (decision
+/// log 2026-10-09, "Write-mode player revamp"): played lines carry a rail
+/// in the gutter; the active line — the one on screen in the Player — a
+/// band and a rail in the accent; a held line (stopped at, not yet
+/// played) the same in amber.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct Trail {
+    pub played: Vec<usize>,
+    pub active: Vec<usize>,
+    pub held: Option<usize>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct TrailColours {
+    played: Hsla,
+    active: Hsla,
+    held: Hsla,
+}
+
+/// The part of the story's trail in `path`, as lines of `text` (0-based).
+/// A source span can cover several lines (glue joins them), and each of
+/// them is marked.
+pub(crate) fn trail_in(trail: &crate::player::PlayTrail, path: &str, text: &str) -> Trail {
+    let line_of = |at: u32| {
+        text.get(..(at as usize).min(text.len()))
+            .map_or(0, |before| before.matches('\n').count())
+    };
+    let lines = |loc: &brink_gpui_model::query::Location| {
+        let first = line_of(loc.start);
+        let last = line_of(loc.end.saturating_sub(1).max(loc.start));
+        first..=last
+    };
+    let mut played: Vec<usize> = trail
+        .played
+        .iter()
+        .filter(|loc| loc.path == path)
+        .flat_map(lines)
+        .collect();
+    played.sort_unstable();
+    played.dedup();
+    Trail {
+        played,
+        active: trail
+            .active
+            .iter()
+            .filter(|loc| loc.path == path)
+            .flat_map(lines)
+            .collect(),
+        held: trail
+            .held
+            .as_ref()
+            .filter(|(p, _)| p == path)
+            .and_then(|(_, line)| (*line as usize).checked_sub(1)),
+    }
+}
+
+/// How a line stands on the trail; the held line wins, then the active.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Stand {
+    Played,
+    Active,
+    Held,
+}
+
+impl Trail {
+    fn stand(&self, line: usize) -> Option<Stand> {
+        if self.held == Some(line) {
+            Some(Stand::Held)
+        } else if self.active.contains(&line) {
+            Some(Stand::Active)
+        } else if self.played.binary_search(&line).is_ok() {
+            Some(Stand::Played)
+        } else {
+            None
+        }
+    }
 }
 
 impl Marks {
@@ -77,8 +161,44 @@ impl Marks {
     pub(crate) fn refresh(&self, project: &Project, path: &str, cx: &App) {
         *self.lines.borrow_mut() = project.breakpoints_in(path);
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
-        self.armed.set(brink_gpui_shell::theme::hsla(tokens.error));
-        self.play.set(brink_gpui_shell::theme::hsla(tokens.success));
+        let hsla = brink_gpui_shell::theme::hsla;
+        self.armed.set(hsla(tokens.error));
+        self.play.set(hsla(tokens.success));
+        self.trail_colours.set(TrailColours {
+            played: hsla(tokens.info).opacity(0.5),
+            active: hsla(tokens.accent),
+            held: hsla(tokens.warning),
+        });
+    }
+
+    /// Take this file's trail; `true` when it changed (the editor then
+    /// needs redrawing).
+    pub(crate) fn set_trail(&self, trail: Trail) -> bool {
+        if *self.trail.borrow() == trail {
+            return false;
+        }
+        *self.trail.borrow_mut() = trail;
+        true
+    }
+
+    /// A line's rail colour, if it is on the trail.
+    fn rail(&self, line: usize) -> Option<Hsla> {
+        let colours = self.trail_colours.get();
+        self.trail.borrow().stand(line).map(|stand| match stand {
+            Stand::Played => colours.played,
+            Stand::Active => colours.active,
+            Stand::Held => colours.held,
+        })
+    }
+
+    /// A line's band, if it has one: the active and held lines do.
+    fn band(&self, line: usize) -> Option<Hsla> {
+        let colours = self.trail_colours.get();
+        match self.trail.borrow().stand(line)? {
+            Stand::Played => None,
+            Stand::Active => Some(colours.active.opacity(0.16)),
+            Stand::Held => Some(colours.held.opacity(0.14)),
+        }
     }
 }
 
@@ -176,7 +296,19 @@ pub(crate) fn install(
                     .group_hover(GUTTER_MARK_GROUP, |s| s.visible())
                     .into_any_element(),
             };
-            cell.child(mark).into_any_element()
+            let rail = marks.rail(line).map(|colour| {
+                div()
+                    .absolute()
+                    .left_0()
+                    .top_0()
+                    .bottom_0()
+                    .w(px(RAIL))
+                    .bg(colour)
+            });
+            cell.relative()
+                .children(rail)
+                .child(mark)
+                .into_any_element()
         })
     };
     let on_click = {
@@ -209,8 +341,19 @@ pub(crate) fn install(
     );
     let colours = {
         let marks = marks.clone();
-        Rc::new(move |line: usize| (marks.at(line) == Some(true)).then(|| marks.armed.get()))
+        Rc::new(move |line: usize| {
+            if marks.at(line) == Some(true) {
+                return Some(marks.armed.get());
+            }
+            // The active and held lines' numbers take their rail's colour.
+            marks.band(line).and_then(|_| marks.rail(line))
+        })
     };
     state.set_line_number_colors(Some(colours), cx);
+    let bands = {
+        let marks = marks.clone();
+        Rc::new(move |line: usize| marks.band(line))
+    };
+    state.set_line_backgrounds(Some(bands), cx);
     marks
 }
