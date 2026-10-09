@@ -501,6 +501,14 @@ pub struct ProjectConfig {
     /// place, just a constructor-time default that had nowhere better to
     /// come from before this field existed.
     pub entry: Option<String>,
+    /// `[host] manifest`, if set (#1784, #3666; decision log 2026-10-09):
+    /// the host manifest's path, as written — relative to the directory of
+    /// this `brink.toml`. Same shape as [`Self::conventions`]: this crate
+    /// carries the raw string and neither resolves nor reads it (kept
+    /// dependency-free, #1234). Resolving and loading it is
+    /// `brink-environment`'s job (`load_host_manifest`), the one loader
+    /// every producer shares.
+    pub host_manifest: Option<String>,
 }
 
 impl ProjectConfig {
@@ -521,6 +529,7 @@ impl ProjectConfig {
             && self.prose_enable.is_none()
             && self.prose_dictionary.is_empty()
             && self.dialogue.is_none()
+            && self.host_manifest.is_none()
     }
 
     /// The effective `[fix]` policy for `code` (`docs/autofix-spec.md` §6,
@@ -796,6 +805,8 @@ pub fn parse_str_at(
             }
         } else if key == "fix" {
             parse_fix_table(&path, value, &mut config)?;
+        } else if key == "host" {
+            parse_host_table(&path, value, &mut config, &mut warnings)?;
         } else {
             warnings.push(ConfigWarning(format!(
                 "unknown top-level key `{key}` in {CONFIG_FILE_NAME} (ignored)"
@@ -1058,6 +1069,50 @@ fn parse_dialogue_element(
         });
     }
     Ok(el)
+}
+
+/// `[host]`: what the project's host tells brink about itself. One key so
+/// far, `manifest`; the table leaves room for the rest of that relationship
+/// (bevy-brink reads the same manifest file for its `effects`). Takes the
+/// raw value and checks its table shape itself, as [`parse_fix_table`]
+/// does, so [`parse_str_at`]'s dispatch stays one line per table.
+fn parse_host_table(
+    path: &str,
+    value: &Value,
+    config: &mut ProjectConfig,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<(), ConfigError> {
+    let Value::Table(host) = value else {
+        return Err(ConfigError::NotATable {
+            path: path.to_owned(),
+            key: "host".to_owned(),
+            found: value_type_name(value),
+        });
+    };
+    for (hkey, hvalue) in host {
+        match hkey.as_str() {
+            "manifest" => {
+                let raw = hvalue.as_str().ok_or_else(|| ConfigError::WrongType {
+                    path: path.to_owned(),
+                    key: format!("host.{hkey}"),
+                    found: value_type_name(hvalue),
+                })?;
+                if raw.trim().is_empty() {
+                    return Err(ConfigError::InvalidValue {
+                        path: path.to_owned(),
+                        key: format!("host.{hkey}"),
+                        expected: &["a path to the manifest's JSON file"],
+                        found: format!("{raw:?}"),
+                    });
+                }
+                config.host_manifest = Some(raw.to_owned());
+            }
+            _ => warnings.push(ConfigWarning(format!(
+                "unknown key `host.{hkey}` in {CONFIG_FILE_NAME} (ignored)"
+            ))),
+        }
+    }
+    Ok(())
 }
 
 fn parse_prose_table(
@@ -1777,6 +1832,39 @@ mod tests {
         assert_eq!(config.prose_dialect, Some(ProseDialect::British));
         assert_eq!(config.prose_enable, Some(true));
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    #[test]
+    fn parses_the_host_manifest_path_as_written() {
+        let (config, warnings) =
+            parse_str("[host]\nmanifest = \"../build/host-manifest.json\"\n").expect("valid");
+        assert_eq!(
+            config.host_manifest.as_deref(),
+            Some("../build/host-manifest.json"),
+            "carried raw: resolving it is brink-environment's job"
+        );
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.is_empty(), "a manifest alone is a config");
+    }
+
+    #[test]
+    fn a_host_manifest_must_be_a_non_empty_string() {
+        let err = parse_str("[host]\nmanifest = 3\n").expect_err("not a string");
+        assert!(err.to_string().contains("host.manifest"), "{err}");
+        let err = parse_str("[host]\nmanifest = \"  \"\n").expect_err("empty");
+        assert!(err.to_string().contains("host.manifest"), "{err}");
+        let err = parse_str("host = \"x.json\"\n").expect_err("not a table");
+        assert!(err.to_string().contains("host"), "{err}");
+    }
+
+    #[test]
+    fn an_unknown_host_key_is_a_warning() {
+        let (config, warnings) = parse_str("[host]\nmanifests = [\"a.json\"]\n").expect("valid");
+        assert_eq!(config.host_manifest, None);
+        assert!(
+            warnings.iter().any(|w| w.0.contains("host.manifests")),
+            "{warnings:?}"
+        );
     }
 
     #[test]

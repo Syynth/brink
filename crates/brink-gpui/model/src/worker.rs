@@ -102,6 +102,10 @@ pub enum Request {
     /// A file left the project: forget it. A rename is a `RemoveFile`
     /// then an `AddFile`, in that order.
     RemoveFile { path: String },
+    /// A file the config reads (an artifact) is gone from disk: drop what
+    /// the worker held for it and apply the config again, which now finds
+    /// it missing. Not a `RemoveFile`, which is about sources.
+    ArtifactRemoved { path: String },
     /// The app's prose options — today the grammar checked while typing
     /// (`AppSettings.prose_grammar`). Kept across `Open`: they belong to
     /// this machine, not to the project. Changes no text, so it produces
@@ -156,6 +160,11 @@ pub struct Opened {
     /// config: editable, saveable, and listed in the Binder, but never in
     /// `files`, because they are not sources.
     pub artifacts: Vec<(String, String)>,
+    /// Every file the config tried to read, sorted — `artifacts`' keys plus
+    /// the ones that were not there (a host manifest the host has not
+    /// generated yet). The watcher follows these, so a file appearing,
+    /// changing or vanishing on disk applies the config again (#3666).
+    pub config_reads: Vec<String>,
     /// The project's `brink.toml`, if it has one — a file the mirror holds
     /// in the shared buffer like any other, so Settings' Project sections
     /// and a raw editor over it are views of one text. Not in `files`: it
@@ -232,6 +241,9 @@ pub struct Analyzed {
     pub dialogue: Option<brink_ir::DialogueDialect>,
     /// Why `[dialogue]` did not resolve, if it did not.
     pub dialogue_error: Option<String>,
+    /// [`Opened::config_reads`] as the config now applied has them: an
+    /// edit to `brink.toml` can name a different manifest.
+    pub config_reads: Vec<String>,
     pub elapsed_ms: f64,
 }
 
@@ -535,6 +547,12 @@ fn run(
                     files.retain(|f| f != &path);
                     edited = true;
                 }
+                Request::ArtifactRemoved { path } => {
+                    config.artifacts.remove(&path);
+                    let current = config.text.clone();
+                    apply_config_text(&mut session, &mut config, &current);
+                    edited = true;
+                }
                 Request::SetProseOptions { grammar: chosen } => grammar = chosen,
                 Request::CheckGrammar { path, start, end } => {
                     grammar_checks.push((path, start, end));
@@ -744,6 +762,7 @@ fn open(
             entry: state.entry.clone(),
             warnings,
             artifacts,
+            config_reads: state.read_artifacts.iter().cloned().collect(),
             config,
             elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
         },
@@ -851,6 +870,26 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 Some(&config_dir),
                 &read_file,
             ));
+            // The host manifest `[host] manifest` names (#3666), through
+            // the loader every producer shares — read like any file the
+            // config points at, so an unsaved edit to it, or the host
+            // rewriting it on disk, applies here. A manifest that cannot be
+            // loaded is a warning on `brink.toml`, and analysis goes on
+            // without one (decision log 2026-10-09).
+            let manifest = brink_environment::load_host_manifest(&config, &path, &|key| {
+                read_file(key).ok_or_else(|| "no such file".to_owned())
+            })
+            .unwrap_or_else(|e| {
+                warnings.push(e.to_string());
+                None
+            });
+            // Only when it moved: setting it re-analyses (#2966).
+            if session.analysis_options().host_manifest != manifest {
+                match manifest {
+                    Some(manifest) => session.set_host_manifest(manifest),
+                    None => session.clear_host_manifest(),
+                }
+            }
             state.entry = state
                 .explicit_entry
                 .clone()
@@ -1015,6 +1054,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
         config_warnings: config.warnings.clone(),
+        config_reads: config.read_artifacts.iter().cloned().collect(),
         draft_globs: report
             .globs
             .into_iter()
@@ -2320,6 +2360,96 @@ mod tests {
             !opened.files.iter().any(|f| f == "dialect.json"),
             "an artifact is not a source"
         );
+    }
+
+    /// An undeclared `<shake>`: silent while markup is freeform, `E164`
+    /// once a host manifest declares a vocabulary without it.
+    const SHAKE: &str = "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n";
+    const HOST_TOML: &str = "[project]\ndialect = \"brink\"\nentry = \"story.brink\"\n\n[host]\nmanifest = \"build/host.json\"\n";
+    const MARKUP_B: &str = r#"{ "markup": [{ "name": "b" }] }"#;
+
+    fn codes_in(analyzed: &Analyzed, path: &str) -> Vec<String> {
+        analyzed
+            .diagnostics
+            .get(path)
+            .map(|diags| diags.iter().map(|d| d.code.clone()).collect())
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn the_manifest_brink_toml_names_reaches_analysis() {
+        let tree = Tree::new(
+            "host-manifest",
+            &[
+                ("brink.toml", HOST_TOML),
+                ("story.brink", SHAKE),
+                ("build/host.json", MARKUP_B),
+            ],
+        );
+        let (mut session, opened, state) = open_tree_with_config(&tree);
+        assert!(
+            opened.config_reads.iter().any(|r| r == "build/host.json"),
+            "the watcher follows it: {:?}",
+            opened.config_reads
+        );
+        assert!(
+            opened.artifacts.iter().any(|(p, _)| p == "build/host.json"),
+            "and the mirror holds it like any file the config points at"
+        );
+        let analyzed = analyze(&mut session, &state, 1);
+        assert!(
+            codes_in(&analyzed, "story.brink").contains(&"E164".to_owned()),
+            "{:?}",
+            analyzed.diagnostics
+        );
+    }
+
+    #[test]
+    fn a_manifest_that_appears_later_applies_and_one_that_goes_warns() {
+        let tree = Tree::new(
+            "host-manifest-later",
+            &[("brink.toml", HOST_TOML), ("story.brink", SHAKE)],
+        );
+        let (mut session, opened, mut state) = open_tree_with_config(&tree);
+        assert!(
+            opened.config_reads.iter().any(|r| r == "build/host.json"),
+            "followed although it is not there yet: {:?}",
+            opened.config_reads
+        );
+        let analyzed = analyze(&mut session, &state, 1);
+        assert!(
+            analyzed
+                .config_warnings
+                .iter()
+                .any(|w| w.contains("build/host.json")),
+            "a warning on brink.toml, not a failure: {:?}",
+            analyzed.config_warnings
+        );
+        assert!(!codes_in(&analyzed, "story.brink").contains(&"E164".to_owned()));
+
+        // The host writes it: the project hands the worker the text, as an
+        // edit to a file the config reads.
+        state
+            .artifacts
+            .insert("build/host.json".to_owned(), MARKUP_B.to_owned());
+        let text = state.text.clone();
+        apply_config_text(&mut session, &mut state, &text);
+        let analyzed = analyze(&mut session, &state, 2);
+        assert!(
+            analyzed.config_warnings.is_empty(),
+            "{:?}",
+            analyzed.config_warnings
+        );
+        assert!(codes_in(&analyzed, "story.brink").contains(&"E164".to_owned()));
+
+        // And it goes again (`Request::ArtifactRemoved`): the warning is
+        // back and the manifest's checks with it are gone.
+        state.artifacts.remove("build/host.json");
+        let text = state.text.clone();
+        apply_config_text(&mut session, &mut state, &text);
+        let analyzed = analyze(&mut session, &state, 3);
+        assert!(!analyzed.config_warnings.is_empty());
+        assert!(!codes_in(&analyzed, "story.brink").contains(&"E164".to_owned()));
     }
 
     #[test]

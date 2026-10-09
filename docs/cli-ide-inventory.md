@@ -143,7 +143,7 @@ script can decide for itself regardless of exit code.
 |---|---|---|
 | `brink ide hover <sym\|--at>` | `hover::hover` → `HoverInfo{content(markdown),range}` | Kind tag + signature + initializer + `///` docs + "Defined in `path`". Resolution wins; falls back to builtin docs only when the symbol at `offset` doesn't resolve to a declaration (issue #2864). |
 | `brink ide signature --at FILE:L:C` | `signature::signature_help` → `SignatureInfo{label,parameters[],active_parameter,documentation}` | Signature of the innermost active call; position-only (it's mid-call). |
-| `brink ide values --at FILE:L:C` | `signature::argument_value_completions` | Pickable values for the argument's semantic type (manifest `--manifest`, host values N/A from CLI). |
+| `brink ide values --at FILE:L:C` | `signature::argument_value_completions` | Pickable values for the argument's semantic type (manifest from `brink.toml`'s `[host] manifest`; host values N/A from CLI). |
 | `brink ide complete --at FILE:L:C` | `completion::detect_completion_context` + `is_visible_in_context` | The symbols valid at a position (divert targets / expr / logic / args / general). Niche for CLI; useful for editor backends. |
 
 ## 4. Diagnostics (read)
@@ -223,8 +223,12 @@ These exist for editors and have little standalone CLI use; expose behind a
    in the baseline (precise, proposed) vs a raw count increase (cheaper but noisier
    under shifting offsets).
 6. Structural refactors in v1 vs deferred to Phase 3 (proposed: defer).
-7. Manifest input: how the CLI supplies a host manifest (`--manifest file.json`)
-   for type-aware queries (hover types, value completions, external checks).
+7. ~~Manifest input: how the CLI supplies a host manifest (`--manifest file.json`)
+   for type-aware queries (hover types, value completions, external checks).~~
+   **Resolved 2026-10-09 (#1784):** from `brink.toml`'s `[host] manifest`,
+   loaded by `brink_environment::load_host_manifest` for `brink ide` as for
+   `brink build`. No `--manifest` flag exists; one would be the CLI's override
+   tier, if ever wanted.
 
 Resolved: labels addressed by ink's dotted path (`knot.stitch.label`); params by
 `fn(param)`. Mutation safety is mode-coupled — **preview** always shows edits +

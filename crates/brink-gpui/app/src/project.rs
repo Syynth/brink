@@ -135,6 +135,10 @@ pub fn diff(old: &str, new: &str) -> Option<SourceDelta> {
 /// The mirror.
 pub struct Project {
     worker: Worker,
+    /// Every file the applied config reads — `[dialogue]`'s, the host
+    /// manifest (#3666) — present on disk or not. The watcher follows
+    /// these, and a change to one is the config's, not a new source.
+    config_reads: BTreeSet<String>,
     /// The grammar last sent to the worker, so a settings change that
     /// moved something else does not re-check every open file.
     prose_grammar: brink_gpui_model::prose::Grammar,
@@ -354,6 +358,7 @@ impl Project {
         });
         Self {
             worker,
+            config_reads: BTreeSet::new(),
             prose_grammar,
             root: PathBuf::new(),
             files: Vec::new(),
@@ -423,6 +428,7 @@ impl Project {
                         self.sources.insert(config.path, config.text);
                     }
                     self.artifacts = opened.artifacts.iter().map(|(p, _)| p.clone()).collect();
+                    self.config_reads = opened.config_reads.into_iter().collect();
                     for (path, text) in opened.artifacts {
                         self.sources.insert(path, text);
                     }
@@ -457,6 +463,7 @@ impl Project {
                 cx.emit(ProjectEvent::GrammarChecked { path, outcome });
             }
             Response::Analyzed(analyzed) => {
+                self.config_reads = analyzed.config_reads.into_iter().collect();
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;
                 self.cues = analyzed.cues;
@@ -1260,6 +1267,13 @@ impl Project {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
     }
 
+    /// Whether `path` is a file the applied config reads, on disk or not —
+    /// what the watcher follows besides sources and the config itself.
+    #[must_use]
+    pub fn reads_config(&self, path: &str) -> bool {
+        self.config_reads.contains(path)
+    }
+
     /// Apply what happened to these paths on disk.
     ///
     /// The policy is `watch::classify`'s and the web studio's: a change
@@ -1271,6 +1285,31 @@ impl Project {
         let mut files_changed = false;
         for path in paths {
             let disk = std::fs::read_to_string(self.root.join(path)).ok();
+            // A file the config reads that the project does not hold — a
+            // host manifest generated after the project opened, or one gone
+            // since. It is the config's, never a source: tell the worker,
+            // which applies the config again (#3666).
+            if self.config_reads.contains(path) && !self.sources.contains_key(path) {
+                if let Some(text) = disk {
+                    self.sources.insert(path.clone(), text.clone());
+                    self.saved.insert(path.clone(), text.clone());
+                    if !self.artifacts.contains(path) {
+                        self.artifacts.push(path.clone());
+                        self.artifacts.sort();
+                        files_changed = true;
+                    }
+                    // A new revision, as every edit has, so the analysis it
+                    // causes is told apart from the one before it.
+                    self.revision += 1;
+                    self.worker.send(Request::Edit {
+                        path: path.clone(),
+                        text,
+                        revision: self.revision,
+                    });
+                    reports.push(DiskReport::Appeared(path.clone()));
+                }
+                continue;
+            }
             let change = crate::watch::classify(
                 self.saved.get(path).map(String::as_str),
                 self.sources.get(path).map(String::as_str),
@@ -1303,7 +1342,14 @@ impl Project {
                     self.sources.remove(path);
                     self.saved.remove(path);
                     self.files.retain(|f| f != path);
-                    self.worker.send(Request::RemoveFile { path: path.clone() });
+                    if self.artifacts.contains(path) {
+                        // The config's file, not a source (#3666).
+                        self.artifacts.retain(|a| a != path);
+                        self.worker
+                            .send(Request::ArtifactRemoved { path: path.clone() });
+                    } else {
+                        self.worker.send(Request::RemoveFile { path: path.clone() });
+                    }
                     files_changed = true;
                     reports.push(DiskReport::Vanished {
                         path: path.clone(),

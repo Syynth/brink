@@ -601,6 +601,10 @@ fn compile_entry(
         lints,
         deny_warnings,
         debug_info,
+        // The file `[host] manifest` names (#1784): a build is a tooling
+        // mount, and one whose manifest cannot be loaded fails here rather
+        // than quietly stop enforcing what it gates.
+        host_manifest: brink_environment::ManifestSource::FromConfig,
     };
     let env = brink_environment::Project::load(&tree, &entry_key, &overrides)?;
     brink_environment::compile(&env).map_err(render_fatal_compile_error)

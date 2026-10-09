@@ -137,6 +137,13 @@ pub struct LanguageOptions {
     /// was reachable only through a `brink-db` query this loop never calls.
     /// Mirrors `dialect`/`types`/`lints` exactly.
     conventions: Arc<Mutex<Option<String>>>,
+    /// The host manifest `brink.toml`'s `[host] manifest` names (#3666),
+    /// loaded through `brink_environment::load_host_manifest` — the loader
+    /// the CLI's build uses too, so the two agree on what it means.
+    /// `None` when the file names none, or when it could not be loaded
+    /// (that is a warning on `brink.toml`, and analysis carries on as if no
+    /// manifest were registered: decision log 2026-10-09).
+    host_manifest: Arc<Mutex<Option<brink_ir::HostManifest>>>,
 }
 
 impl LanguageOptions {
@@ -146,6 +153,7 @@ impl LanguageOptions {
             types: Arc::new(Mutex::new(None)),
             lints: Arc::new(Mutex::new(LintPolicy::default())),
             conventions: Arc::new(Mutex::new(None)),
+            host_manifest: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -161,15 +169,15 @@ impl LanguageOptions {
     /// `IdeSession::analysis_options`/`IdeSession::apply_analysis_options`
     /// use — issue #2334's shared-seam fix applied to this crate's own
     /// producer, which has no `IdeSession` to route through (`LanguageOptions`
-    /// carries no `host_manifest`/`external_check`/`semantic_type_check`
-    /// fields at all — brink-lsp has no host-manifest/external-check surface
-    /// today). Adding a new `AnalysisOptions` field breaks this match until
+    /// carries no `external_check`/`semantic_type_check` fields — brink-lsp
+    /// has no surface for those; the host manifest it does carry, from
+    /// `brink.toml`, #3666). Adding a new `AnalysisOptions` field breaks this match until
     /// it's given an explicit `_` (deliberately unsupported here) or a real
     /// field to carry it in, rather than silently vanishing at this exact
     /// point the way `conventions` did three times running (#1880/#2317).
     fn store(&self, resolved: AnalysisOptions) {
         let AnalysisOptions {
-            host_manifest: _,
+            host_manifest,
             external_check: _,
             semantic_type_check: _,
             dialect,
@@ -194,6 +202,9 @@ impl LanguageOptions {
         if let Ok(mut guard) = self.conventions.lock() {
             *guard = conventions;
         }
+        if let Ok(mut guard) = self.host_manifest.lock() {
+            *guard = host_manifest;
+        }
     }
 
     /// Read the currently stored dialect/types/lints/conventions back into a
@@ -205,16 +216,20 @@ impl LanguageOptions {
     /// `analysis_loop` actually calls — had none (issue #2320's ask (d)):
     /// a future field silently dropped here would regress exactly the way
     /// `conventions` did three times on the write side before #1880/#2316,
-    /// with nothing to catch it. `host_manifest`/`external_check`/
-    /// `semantic_type_check` genuinely have no brink-lsp-side source today
-    /// (see [`Self::store`]'s own doc) — explicit defaults here too, not an
+    /// with nothing to catch it. `external_check`/`semantic_type_check`
+    /// genuinely have no brink-lsp-side source today (see [`Self::store`]'s
+    /// own doc) — explicit defaults here too, not an
     /// implicit `..`, for the same reason `store`'s exhaustive destructure
     /// exists: the next field brink-lsp *does* need to forward breaks this
     /// construction until it's given a real source, rather than silently
     /// defaulting forever.
     fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
-            host_manifest: None,
+            host_manifest: self
+                .host_manifest
+                .lock()
+                .map(|guard| guard.clone())
+                .unwrap_or_default(),
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
             // D6 (`docs/debugger-spec.md` §1.2): no brink-lsp-side source
@@ -423,6 +438,14 @@ pub struct Backend {
     /// the `InitializeResult`, which the `initialized` notification confirms
     /// receipt of (#1055 gap 1).
     initial_config_outcome: Arc<Mutex<Option<ConfigLoadOutcome>>>,
+    /// The host manifest file currently watched (#3666), so a reload knows
+    /// whether `[host] manifest` moved and the watcher must follow it.
+    manifest_watched: Arc<Mutex<Option<PathBuf>>>,
+    /// Whether the client takes `RelativePattern` watchers
+    /// (`workspace.didChangeWatchedFiles.relativePatternSupport`): the
+    /// manifest may live outside every workspace folder, and a pattern
+    /// based at its own directory is the portable way to watch it there.
+    relative_patterns: Arc<std::sync::atomic::AtomicBool>,
     /// The undeclared-rename-detection baseline per file (issue #1672 part
     /// 2, docs/modules-spec.md §5): both `publish_perfile_diagnostics` and
     /// the background [`analysis_loop`]'s `publish_all_diagnostics` diff a
@@ -511,6 +534,8 @@ impl Backend {
             language,
             config_overrides: Arc::new(Mutex::new(ConfigOverrides::default())),
             initial_config_outcome: Arc::new(Mutex::new(None)),
+            manifest_watched: Arc::new(Mutex::new(None)),
+            relative_patterns: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             previous_manifests,
         }
     }
@@ -589,6 +614,70 @@ impl Backend {
     /// (#1055 gap 1, see [`resolve_language_options`]). Does not itself call
     /// [`Self::trigger_analysis`] — callers trigger re-analysis themselves,
     /// alongside whatever else their notification handler already does.
+    /// Watch the host manifest file `outcome` names (#3666), replacing
+    /// whatever was watched before — only when it moved. The watcher is
+    /// its own registration, apart from the source/`brink.toml` one, so
+    /// following the manifest never re-registers those. Fire-and-forget,
+    /// like that registration: some test clients never answer a
+    /// server-initiated request.
+    fn watch_manifest(&self, outcome: &ConfigLoadOutcome) {
+        let next = outcome.manifest_path.clone();
+        {
+            let mut watched = match self.manifest_watched.lock() {
+                Ok(guard) => guard,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            if *watched == next {
+                return;
+            }
+            watched.clone_from(&next);
+        }
+        let relative = self
+            .relative_patterns
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let client = self.client.clone();
+        tokio::spawn(async move {
+            const ID: &str = "brink-host-manifest-watcher";
+            const METHOD: &str = "workspace/didChangeWatchedFiles";
+            // Nothing registered yet is an error the client may report;
+            // it changes nothing.
+            let _ = client
+                .unregister_capability(vec![tower_lsp::lsp_types::Unregistration {
+                    id: ID.to_owned(),
+                    method: METHOD.to_owned(),
+                }])
+                .await;
+            let Some(path) = next else {
+                return;
+            };
+            let Some(watcher) = manifest_watcher(&path, relative) else {
+                return;
+            };
+            let registration = Registration {
+                id: ID.to_owned(),
+                method: METHOD.to_owned(),
+                register_options: serde_json::to_value(
+                    tower_lsp::lsp_types::DidChangeWatchedFilesRegistrationOptions {
+                        watchers: vec![watcher],
+                    },
+                )
+                .ok(),
+            };
+            if let Err(e) = client.register_capability(vec![registration]).await {
+                tracing::warn!("failed to watch the host manifest: {e}");
+            }
+        });
+    }
+
+    /// Whether `path` is the host manifest file being watched.
+    fn is_manifest_path(&self, path: &str) -> bool {
+        let watched = match self.manifest_watched.lock() {
+            Ok(guard) => guard.clone(),
+            Err(poisoned) => poisoned.into_inner().clone(),
+        };
+        watched.is_some_and(|w| std::path::Path::new(path) == w)
+    }
+
     async fn reload_brink_toml(&self) {
         let roots = match self.workspace_roots.lock() {
             Ok(guard) => guard.clone(),
@@ -607,6 +696,7 @@ impl Backend {
         // every native module name would stay pinned to whatever root the
         // session started with.
         self.register_native_root(&roots, &outcome);
+        self.watch_manifest(&outcome);
 
         self.publish_config_outcome(&outcome).await;
     }
@@ -1214,6 +1304,39 @@ struct ConfigLoadOutcome {
     /// `indent`, which is the shared `DEFAULT_INDENT`, not a default of this
     /// crate's own (ruled 2026-08-27).
     format: brink_fmt::FormatConfig,
+    /// The file `[host] manifest` names, resolved (#3666) — watched whether
+    /// or not it loaded, so a manifest that appears later, or is rewritten
+    /// by the host that generates it, is picked up without a restart.
+    manifest_path: Option<PathBuf>,
+}
+
+/// A host manifest `brink.toml` names that could not be loaded (#3666), as
+/// a WARNING on `brink.toml`, at the `manifest` line when it can be found:
+/// an editor carries on without the manifest (decision log 2026-10-09) — a
+/// host may be part-way through rewriting a file it regenerates — while the
+/// CLI's build fails on the same error.
+fn manifest_error_diagnostic(
+    error: &brink_environment::HostManifestError,
+    toml: &str,
+) -> tower_lsp::lsp_types::Diagnostic {
+    let line = toml
+        .lines()
+        .position(|l| {
+            let l = l.trim_start();
+            l.starts_with("manifest") && l["manifest".len()..].trim_start().starts_with('=')
+        })
+        .and_then(|n| u32::try_from(n).ok());
+    let range = line.map_or_else(Range::default, |n| Range {
+        start: Position::new(n, 0),
+        end: Position::new(n + 1, 0),
+    });
+    tower_lsp::lsp_types::Diagnostic {
+        range,
+        severity: Some(convert::severity_to_lsp(brink_ir::Severity::Warning)),
+        source: Some("brink.toml".to_owned()),
+        message: error.to_string(),
+        ..Default::default()
+    }
 }
 
 /// Best-effort byte-span → LSP range for a `ConfigError` (malformed TOML
@@ -1267,6 +1390,41 @@ fn config_error_diagnostic(
         message: error.to_string(),
         ..Default::default()
     }
+}
+
+/// Whether the client takes `RelativePattern` file watchers
+/// (`workspace.didChangeWatchedFiles.relativePatternSupport`) — how the host
+/// manifest is watched outside every workspace folder (#3666).
+fn takes_relative_patterns(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|w| w.did_change_watched_files.as_ref())
+        .and_then(|d| d.relative_pattern_support)
+        .unwrap_or(false)
+}
+
+/// The watcher for one host manifest file: a pattern based at its own
+/// directory when the client takes those (the file may sit outside every
+/// workspace folder, in a build-output directory), else its absolute path
+/// as a glob. `None` for a path with no directory or file name to watch.
+fn manifest_watcher(path: &std::path::Path, relative: bool) -> Option<FileSystemWatcher> {
+    let glob_pattern = if relative {
+        let dir = path.parent()?;
+        let name = path.file_name()?.to_string_lossy().into_owned();
+        let base = Url::from_directory_path(dir).ok()?;
+        GlobPattern::Relative(tower_lsp::lsp_types::RelativePattern {
+            base_uri: tower_lsp::lsp_types::OneOf::Right(base),
+            pattern: name,
+        })
+    } else {
+        GlobPattern::String(path.to_string_lossy().replace('\\', "/"))
+    };
+    Some(FileSystemWatcher {
+        glob_pattern,
+        kind: None,
+    })
 }
 
 /// Resolve the effective dialect/types policy for this session, reconciling
@@ -1343,6 +1501,26 @@ fn resolve_language_options(
                             );
                             for warning in &lint_warnings {
                                 tracing::warn!("[{}] {warning}", path.display());
+                            }
+                            // The host manifest (#3666), through the one
+                            // loader every producer shares. Forward slashes,
+                            // the separator that loader resolves against.
+                            let config_path = path.to_string_lossy().replace('\\', "/");
+                            if let Some(written) = config.host_manifest.as_deref() {
+                                outcome.manifest_path = Some(PathBuf::from(
+                                    brink_environment::host_manifest_path(&config_path, written),
+                                ));
+                            }
+                            match brink_environment::load_host_manifest(
+                                &config,
+                                &config_path,
+                                &|file| std::fs::read_to_string(file).map_err(|e| e.to_string()),
+                            ) {
+                                Ok(manifest) => options.host_manifest = manifest,
+                                Err(e) => {
+                                    tracing::warn!("{e}");
+                                    outcome.diagnostic = Some(manifest_error_diagnostic(&e, &text));
+                                }
                             }
                         }
                         Err(e) => {
@@ -1535,6 +1713,10 @@ impl LanguageServer for Backend {
         // sending notifications before this handler returns its
         // `InitializeResult`, so `initialized()` publishes it instead.
         let overrides = ConfigOverrides::from_initialize_params(&params);
+        self.relative_patterns.store(
+            takes_relative_patterns(&params),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let (resolved, outcome) = resolve_language_options(&overrides, &roots);
         self.language.store(resolved);
         // #1572: declare the native source root before any file is loaded, so
@@ -1666,6 +1848,8 @@ impl LanguageServer for Backend {
             .ok()
             .and_then(|mut guard| guard.take());
         if let Some(outcome) = stashed_outcome {
+            // Registrations wait for `initialized`, like the publish.
+            self.watch_manifest(&outcome);
             self.publish_config_outcome(&outcome).await;
         }
 
@@ -1734,6 +1918,16 @@ impl LanguageServer for Backend {
             let Some(path) = Self::uri_to_path(&change.uri) else {
                 continue;
             };
+
+            // The host manifest (#3666): every change type re-resolves, the
+            // same as an edit to `brink.toml` itself. Content that did not
+            // change re-analyzes nothing — the options compare equal, and
+            // each project's db only takes options that differ.
+            if self.is_manifest_path(&path) {
+                self.reload_brink_toml().await;
+                changed = true;
+                continue;
+            }
 
             if is_brink_toml_path(&path) {
                 // brink.toml isn't tracked in `ProjectDb` (it's not source —
@@ -3764,10 +3958,11 @@ mod tests {
     use rowan::{TextRange, TextSize};
 
     use super::{
-        AnalysisOptions, ConfigLoadOutcome, ConfigOverrides, LanguageOptions, LineIndex,
-        PublishDecision, PublishRecord, PublishTier, collect_source_files, config_error_diagnostic,
-        fix_all_workspace_edit, is_native_path, is_source_path, native_source_root,
-        path_under_ignored_dir, publish_decision, rename_suspicion_diags, resolve_language_options,
+        AnalysisOptions, ConfigLoadOutcome, ConfigOverrides, GlobPattern, LanguageOptions,
+        LineIndex, PublishDecision, PublishRecord, PublishTier, collect_source_files,
+        config_error_diagnostic, convert, fix_all_workspace_edit, is_native_path, is_source_path,
+        manifest_watcher, native_source_root, path_under_ignored_dir, publish_decision,
+        rename_suspicion_diags, resolve_language_options,
     };
 
     /// A unique per-test scratch directory under the OS temp dir, mirroring
@@ -4109,6 +4304,105 @@ mod tests {
     /// into a fresh `LanguageOptions`, must be readable back out — a
     /// regression test for this exact fix, not just the pre-existing
     /// resolution.
+    #[test]
+    fn resolve_language_options_loads_the_host_manifest_and_store_carries_it() {
+        let root = temp_dir("host-manifest-load");
+        std::fs::create_dir_all(root.join("build")).expect("mkdir");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[host]\nmanifest = \"build/host.json\"\n",
+        )
+        .expect("write brink.toml");
+        std::fs::write(
+            root.join("build/host.json"),
+            r#"{ "types": [{ "name": "Mood", "base": "string" }] }"#,
+        )
+        .expect("write manifest");
+
+        let (resolved, outcome) =
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&root));
+        assert!(outcome.diagnostic.is_none(), "{:?}", outcome.diagnostic);
+        assert_eq!(
+            outcome.manifest_path.as_deref(),
+            Some(root.join("build/host.json").as_path()),
+            "the resolved path, for the watcher"
+        );
+        assert_eq!(
+            resolved
+                .host_manifest
+                .as_ref()
+                .map(|m| m.types[0].name.as_str()),
+            Some("Mood")
+        );
+
+        let language = LanguageOptions::new();
+        language.store(resolved);
+        let read_back = language.analysis_options().host_manifest;
+        assert_eq!(
+            read_back.map(|m| m.types[0].name.clone()).as_deref(),
+            Some("Mood"),
+            "store and analysis_options carry it to every analysis pass"
+        );
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn a_missing_host_manifest_is_a_warning_at_its_line_and_still_watched() {
+        let root = temp_dir("host-manifest-missing");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\n\n[host]\nmanifest = \"build/host.json\"\n",
+        )
+        .expect("write brink.toml");
+
+        let (resolved, outcome) =
+            resolve_language_options(&ConfigOverrides::default(), std::slice::from_ref(&root));
+        assert_eq!(resolved.host_manifest, None, "carries on without one");
+        assert_eq!(
+            resolved.dialect,
+            Dialect::Brink,
+            "and the rest of the file still applies"
+        );
+        assert!(
+            outcome.manifest_path.is_some(),
+            "watched anyway, so it is picked up when it appears"
+        );
+        let diag = outcome.diagnostic.expect("a warning on brink.toml");
+        assert_eq!(
+            diag.severity,
+            Some(convert::severity_to_lsp(brink_ir::Severity::Warning)),
+            "editors warn; the CLI's build is what fails"
+        );
+        assert_eq!(diag.range.start.line, 4, "on the `manifest = ` line");
+        assert!(diag.message.contains("build/host.json"), "{}", diag.message);
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn the_manifest_watcher_is_based_at_its_directory_where_the_client_allows() {
+        let path = std::path::Path::new("/proj/build/host.json");
+        let relative = manifest_watcher(path, true).expect("watchable");
+        assert!(
+            matches!(
+                &relative.glob_pattern,
+                GlobPattern::Relative(pattern)
+                    if pattern.pattern == "host.json"
+                        && matches!(
+                            &pattern.base_uri,
+                            tower_lsp::lsp_types::OneOf::Right(url) if url.path() == "/proj/build/"
+                        )
+            ),
+            "a pattern based at the manifest's own directory: {:?}",
+            relative.glob_pattern
+        );
+        let absolute = manifest_watcher(path, false).expect("watchable");
+        assert!(
+            matches!(&absolute.glob_pattern, GlobPattern::String(p) if p == "/proj/build/host.json"),
+            "{:?}",
+            absolute.glob_pattern
+        );
+    }
+
     #[test]
     fn resolve_language_options_conventions_pointer_survives_store() {
         let root = temp_dir("conventions-store");

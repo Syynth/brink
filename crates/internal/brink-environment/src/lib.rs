@@ -54,8 +54,8 @@ use std::sync::Arc;
 
 use brink_compiler::{CompileError, CompileOutput, ResolvedDiagnostic};
 use brink_driver::{AnalysisOptions, Dialect, Driver, LintLevel, TypePolicy};
-use brink_ir::Diagnostic;
-use brink_project_config::{ConfigError, discover_from_entry_in_tree, parse_str_at};
+use brink_ir::{Diagnostic, HostManifest};
+use brink_project_config::{ConfigError, ProjectConfig, discover_from_entry_in_tree, parse_str_at};
 use brink_source_tree::SourceTree;
 
 // ── Content addressing ───────────────────────────────────────────────
@@ -268,6 +268,30 @@ pub struct OptionOverrides {
     /// there is no "caller didn't say" case to distinguish from "caller
     /// said off." `false` (the `Default`) never turns the section on.
     pub debug_info: bool,
+    /// Where the host manifest comes from (#1784; decision log 2026-10-09):
+    /// the file `brink.toml` names, by default, or one the caller registers
+    /// — which wins — or none at all, for a mount that is not a tooling
+    /// mount.
+    pub host_manifest: ManifestSource,
+}
+
+/// Where [`Project::load`] takes the host manifest from.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub enum ManifestSource {
+    /// The file `brink.toml`'s `[host] manifest` names, read through the
+    /// same tree as the sources. Named but unreadable or malformed is a
+    /// [`LoadError::HostManifest`]: a build must not quietly stop enforcing
+    /// what the manifest gates (E164/E165, externals).
+    #[default]
+    FromConfig,
+    /// A manifest the caller registered through an API — it wins over the
+    /// file, which is then not read at all ("explicit API wins").
+    Registered(HostManifest),
+    /// Do not load one. For mounts the manifest is not meant for: the
+    /// manifest is tooling-only, "never the runtime" (decision log, Track
+    /// B), so a game loading its story (`bevy-brink`) has no use for it,
+    /// and its asset tree need not hold the file.
+    NotLoaded,
 }
 
 // ── The effectful producer ───────────────────────────────────────────
@@ -518,6 +542,14 @@ fn resolve_options(
             overrides.dialect.is_some(),
             overrides.types.is_some(),
         );
+        // The host manifest is an ambient read like the sources, so it is
+        // collected here, into the frozen value — a regenerated manifest is
+        // a different `Environment` (decision log 2026-10-09).
+        if overrides.host_manifest == ManifestSource::FromConfig {
+            options.host_manifest = load_host_manifest(&config, &config_key, &|path| {
+                tree.read(path).map_err(|e| e.to_string())
+            })?;
+        }
         for warning in &config_warnings {
             // Same channel as the unknown-key warnings above: an unknown or
             // non-overridable `[lints]` code, an unrecognized `[fix]` code
@@ -527,6 +559,9 @@ fn resolve_options(
         }
     }
 
+    if let ManifestSource::Registered(manifest) = &overrides.host_manifest {
+        options.host_manifest = Some(manifest.clone());
+    }
     if let Some(dialect) = overrides.dialect {
         options.dialect = dialect;
     }
@@ -551,6 +586,116 @@ fn resolve_options(
     }
 
     Ok(options)
+}
+
+// ── The host manifest (#1784, #3666) ─────────────────────────────────
+
+/// Why the host manifest `brink.toml` names could not be loaded.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum HostManifestError {
+    /// The file could not be read: it does not exist, or the mount cannot
+    /// reach it.
+    #[error(
+        "host manifest `{path}` (named by `[host] manifest` in {config}) could not be read: {reason}"
+    )]
+    Unreadable {
+        config: String,
+        path: String,
+        reason: String,
+    },
+    /// The file is not a host manifest: bad JSON, or JSON of the wrong
+    /// shape. `line`/`column` are inside the manifest, 1-based.
+    #[error(
+        "host manifest `{path}` (named by `[host] manifest` in {config}) is not a valid manifest at line {line}, column {column}: {message}"
+    )]
+    Malformed {
+        config: String,
+        path: String,
+        line: usize,
+        column: usize,
+        message: String,
+    },
+}
+
+/// Where a `[host] manifest` path points: relative to the directory of the
+/// `brink.toml` that names it (`config_path`, a tree key or a filesystem
+/// path — whichever the caller reads with), with `.` and `..` folded so
+/// the result is the key a reader expects. A `..` that climbs above where
+/// `config_path` starts is kept: on a native mount the manifest may live
+/// beside the source tree, in a build-output folder. An absolute path is
+/// taken as written.
+#[must_use]
+pub fn host_manifest_path(config_path: &str, written: &str) -> String {
+    if Path::new(written).is_absolute() {
+        return written.to_owned();
+    }
+    // `/brink.toml`'s directory is `/`, not the empty string.
+    let dir = config_path
+        .rfind('/')
+        .map_or("", |i| if i == 0 { "/" } else { &config_path[..i] });
+    let rooted = dir.starts_with('/');
+    let mut parts: Vec<&str> = Vec::new();
+    for part in dir.split('/').chain(written.split('/')) {
+        match part {
+            "" | "." => {}
+            ".." => match parts.last() {
+                Some(&last) if last != ".." => {
+                    parts.pop();
+                }
+                // Nothing above a filesystem root to climb into.
+                _ if rooted => {}
+                _ => parts.push(".."),
+            },
+            _ => parts.push(part),
+        }
+    }
+    let joined = parts.join("/");
+    if rooted { format!("/{joined}") } else { joined }
+}
+
+/// Parse a host manifest: the JSON `set_host_manifest` takes, so a file
+/// and a registered manifest mean the same thing.
+pub fn parse_host_manifest(text: &str) -> Result<HostManifest, serde_json::Error> {
+    serde_json::from_str(text)
+}
+
+/// Load the host manifest `config` names — **the** loader: the CLI's build
+/// ([`Project::load`]), its `ide` commands, the language server and the
+/// studios all read through this one function, each with its own `read`
+/// (a source tree, the disk, an editor's unsaved buffers), so a manifest
+/// means the same thing to every one of them (decision log 2026-10-09).
+///
+/// `config_path` is the `brink.toml` that `config` was parsed from, as
+/// `read` names files. `Ok(None)` when `config` names no manifest.
+///
+/// # Errors
+///
+/// [`HostManifestError`] when the named file cannot be read or is not a
+/// manifest. What that costs is the caller's call: a build fails, an
+/// editor warns and carries on without one.
+pub fn load_host_manifest(
+    config: &ProjectConfig,
+    config_path: &str,
+    read: &dyn Fn(&str) -> Result<String, String>,
+) -> Result<Option<HostManifest>, HostManifestError> {
+    let Some(written) = config.host_manifest.as_deref() else {
+        return Ok(None);
+    };
+    let path = host_manifest_path(config_path, written);
+    let text = read(&path).map_err(|reason| HostManifestError::Unreadable {
+        config: config_path.to_owned(),
+        path: path.clone(),
+        reason,
+    })?;
+    parse_host_manifest(&text)
+        .map(Some)
+        .map_err(|e| HostManifestError::Malformed {
+            config: config_path.to_owned(),
+            path,
+            line: e.line(),
+            column: e.column(),
+            message: e.to_string(),
+        })
 }
 
 // ── The pure compile over the input ──────────────────────────────────
@@ -678,6 +823,10 @@ pub enum LoadError {
     /// contract.
     #[error("invalid source key `{0}` (must be root-relative, no `..`)")]
     InvalidSourceKey(String),
+    /// The host manifest `brink.toml` names could not be loaded (#1784):
+    /// a build fails rather than quietly stop enforcing what it gates.
+    #[error("{0}")]
+    HostManifest(#[from] HostManifestError),
 }
 
 #[cfg(test)]
@@ -794,6 +943,150 @@ mod tests {
         )
         .expect("loads");
         assert_ne!(default.content_hash(), overridden.content_hash());
+    }
+
+    // ── the host manifest (#1784) ─────────────────────────────────────
+
+    const MANIFEST: &str = r#"{ "types": [ { "name": "Mood", "base": "string" } ] }"#;
+
+    fn with_manifest(manifest: Option<&str>) -> InMemory {
+        let mut files = vec![
+            (
+                "brink.toml",
+                "[project]\nentry = \"main.ink\"\n[host]\nmanifest = \"build/host.json\"\n",
+            ),
+            ("main.ink", "Hello.\n"),
+        ];
+        if let Some(text) = manifest {
+            files.push(("build/host.json", text));
+        }
+        tree(&files)
+    }
+
+    #[test]
+    fn the_manifest_brink_toml_names_is_collected_into_the_environment() {
+        let env = Project::load(
+            &with_manifest(Some(MANIFEST)),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect("loads");
+        let manifest = env.options.host_manifest.expect("collected");
+        assert_eq!(manifest.types[0].name, "Mood");
+    }
+
+    #[test]
+    fn a_regenerated_manifest_is_a_different_environment() {
+        let before = Project::load(
+            &with_manifest(Some(MANIFEST)),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect("loads");
+        let after = Project::load(
+            &with_manifest(Some(&MANIFEST.replace("Mood", "Temper"))),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect("loads");
+        assert_ne!(before.content_hash(), after.content_hash());
+    }
+
+    #[test]
+    fn a_named_manifest_that_is_missing_fails_the_load_and_says_where() {
+        let err = Project::load(
+            &with_manifest(None),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect_err("missing");
+        assert!(
+            matches!(&err, LoadError::HostManifest(HostManifestError::Unreadable { path, .. }) if path == "build/host.json"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("build/host.json"), "{err}");
+    }
+
+    #[test]
+    fn a_malformed_manifest_fails_the_load_with_its_line() {
+        let err = Project::load(
+            &with_manifest(Some("{\n  \"types\": 3\n}")),
+            "main.ink",
+            &OptionOverrides::default(),
+        )
+        .expect_err("malformed");
+        assert!(
+            matches!(
+                &err,
+                LoadError::HostManifest(HostManifestError::Malformed { line: 2, .. })
+            ),
+            "the line inside the manifest: {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_registered_manifest_wins_and_the_file_is_not_read() {
+        let registered =
+            parse_host_manifest(r#"{ "types": [ { "name": "Given", "base": "string" } ] }"#)
+                .expect("valid");
+        // The named file is missing: a registered manifest never reads it.
+        let env = Project::load(
+            &with_manifest(None),
+            "main.ink",
+            &OptionOverrides {
+                host_manifest: ManifestSource::Registered(registered),
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        assert_eq!(
+            env.options.host_manifest.expect("given").types[0].name,
+            "Given"
+        );
+    }
+
+    #[test]
+    fn a_mount_that_does_not_load_manifests_ignores_the_key() {
+        let env = Project::load(
+            &with_manifest(None),
+            "main.ink",
+            &OptionOverrides {
+                host_manifest: ManifestSource::NotLoaded,
+                ..OptionOverrides::default()
+            },
+        )
+        .expect("loads");
+        assert_eq!(env.options.host_manifest, None);
+    }
+
+    #[test]
+    fn a_manifest_path_is_relative_to_its_brink_toml() {
+        assert_eq!(
+            host_manifest_path("brink.toml", "build/host.json"),
+            "build/host.json"
+        );
+        assert_eq!(
+            host_manifest_path("game/brink.toml", "./host.json"),
+            "game/host.json"
+        );
+        assert_eq!(
+            host_manifest_path("game/brink.toml", "../build/host.json"),
+            "build/host.json"
+        );
+        assert_eq!(
+            host_manifest_path("brink.toml", "../build/host.json"),
+            "../build/host.json",
+            "climbing out of the tree is kept for a native mount to resolve"
+        );
+        assert_eq!(
+            host_manifest_path("/proj/ink/brink.toml", "../build/host.json"),
+            "/proj/build/host.json"
+        );
+        assert_eq!(host_manifest_path("/brink.toml", "../../x.json"), "/x.json");
+        assert_eq!(
+            host_manifest_path("brink.toml", "/abs/host.json"),
+            "/abs/host.json"
+        );
     }
 
     // ── config resolution / override precedence ──────────────────────

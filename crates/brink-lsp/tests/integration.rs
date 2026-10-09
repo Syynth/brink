@@ -1702,6 +1702,97 @@ fn brink_toml_file_watch_reload_applies_without_restart() {
     );
 }
 
+/// #3666: `brink.toml`'s `[host] manifest` reaches analysis, and a host
+/// regenerating the file is picked up without a restart. Markup is freeform
+/// until a manifest declares a vocabulary, so an undeclared `<shake>` tag is
+/// silent while the named file is missing — and reports E164 once the file
+/// appears, declaring only `<b>`, and its watcher fires.
+#[test]
+fn host_manifest_named_by_brink_toml_loads_and_reloads_on_change() {
+    const MAX_MESSAGES: u64 = 2000;
+    let root = unique_tmp_dir("host-manifest-reload");
+    std::fs::create_dir_all(root.join("build")).unwrap();
+    std::fs::write(
+        root.join("brink.toml"),
+        "[project]\ndialect = \"brink\"\n[host]\nmanifest = \"build/host.json\"\n",
+    )
+    .unwrap();
+    let manifest_path = root.join("build/host.json");
+    // On disk before the server starts and never opened: the workspace scan
+    // at `initialized` loads it, so startup is exactly one analysis pass,
+    // and the next pass is the one the manifest change causes. (A
+    // `didOpen` queues a second startup pass, which the wait after the
+    // change would then take for the reload's.)
+    let story = root.join("story.brink");
+    std::fs::write(&story, "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n").unwrap();
+    let ink_uri = format!("file://{}", story.display());
+
+    let bin = env!("CARGO_BIN_EXE_brink-lsp");
+    let mut child = Command::new(bin)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .expect("failed to start brink-lsp");
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = BufReader::new(child.stdout.take().unwrap());
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "capabilities": {},
+                "rootUri": format!("file://{}", root.display()),
+            },
+        }),
+    );
+    let (_init_resp, _) = recv_response(&mut stdout, 1);
+    send(
+        &mut stdin,
+        &json!({ "jsonrpc": "2.0", "method": "initialized", "params": {} }),
+    );
+    let codes = |diags: &[Value]| -> Vec<String> {
+        diags
+            .iter()
+            .filter_map(|d| d["code"].as_str().map(str::to_owned))
+            .collect()
+    };
+    let before = wait_for_next_analysis_pass(&mut stdout, &ink_uri, MAX_MESSAGES);
+
+    // The host writes the manifest; its watcher fires.
+    std::fs::write(&manifest_path, r#"{ "markup": [{ "name": "b" }] }"#).unwrap();
+    send(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeWatchedFiles",
+            "params": {
+                "changes": [{
+                    "uri": format!("file://{}", manifest_path.display()),
+                    "type": 1,
+                }]
+            }
+        }),
+    );
+    let after = wait_for_next_analysis_pass(&mut stdout, &ink_uri, MAX_MESSAGES);
+
+    drop(stdin);
+    drop(stdout);
+    let _ = child.wait();
+    std::fs::remove_dir_all(&root).unwrap();
+
+    assert!(
+        !codes(&before).iter().any(|c| c == "E164"),
+        "no manifest yet, so markup is freeform: {before:?}"
+    );
+    assert!(
+        codes(&after).iter().any(|c| c == "E164"),
+        "once the manifest appears and its watcher fires, `<shake>` is undeclared: {after:?}"
+    );
+}
+
 /// #1055 gap 2 (`workspace/didChangeConfiguration` path): some clients send
 /// this notification, without a separate file-watch event, when workspace
 /// settings change — `brink.toml` must still be re-read and re-applied.
