@@ -124,8 +124,12 @@ pub struct Player {
     now_y: f32,
     /// The spacer under the transcript, so its last row can reach NOW.
     tail: f32,
-    /// A row was scrolled to the top to be backed off to NOW once laid out.
-    to_now: bool,
+    /// The spacer above the transcript, so its first rows can reach NOW.
+    head: f32,
+    /// A story line to bring to NOW, and how many more frames may try: its
+    /// real top is measured after each layout and the list scrolled by the
+    /// difference, until it sits there.
+    to_now: Option<(usize, u8)>,
     /// `>>`: playing on by itself at the Settings pace, until a stop.
     autoplay: bool,
     /// The wait before autoplay's next line; dropping it cancels it.
@@ -176,7 +180,7 @@ impl Player {
             arrivals: Vec::new(),
             choices_at: None,
             choices: Vec::new(),
-            list: ListState::new(1, ListAlignment::Top, px(600.)),
+            list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
             running: false,
             start_at: None,
@@ -188,7 +192,8 @@ impl Player {
             held_at: None,
             now_y: 0.,
             tail: 0.,
-            to_now: false,
+            head: 0.,
+            to_now: None,
             autoplay: false,
             autoplay_timer: None,
             next_at: None,
@@ -275,9 +280,9 @@ impl Player {
         self.entries.clear();
         self.arrivals.clear();
         self.choices.clear();
-        // One item past the transcript: the tail that lets its last row
-        // reach the NOW line.
-        self.list = ListState::new(1, ListAlignment::Top, px(600.));
+        // One item before the transcript and one past it — the head and the
+        // tail, the room that lets its first and last rows reach NOW.
+        self.list = ListState::new(2, ListAlignment::Top, px(600.));
         self.running = true;
         self.stale = false;
         self.halt_autoplay();
@@ -354,6 +359,13 @@ impl Player {
         self.entries
             .iter()
             .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
+    }
+
+    /// The current row's top and the NOW line, in window coordinates.
+    #[cfg(test)]
+    pub(crate) fn now_gap(&self) -> Option<(f32, f32)> {
+        let row = self.list.bounds_for_item(self.active_row()? + 1)?;
+        Some((f32::from(row.top()), self.now_y))
     }
 
     /// Whether `>>` is playing on.
@@ -727,21 +739,22 @@ impl Player {
         let line = matches!(entry, Entry::Line { .. });
         self.entries.push(entry);
         self.arrivals.push(std::time::Instant::now());
-        self.list.splice(ix..ix, 1);
+        // Item 0 is the head spacer, so entry `ix` is item `ix + 1`.
+        self.list.splice(ix + 1..ix + 1, 1);
         // Beside the manuscript a story line's top sits on the NOW line,
         // where the manuscript puts its source (decision log 2026-10-09);
-        // otherwise, and for chrome rows, just keep the row in view.
-        // The row goes to the top first; the rows above it are measured as
-        // that lays out, and only then can it be backed off to NOW (a turn
-        // pushes several rows before any of them has a height).
+        // otherwise, and for chrome rows, just keep the row in view. The
+        // row goes to the top first, then is brought to NOW by measuring
+        // where it really landed (`render`): an estimate from the rows
+        // above it was a row short whenever they had not been measured.
         if self.write_mode && line {
             self.list.scroll_to(gpui::ListOffset {
-                item_ix: ix,
+                item_ix: ix + 1,
                 offset_in_item: px(0.),
             });
-            self.to_now = true;
+            self.to_now = Some((ix, NOW_TRIES));
         } else {
-            self.list.scroll_to_reveal_item(ix);
+            self.list.scroll_to_reveal_item(ix + 1);
         }
     }
 
@@ -1605,16 +1618,42 @@ impl Render for Player {
         if (tail - self.tail).abs() > 0.5 {
             self.tail = tail;
             let n = self.entries.len();
-            self.list.remeasure_items(n..n + 1);
+            self.list.remeasure_items(n + 1..n + 2);
         }
-        if std::mem::take(&mut self.to_now) {
-            cx.on_next_frame(window, |this, _, cx| {
-                let top = f32::from(this.list.viewport_bounds().origin.y);
-                if this.now_y > top {
-                    this.list.scroll_by(px(top - this.now_y));
-                    cx.notify();
+        let head = if self.write_mode {
+            (self.now_y - f32::from(viewport.top())).max(0.)
+        } else {
+            0.
+        };
+        if (head - self.head).abs() > 0.5 {
+            self.head = head;
+            self.list.remeasure_items(0..1);
+        }
+        // Bring the current line to NOW: measure where the last layout
+        // really put it, scroll by the difference, and look again next
+        // frame — until it is there, or the tries run out.
+        if let Some((ix, tries)) = self.to_now.take() {
+            let again = tries.checked_sub(1).map(|left| (ix, left));
+            match self.list.bounds_for_item(ix + 1) {
+                Some(row) => {
+                    let off = f32::from(row.top()) - self.now_y;
+                    if off.abs() > 1. {
+                        self.list.scroll_by(px(off));
+                        self.to_now = again;
+                    }
                 }
-            });
+                // Scrolled above it: put it at the top and measure again.
+                None => {
+                    self.list.scroll_to(gpui::ListOffset {
+                        item_ix: ix + 1,
+                        offset_in_item: px(0.),
+                    });
+                    self.to_now = again;
+                }
+            }
+            if self.to_now.is_some() {
+                window.request_animation_frame();
+            }
         }
         // Read the transcript as Stage runs, through the project's dialect
         // (rebuilt only when the dialect changes).
@@ -1678,10 +1717,16 @@ impl Render for Player {
                     // the chrome around it.
                     list(
                         self.list.clone(),
-                        cx.processor(|this, ix, _window, cx| this.render_entry(ix, cx)),
+                        cx.processor(|this, ix: usize, _window, cx| match ix.checked_sub(1) {
+                            // Item 0: room above the first row to reach NOW.
+                            None => div().h(px(this.head)).into_any_element(),
+                            Some(entry) => this.render_entry(entry, cx),
+                        }),
                     )
                     .flex_1()
-                    .py_2()
+                    // No padding: the list measures rows from its own edge,
+                    // so padding would set every row that much off NOW (the
+                    // head and tail spacers are the room instead).
                     .text_size(px(prose_size)),
                 )
             })
@@ -1704,6 +1749,10 @@ const CARD_SLIDE: f32 = 10.;
 fn cards_in(n: usize) -> std::time::Duration {
     CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
 }
+
+/// How many frames may correct a line onto NOW before giving up — a few
+/// is plenty; the bound keeps a list that cannot settle from looping.
+const NOW_TRIES: u8 = 4;
 
 /// Below this width the header folds Tags and Save into ⋯.
 const NARROW_HEADER: f32 = 380.;
