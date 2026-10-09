@@ -4013,6 +4013,45 @@ mod modes_driven {
         );
     }
 
+    /// A long list of choices takes at most half the Player and scrolls in
+    /// place; the transcript keeps the other half (decision log 2026-10-09).
+    #[test]
+    fn many_choices_take_at_most_half_the_player() {
+        let dir = scratch_dir("many");
+        let mut story = String::from("-> room\n=== room ===\nYou look around the room.\n");
+        for n in 1..=15 {
+            story.push_str(&format!(
+                "+ [Thing {n}]\n    You look at thing {n}.\n    -> room\n"
+            ));
+        }
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"room.ink\"\n")
+            .expect("config");
+        std::fs::write(dir.join("room.ink"), &story).expect("story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.line_count() > 0 && !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.advance(std::time::Duration::from_millis(1500));
+        let shot = scratch_dir("shot").join("many-choices.png");
+        h.screenshot(window, &shot);
+        eprintln!("many choices screenshot: {}", shot.display());
+        let (transcript, window_h) = h.read(|cx| {
+            let height = crate::player::now_line_for_test(cx, window) / 0.4;
+            (player.read(cx).transcript_height(), height)
+        });
+        assert!(
+            transcript > window_h * 0.35,
+            "15 cards leave the transcript its room: {transcript} of {window_h}"
+        );
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {

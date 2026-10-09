@@ -6063,3 +6063,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** Hovering a choice in the Player (a card or a choice echo), while the manuscript is following, scrolls the manuscript to the choice together with its body (the outline's choice block): centred in the view when it fits, otherwise with the choice line at the top, so the choice itself always stays visible. Following "where it leads" past a divert is a later refinement.
 - **WHY:** Maintainer: "a kind of heuristic for showing the choice + 'where it leads' but if that is too big, the choice itself needs to stay visible, it should basically center the set of lines that are the choice + it's body, but if the viewport isn't big enough, it should put the choice at the top of the viewport."
+
+## Choice cards take at most half the Player
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** minor/local
+- **WHAT:** The Player's choice cards take at most half of its height; a longer list scrolls in place. The cards' staggered slide-in stops growing after eight cards.
+- **WHY:** Maintainer, at a choice point with fifteen options that pushed the transcript out of the Player: "we should probably have the choices only be half the height of the player at most."
