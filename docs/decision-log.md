@@ -5844,6 +5844,22 @@
 - **WHAT:** Renaming or moving a file or folder in the native studio rewrites the `INCLUDE`s the move affects: the ones in other files that point at what moved, and the moved files' own relative ones. Folder moves compute every rewrite against one pre-move snapshot. The edits come from `brink_ide::file_rename` and `brink_ide::dir_rename`, as the web studio's do. A move that would still introduce diagnostics shows the breakage report with "Move anyway". `brink.toml`'s `entry` is still not rewritten. This reverses the earlier native rule that moves left `INCLUDE`s alone for the analysis to report (#3656).
 - **WHY:** The menus now match the web, so Rename… and Rename folder… looked the same on both surfaces. On native, though, they silently broke every story that included the moved files. Web parity for the native studio means the same outcome for the author, not just the same menu item.
 
+## ⌘K go-to replaces cmd-p quick-open, adds labels
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The native studio's go-to opens on ⌘K, which takes over from cmd-p rather than sitting beside it. It searches files, knots, stitches and labels in one ranked list, each row tagged with its kind. It gets a new visual design, chosen from options in a design canvas before it is built.
+- **WHY:** One go-to surface, not two pickers that nearly do the same thing. Labels are places an author jumps to as much as knots and stitches, and neither studio's quick-open could find them. One ranked list keeps the best match on top whatever its kind.
+
+## ⌘K go-to design: two-line rows, centred icons, hollow-dash label icon
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** The ⌘K go-to uses direction B from the design canvas. Each row has two lines: the name with matched characters highlighted, and below it a monospace breadcrumb (`file › knot › stitch :line`). The kind's icon is centred vertically across both lines, and a named kind chip sits at the right. The icons are the Binder's own (file droplet, knot diamond, stitch hook), tinted by the theme's per-kind colours. Labels get a new icon: a hollow dash, a wide short rounded rectangle in the same stroke style.
+- **WHY:** The breadcrumb shows a result's full address at a glance, which tells same-named labels in different knots apart. An icon centred on the whole row reads as the row's marker, not just the name's. Reusing the Binder's icons keeps one visual vocabulary for story structure. The dash echoes the gather `-` that a label hangs off.
+
 ## Native studio prose checking on macOS: OS spelling, Harper grammar while typing, Apple Intelligence grammar on request
 - **WHEN:** 2026-10-08
 - **PROJECT:** brink

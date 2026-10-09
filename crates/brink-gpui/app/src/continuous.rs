@@ -1557,7 +1557,7 @@ fn apply_diagnostics(
         .diagnostics_for(path)
         .iter()
         .filter(|d| d.code != crate::todos::TODO_CODE)
-        .map(|d| crate::document::to_lsp_diagnostic(d, &index))
+        .map(|d| crate::document::to_lsp_diagnostic(d, &index, &source))
         .collect();
     let print = fingerprint(&source);
     let cached = prose

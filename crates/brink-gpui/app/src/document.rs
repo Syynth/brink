@@ -507,6 +507,12 @@ impl Document {
         let editor = self.editor.clone();
         let project = self.project.clone();
         let path = self.path.to_string();
+        // The text the lints will be about. The checker answers later, and
+        // anything typed meanwhile moves every offset after it: applied to
+        // the new text, a lint marks the wrong words — or lands inside a
+        // multi-byte character and takes the window down. The next
+        // analysis asks again for the text as it is then.
+        let asked = self.editor.read(cx).value().to_string();
         cx.spawn(async move |_, cx| {
             let Ok(QueryResult::Prose(lints)) = query.await else {
                 return;
@@ -520,6 +526,9 @@ impl Document {
             });
             editor.update(cx, |state, cx| {
                 let source = state.value().to_string();
+                if source != asked {
+                    return;
+                }
                 let diagnostics = prose_diagnostics(&lints, &source);
                 if diagnostics.is_empty() {
                     return;
@@ -578,7 +587,7 @@ impl Document {
             // squiggle under it would double-mark it (the studio does the
             // same). It still reaches Problems and TODOs.
             .filter(|d| d.code != crate::todos::TODO_CODE)
-            .map(|d| to_lsp_diagnostic(d, &index))
+            .map(|d| to_lsp_diagnostic(d, &index, &source))
             .collect();
 
         self.editor.update(cx, |state, cx| {
@@ -675,7 +684,13 @@ pub(crate) fn prose_diagnostics(
     };
     lints
         .iter()
-        .filter(|lint| lint.end as usize <= source.len() && lint.end > lint.start)
+        // Within the text and on character boundaries: anything else is a
+        // lint about some other text, and slicing at it would panic.
+        .filter(|lint| {
+            lint.end > lint.start
+                && source.is_char_boundary(lint.start as usize)
+                && source.is_char_boundary(lint.end as usize)
+        })
         .map(|lint| lsp::Diagnostic {
             range: lsp::Range {
                 start: at(lint.start),
@@ -692,12 +707,38 @@ pub(crate) fn prose_diagnostics(
         .collect()
 }
 
+/// `offset` as a byte offset `source` can be sliced at: within it, and
+/// moved back to the start of the character it falls inside.
+fn on_boundary(source: &str, offset: u32) -> u32 {
+    let mut at = (offset as usize).min(source.len());
+    while !source.is_char_boundary(at) {
+        at -= 1;
+    }
+    u32::try_from(at).unwrap_or(offset)
+}
+
+/// `LineIndex::line_col` for an offset from an ANALYSIS, which can be a
+/// keystroke behind `source` (the text `index` was built from): brought
+/// onto `source` first, since `line_col` slices and a slice inside a
+/// multi-byte character panics. A row or squiggle a character out until
+/// the next analysis is harmless; a crash is not.
+pub(crate) fn line_col_in(index: &LineIndex, source: &str, offset: u32) -> (u32, u32) {
+    index.line_col(rowan::TextSize::from(on_boundary(source, offset)))
+}
+
+/// A compiler diagnostic as the editor's squiggle, against `source`.
+///
+/// The analysis it came from can be a keystroke behind the editor, so its
+/// offsets are brought onto `source` first: a squiggle a character out for
+/// the moment before the next analysis lands is harmless, and slicing in
+/// the middle of a character is a crash.
 pub(crate) fn to_lsp_diagnostic(
     d: &brink_gpui_model::worker::Diagnostic,
     index: &LineIndex,
+    source: &str,
 ) -> lsp::Diagnostic {
     let at = |offset: u32| {
-        let (line, character) = index.line_col(rowan::TextSize::from(offset));
+        let (line, character) = line_col_in(index, source, offset);
         lsp::Position { line, character }
     };
     lsp::Diagnostic {
@@ -1605,6 +1646,38 @@ impl CompletionProvider for BrinkCompletion {
             .chars()
             .last()
             .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '>' | '@'))
+    }
+}
+
+#[cfg(test)]
+mod stale_offsets {
+    use super::*;
+
+    /// The crash (2026-10-08): prose lints taken before an edit, applied
+    /// after it, with an offset that now falls inside a multi-byte
+    /// character. Dropped, not sliced.
+    #[test]
+    fn a_prose_lint_inside_a_character_is_dropped_not_sliced() {
+        let source = "The tide\u{2014}out.\n";
+        let inside = u32::try_from(source.find('\u{2014}').expect("dash") + 1).expect("small");
+        let lint = brink_gpui_model::prose::ProseLint {
+            start: inside,
+            end: inside + 2,
+            kind: "Spelling".to_owned(),
+            message: "stale".to_owned(),
+            fixes: Vec::new(),
+        };
+        assert!(prose_diagnostics(&[lint], source).is_empty());
+    }
+
+    /// A compiler diagnostic a keystroke behind lands at the nearest
+    /// character rather than panicking — or off the end of the text.
+    #[test]
+    fn a_stale_compiler_offset_is_brought_onto_the_text() {
+        let source = "a\u{2014}b\n";
+        let index = LineIndex::new(source);
+        assert_eq!(line_col_in(&index, source, 2), (0, 1), "inside the dash");
+        assert_eq!(line_col_in(&index, source, 999), (1, 0), "past the end");
     }
 }
 

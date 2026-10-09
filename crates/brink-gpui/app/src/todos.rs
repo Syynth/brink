@@ -48,7 +48,6 @@ use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent};
 use gpui_component::input::{Input, InputEvent, InputState};
 use gpui_component::{ActiveTheme as _, Sizable as _, h_flex, v_flex};
-use rowan::TextSize;
 
 use crate::project::{Project, ProjectEvent};
 use crate::search::container_at;
@@ -142,9 +141,11 @@ pub fn collect<'a>(
                 span: start..d.end as usize,
                 tag,
                 text,
+                // The analysis can be a keystroke behind the text.
                 line: index
                     .as_ref()
-                    .map(|ix| ix.line_col(TextSize::from(d.start)).0 + 1),
+                    .zip(source.as_deref())
+                    .map(|(ix, s)| crate::document::line_col_in(ix, s, d.start).0 + 1),
                 container: source.as_deref().and_then(|s| container_at(s, start)),
             });
         }
