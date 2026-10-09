@@ -737,3 +737,16 @@ describe("app settings carry every field through a read (Stage 4)", () => {
     });
   });
 });
+
+describe("TauriFileProvider.watchConfigFiles (#3671)", () => {
+  it("hands the shell exactly the files the config reads, and swallows a failure", async () => {
+    invoke.mockReset();
+    invoke.mockImplementation(() => Promise.reject(new Error("no shell")));
+    const provider = new TauriFileProvider("/proj");
+    expect(() => provider.watchConfigFiles(["build/host.json", "dialect.json"])).not.toThrow();
+    await Promise.resolve();
+    expect(invoke).toHaveBeenCalledWith("watch_config_files", {
+      paths: ["build/host.json", "dialect.json"],
+    });
+  });
+});

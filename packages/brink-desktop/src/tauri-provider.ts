@@ -115,6 +115,18 @@ export class TauriFileProvider implements FileProvider {
     }
   }
 
+  /**
+   * The files the applied `brink.toml` reads — `[dialogue]`'s file, the
+   * host manifest (#3671). The shell lists and watches only story files and
+   * the config, so it is told these exactly and follows them too; one that
+   * would leave the project folder is refused there (decision log
+   * 2026-10-09). Fire-and-forget: a failure only means a regenerated
+   * manifest is not noticed until the config applies again.
+   */
+  watchConfigFiles(paths: readonly string[]): void {
+    void invoke("watch_config_files", { paths: [...paths] }).catch(() => {});
+  }
+
   onFileChanged(path: string, content: string): void {
     this.staged.set(path, content);
   }

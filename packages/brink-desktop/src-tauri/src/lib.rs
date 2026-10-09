@@ -317,7 +317,14 @@ async fn rename_file(root: String, from: String, to: String) -> Result<(), Shell
 
 /// The live watcher for the (single) open project. Dropping the watcher
 /// stops event delivery; the debounce thread then exits on channel close.
-struct WatchState(std::sync::Mutex<Option<notify::RecommendedWatcher>>);
+struct WatchState {
+    watcher: std::sync::Mutex<Option<notify::RecommendedWatcher>>,
+    /// Files the applied `brink.toml` reads — `[dialogue]`'s file, the host
+    /// manifest — as project-relative keys (#3671). Followed besides the
+    /// project files, so a host regenerating its manifest is picked up.
+    /// Shared with the debounce thread, which reads it per event.
+    config_files: std::sync::Arc<std::sync::Mutex<std::collections::BTreeSet<String>>>,
+}
 
 #[derive(Clone, serde::Serialize)]
 struct ExternalChangeOut {
@@ -327,13 +334,24 @@ struct ExternalChangeOut {
 
 /// Project-relative key for an absolute path inside `root`, applying the
 /// same skip rules as `list_files` (dotdirs, `node_modules`, target, dist)
-/// and the same file filter. None ⇒ not a project file, ignore.
-fn watch_key(root: &Path, abs: &Path) -> Option<String> {
+/// and the same file filter — or one of `config_files`, the exact files
+/// the config names (#3671), which are followed wherever they sit inside
+/// the root: a manifest the host writes into `dist/` is still the
+/// config's. None ⇒ neither, ignore. Nothing outside `root` is ever a key.
+fn watch_key(
+    root: &Path,
+    abs: &Path,
+    config_files: &std::collections::BTreeSet<String>,
+) -> Option<String> {
     let rel = abs.strip_prefix(root).ok()?;
     let mut parts: Vec<&str> = Vec::new();
     for c in rel.components() {
         let s = c.as_os_str().to_str()?;
         parts.push(s);
+    }
+    let key = parts.join("/");
+    if config_files.contains(&key) {
+        return Some(key);
     }
     let (file, dirs) = parts.split_last()?;
     if dirs.iter().any(|d| is_skipped_dir(d)) {
@@ -342,7 +360,29 @@ fn watch_key(root: &Path, abs: &Path) -> Option<String> {
     if !is_project_file(Path::new(file)) {
         return None;
     }
-    Some(parts.join("/"))
+    Some(key)
+}
+
+/// The files the applied `brink.toml` reads (#3671), as the webview's
+/// `ProjectSession` reports them: the watcher follows these besides the
+/// project files, replacing the previous set. A path that would leave the
+/// project folder is dropped — the shell never watches outside it
+/// (decision log 2026-10-09, `docs/desktop-shell-spec.md`).
+#[tauri::command]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Tauri implements `CommandArg` for `State` only by value — the \
+              by-value parameter is the command ABI, not an avoidable move."
+)]
+fn watch_config_files(state: tauri::State<'_, WatchState>, paths: Vec<String>) {
+    let inside: std::collections::BTreeSet<String> = paths
+        .into_iter()
+        .filter(|p| resolve("", p).is_ok())
+        .collect();
+    *state
+        .config_files
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) = inside;
 }
 
 #[tauri::command]
@@ -372,10 +412,11 @@ async fn start_watch(
     // Replacing any previous watcher stops its delivery; its debounce
     // thread exits when the dropped watcher's channel disconnects.
     *state
-        .0
+        .watcher
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(watcher);
 
+    let config_files = std::sync::Arc::clone(&state.config_files);
     let root_path = PathBuf::from(root);
     std::thread::spawn(move || {
         let mut pending: std::collections::BTreeSet<PathBuf> = std::collections::BTreeSet::new();
@@ -384,8 +425,12 @@ async fn start_watch(
                 Ok(Ok(event)) => pending.extend(event.paths),
                 Ok(Err(_)) => {}
                 Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    let named = config_files
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .clone();
                     for abs in std::mem::take(&mut pending) {
-                        let Some(key) = watch_key(&root_path, &abs) else {
+                        let Some(key) = watch_key(&root_path, &abs, &named) else {
                             continue;
                         };
                         let content = match std::fs::read_to_string(&abs) {
@@ -409,7 +454,7 @@ async fn start_watch(
 #[tauri::command]
 async fn stop_watch(state: tauri::State<'_, WatchState>) -> Result<(), ShellError> {
     *state
-        .0
+        .watcher
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
     Ok(())
@@ -2481,7 +2526,10 @@ pub fn run() -> tauri::Result<()> {
                 responder.respond(serve_bundle_asset(&app, &path));
             });
         })
-        .manage(WatchState(std::sync::Mutex::new(None)))
+        .manage(WatchState {
+            watcher: std::sync::Mutex::new(None),
+            config_files: std::sync::Arc::default(),
+        })
         .manage(RecentsLock(std::sync::Mutex::new(())))
         .manage(PendingOpens(std::sync::Mutex::new(Some(Vec::new()))))
         .setup(|app| {
@@ -2586,6 +2634,7 @@ pub fn run() -> tauri::Result<()> {
             append_backups,
             start_watch,
             stop_watch,
+            watch_config_files,
             pick_project_folder,
             pick_project_file,
             discover_project_config,
@@ -4637,6 +4686,54 @@ on:
         assert!(!is_project_file(Path::new("Cargo.toml")));
     }
 
+    /// #3671: the watcher follows exactly the files the config names —
+    /// wherever they sit inside the root, a skipped build folder included —
+    /// and still nothing else that is not a project file, and nothing
+    /// outside the root.
+    #[test]
+    fn the_watcher_follows_the_files_the_config_names_and_nothing_else() {
+        let root = Path::new("/proj");
+        let named: std::collections::BTreeSet<String> =
+            ["build/host.json".to_owned(), "dist/host.json".to_owned()]
+                .into_iter()
+                .collect();
+        assert_eq!(
+            watch_key(root, Path::new("/proj/build/host.json"), &named).as_deref(),
+            Some("build/host.json")
+        );
+        assert_eq!(
+            watch_key(root, Path::new("/proj/dist/host.json"), &named).as_deref(),
+            Some("dist/host.json"),
+            "named, so followed even in a directory the listing skips"
+        );
+        assert_eq!(
+            watch_key(root, Path::new("/proj/other.json"), &named),
+            None,
+            "JSON the config does not name stays unwatched"
+        );
+        assert_eq!(
+            watch_key(root, Path::new("/elsewhere/build/host.json"), &named),
+            None,
+            "nothing outside the root"
+        );
+        assert_eq!(
+            watch_key(root, Path::new("/proj/story.ink"), &named).as_deref(),
+            Some("story.ink"),
+            "project files as before"
+        );
+    }
+
+    /// A config path that would leave the folder is never followed: the
+    /// shell does not watch outside the opened folder (decision log
+    /// 2026-10-09).
+    #[test]
+    fn a_config_file_outside_the_folder_is_refused() {
+        for escaping in ["../build/host.json", "/abs/host.json", "a/../../x.json"] {
+            assert!(resolve("", escaping).is_err(), "{escaping}");
+        }
+        assert!(resolve("", "build/host.json").is_ok());
+    }
+
     /// `BundleLaunchInfo` is what the author is told at boot, and the
     /// rollback arm is the one that matters: a bundle that failed to boot
     /// has been deleted and the app is running OLDER code than the author
@@ -5205,7 +5302,7 @@ on:
                  as a project file"
             );
             assert!(
-                watch_key(&dir, tmp).is_none(),
+                watch_key(&dir, tmp, &std::collections::BTreeSet::new()).is_none(),
                 "temp file {name} must not produce a watch_key, or a write to it would fire a \
                  spurious fs:external-change into the #320 never-clobber machinery"
             );
