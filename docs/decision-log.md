@@ -5921,3 +5921,11 @@
 
   This replaces the single Fast-forward button and its speed setting; the Settings value is Autoplay's reading pace.
 - **WHY:** Two forward buttons say what each does without a speed cycle to learn: one autoplays at a reading pace, the other jumps to where something happens. Rewind balances the strip and makes revisiting a choice cheap, so trying the other branch is one press instead of a restart. The runtime already snapshots story state (`Story::speculate`, `StorySnapshot`), so rewinding is a restore, not a replay.
+
+## The native player advances a line at a time, never a whole turn
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The native studio's player delivers one line per Continue (or per Autoplay tick), in Script and Write alike. It never plays everything up to the next choice in one go (`continue_maximally`). Skip (`>|`) also goes line by line, only faster: every line still arrives as its own step, so the transcript, the line states and the follow see each one.
+- **WHY:** Playing a whole turn at once hides exactly what the Write-mode player exists to show: which line is playing, where it came from in the manuscript, and what comes next. A line at a time is what keeps the manuscript level with playback and lets breakpoints hold before a line rather than somewhere inside a burst.
