@@ -15,6 +15,7 @@ use brink_gpui_model::play::{
 use brink_gpui_model::query::Location;
 use brink_gpui_shell::icons::BrinkIcon;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
+use gpui::AnimationExt as _;
 use gpui::prelude::*;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
@@ -88,6 +89,12 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// When the current choices arrived, so their cards slide in once.
+    choices_at: Option<std::time::Instant>,
+    /// When each entry arrived, parallel to `entries`: a row animates in
+    /// only while it is new, so one rebuilt later (scrolled back, the tab
+    /// re-shown) never replays its arrival.
+    arrivals: Vec<std::time::Instant>,
     /// The live prompt; empty while the story runs or is over.
     choices: Vec<PlayChoice>,
     list: ListState,
@@ -166,6 +173,8 @@ impl Player {
         Self {
             project,
             entries: Vec::new(),
+            arrivals: Vec::new(),
+            choices_at: None,
             choices: Vec::new(),
             list: ListState::new(1, ListAlignment::Top, px(600.)),
             busy: false,
@@ -264,6 +273,7 @@ impl Player {
     pub fn start(&mut self, at: Option<String>, cx: &mut Context<Self>) {
         self.generation += 1;
         self.entries.clear();
+        self.arrivals.clear();
         self.choices.clear();
         // One item past the transcript: the tail that lets its last row
         // reach the NOW line.
@@ -629,7 +639,10 @@ impl Player {
                         source,
                     });
                 }
-                PlayStep::Choices(choices) => self.choices = choices,
+                PlayStep::Choices(choices) => {
+                    self.choices = choices;
+                    self.choices_at = Some(std::time::Instant::now());
+                }
                 PlayStep::Done => {
                     self.running = false;
                     self.push(Entry::Notice("— done —".into()));
@@ -713,6 +726,7 @@ impl Player {
         let ix = self.entries.len();
         let line = matches!(entry, Entry::Line { .. });
         self.entries.push(entry);
+        self.arrivals.push(std::time::Instant::now());
         self.list.splice(ix..ix, 1);
         // Beside the manuscript a story line's top sits on the NOW line,
         // where the manuscript puts its source (decision log 2026-10-09);
@@ -753,6 +767,28 @@ impl Player {
     /// printed once; action is dimmed; the reader's pick is a ring on the
     /// spine with its `*` / `+`.
     fn render_entry(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let row = self.render_row(ix, cx);
+        // A new row fades in and rises into place — the web Player's
+        // `player-row-in` (400ms, 6px). Only while it is new.
+        let fresh = self
+            .arrivals
+            .get(ix)
+            .is_some_and(|at| at.elapsed() < ROW_IN);
+        if !fresh {
+            return row;
+        }
+        div()
+            .relative()
+            .child(row)
+            .with_animation(
+                ("player-row-in", self.generation as usize * 100_000 + ix),
+                gpui::Animation::new(ROW_IN).with_easing(gpui::ease_out_quint()),
+                |el, delta| el.opacity(delta).top(px(ROW_RISE * (1. - delta))),
+            )
+            .into_any_element()
+    }
+
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::player_stage::Role;
         let theme = cx.theme();
         let (fg, muted, danger, border, primary, hover) = (
@@ -961,7 +997,7 @@ impl Player {
                 .pb(px(10.))
                 .children(self.choices.iter().enumerate().map(|(n, choice)| {
                     let index = choice.index;
-                    h_flex()
+                    let card = h_flex()
                         .id(("play-choice", index))
                         .w_full()
                         .h(px(40.))
@@ -988,7 +1024,27 @@ impl Player {
                                 .truncate()
                                 .child(choice.text.trim().to_owned()),
                         )
-                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()))
+                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()));
+                    // The web Player's `player-choice-in`: each card slides
+                    // in from the left, one after another — while new.
+                    match self.choices_at.filter(|at| at.elapsed() < cards_in(n)) {
+                        None => card.into_any_element(),
+                        Some(_) => {
+                            let total = cards_in(n);
+                            let wait = CARD_STAGGER.as_secs_f32() * n as f32 / total.as_secs_f32();
+                            card.with_animation(
+                                ("player-card-in", self.generation as usize * 1_000 + n),
+                                gpui::Animation::new(total),
+                                move |el, delta| {
+                                    let t = gpui::ease_out_quint()(
+                                        ((delta - wait) / (1. - wait)).clamp(0., 1.),
+                                    );
+                                    el.opacity(t).left(px(-CARD_SLIDE * (1. - t)))
+                                },
+                            )
+                            .into_any_element()
+                        }
+                    }
                 }))
                 .into_any_element(),
         )
@@ -1632,6 +1688,21 @@ impl Render for Player {
             .children(cards)
             .child(strip)
     }
+}
+
+/// A new row's arrival: how long, and how far it rises (the web's
+/// `player-row-in`).
+const ROW_IN: std::time::Duration = std::time::Duration::from_millis(400);
+const ROW_RISE: f32 = 6.;
+/// A choice card's slide in (the web's `player-choice-in`), and the
+/// stagger between cards.
+const CARD_IN: std::time::Duration = std::time::Duration::from_millis(320);
+const CARD_STAGGER: std::time::Duration = std::time::Duration::from_millis(60);
+const CARD_SLIDE: f32 = 10.;
+
+/// How long card `n`'s arrival runs, its stagger included.
+fn cards_in(n: usize) -> std::time::Duration {
+    CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
 }
 
 /// Below this width the header folds Tags and Save into ⋯.

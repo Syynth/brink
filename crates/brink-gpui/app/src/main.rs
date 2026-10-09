@@ -3370,6 +3370,13 @@ mod modes_driven {
         // One line of the lamp scene, so a "next" line is marked.
         h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
         assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        // Mid-arrival first: the newest row on its way in.
+        h.advance(std::time::Duration::from_millis(120));
+        let shot = scratch_dir("shot").join("stage-arriving.png");
+        h.screenshot(window, &shot);
+        eprintln!("stage screenshot: {}", shot.display());
+        // Arrivals run on the harness's simulated clock: let them finish.
+        h.advance(std::time::Duration::from_millis(600));
         let shot = scratch_dir("shot").join("stage-write.png");
         h.screenshot(window, &shot);
         eprintln!("stage screenshot: {}", shot.display());
