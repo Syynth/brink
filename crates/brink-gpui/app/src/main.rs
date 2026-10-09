@@ -2930,6 +2930,8 @@ fn open_project_window(
 }
 
 fn main() {
+    // First, so a panic anywhere after leaves its message on disk.
+    brink_gpui_shell::crash_log::install();
     // A path on the command line is opened by its door (`landing::anchor_for`):
     // a `.ink`, a `brink.toml`, or a folder.
     let arg = std::env::args().nth(1).map(PathBuf::from);
