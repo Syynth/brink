@@ -337,6 +337,10 @@ impl Project {
         });
         cx.observe_global::<AppSettings>(Self::sync_prose_options)
             .detach();
+        // Whether "Check Grammar with Apple Intelligence" can run is found
+        // out in the background; start now, so the answer is in by the time
+        // anyone looks.
+        brink_gpui_model::prose::probe_model();
         let pump = cx.spawn(async move |this, cx| {
             while let Ok(response) = responses.recv().await {
                 if this

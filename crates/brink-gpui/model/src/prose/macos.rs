@@ -557,7 +557,7 @@ pub(super) fn model_state() -> ModelState {
 
 /// Find out, once per launch and off every thread that matters, whether
 /// the grammar model answers here (spec §8).
-fn probe_model() {
+pub(super) fn probe_model() {
     PROBE.call_once(|| {
         let spawned = std::thread::Builder::new()
             .name("brink-grammar-probe".to_owned())

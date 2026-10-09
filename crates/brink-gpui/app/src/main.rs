@@ -3898,6 +3898,61 @@ mod modes_driven {
         );
     }
 
+    /// Settings ▸ Spelling & Grammar: the grammar choice follows the
+    /// setting, and on macOS the model's availability is said once known.
+    /// Screenshots for a reviewer's eye; the assertions are on the state
+    /// the section reads.
+    #[test]
+    fn the_spelling_settings_show_the_choice_and_the_model() {
+        use brink_gpui_model::prose::{Grammar, ModelState, model_state};
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let open_on = |h: &mut Harness, section: &'static str| {
+            h.app_window(window, |window, cx| {
+                let workspace = studio.read(cx).workspace.clone();
+                workspace.update(cx, |w, cx| {
+                    w.close_settings(window, cx);
+                    w.open_settings(Some(section), window, cx);
+                });
+            });
+        };
+        let known = h.settle_until(std::time::Duration::from_secs(60), |_| {
+            model_state() != ModelState::Unknown
+        });
+        assert!(known, "the model's availability is found out at launch");
+        open_on(&mut h, "spelling");
+        let shot = scratch_dir("shot").join("settings-spelling.png");
+        h.screenshot(window, &shot);
+        eprintln!("spelling settings: {}", shot.display());
+
+        #[cfg(target_os = "macos")]
+        {
+            h.app_window(window, |_, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = Grammar::MacOs);
+            });
+            let shot = scratch_dir("shot").join("settings-spelling-macos.png");
+            h.screenshot(window, &shot);
+            eprintln!("spelling settings, macOS grammar: {}", shot.display());
+        }
+        // A click on "Off", where the screenshot draws it: the last of the
+        // three segments at the right of the "While typing" row (macOS has
+        // three; elsewhere there are two, and "Off" sits elsewhere).
+        #[cfg(target_os = "macos")]
+        {
+            h.mouse_down(window, 1060., 274.);
+            h.mouse_up(window, 1060., 274.);
+            let chosen =
+                h.read(|cx| brink_gpui_shell::settings::AppSettings::get(cx).prose_grammar);
+            assert_eq!(chosen, Grammar::Off, "the segment sets the setting");
+        }
+
+        open_on(&mut h, "prose");
+        let shot = scratch_dir("shot").join("settings-prose.png");
+        h.screenshot(window, &shot);
+        eprintln!("prose settings: {}", shot.display());
+    }
+
     /// Write mode draws the same squiggles as Script: a bad reference is
     /// marked where it is, not only counted. (The manuscript's sections
     /// never received the analysis's diagnostics at all.)

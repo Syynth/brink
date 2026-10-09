@@ -1,9 +1,11 @@
 # The native studio's prose checker on macOS
 
-**Status:** designed 2026-10-08; not yet built. Ruled the same day (decision
-log, "Native studio prose checking on macOS: OS spelling, Harper grammar
-while typing, Apple Intelligence grammar on request"). §12 lists what is
-still open. Everything here is about `crates/brink-gpui`. The web studio
+**Status:** designed 2026-10-08 and built in the five slices of §13
+(2026-10-08 to 2026-10-09). Ruled 2026-10-08 (decision log, "Native studio
+prose checking on macOS: OS spelling, Harper grammar while typing, Apple
+Intelligence grammar on request"). Where the build departed from this
+document, the text below says so where it happened. §12 lists what is still
+open; how an author keeps the model off intentional dialect is #3664. Everything here is about `crates/brink-gpui`. The web studio
 keeps Harper and is not touched.
 
 ## 1. Summary
@@ -456,3 +458,10 @@ is there on macOS 27, and the fallbacks above cover it missing.
 5. **Settings ▸ Spelling & Grammar**, plus the pointer from Project ▸ Prose.
    Also fix the stale comment in `settings_prose.rs` that says the native
    studio has no prose checker.
+
+   Built with the grammar choice as a filled segmented control
+   (`settings_modal::setting_segments`, drawn as the Project / App switch
+   is), not toggled ghost buttons: a ghost button's toggled state barely
+   shows against the settings panel, so the current choice could not be
+   seen. Settings ▸ Editor's "Open in" row has the same problem and is left
+   as it is.

@@ -103,6 +103,15 @@ pub fn model_state() -> ModelState {
     ModelState::Unavailable
 }
 
+/// Start finding out whether the grammar model answers here — once per
+/// launch, in the background; later calls do nothing. Also started by the
+/// first prose check, so this only makes the answer arrive sooner (the
+/// settings say so before any file is open).
+pub fn probe_model() {
+    #[cfg(target_os = "macos")]
+    macos::probe_model();
+}
+
 /// How a "Check Grammar with Apple Intelligence" ended.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelCheck {
