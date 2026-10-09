@@ -193,6 +193,9 @@ impl WriteView {
                 }
                 ManuscriptEvent::File { path, action } => this.file_action(path, *action, cx),
                 ManuscriptEvent::Outline(event) => cx.emit(WriteEvent::Outline(event.clone())),
+                ManuscriptEvent::BackToNow => {
+                    this.player.update(cx, |player, cx| player.back_to_now(cx));
+                }
             },
         );
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {

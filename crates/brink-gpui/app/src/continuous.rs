@@ -46,7 +46,8 @@ use gpui_component::{
     v_flex,
 };
 
-use brink_gpui_model::query::{QueryKind, QueryResult, Scope};
+use brink_gpui_model::query::{QueryKind, QueryResult, Scope, ScopeKind};
+use gpui::StatefulInteractiveElement as _;
 
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
@@ -249,6 +250,9 @@ pub enum ManuscriptEvent {
     /// A file operation from the same menu — the Binder's, run by the
     /// studio the same way.
     Outline(crate::binder::BinderEvent),
+    /// The NOW pill was pressed: back to the line the story is on, and
+    /// follow it again.
+    BackToNow,
 }
 
 impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
@@ -801,6 +805,128 @@ impl ContinuousView {
         // The hover bracket and the `chosen` labels are drawn here, over
         // the sections.
         cx.notify();
+    }
+
+    /// Whether the line the story is on is off screen, and which way:
+    /// `Some(true)` below the view, `Some(false)` above, `None` on screen
+    /// (or nothing playing).
+    pub(crate) fn now_is_below(&self, cx: &App) -> Option<bool> {
+        let loc = self.trail.borrow().active.clone()?;
+        let index = self.files.iter().position(|f| *f == loc.path)?;
+        let view = self.last_view.get()?;
+        match self.list.bounds_for_item(index) {
+            Some(item) => {
+                let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+                let state = editor.read(cx);
+                let line_height = f32::from(state.line_height()?);
+                let text = state.value();
+                let line = text
+                    .get(..(loc.start as usize).min(text.len()))
+                    .map_or(0, |before| before.matches('\n').count());
+                let top = f32::from(item.top())
+                    + SEPARATOR_HEIGHT
+                    + state.display_row_of_buffer_line(line) as f32 * line_height;
+                if top + line_height < f32::from(view.top()) {
+                    Some(false)
+                } else if top > f32::from(view.bottom()) {
+                    Some(true)
+                } else {
+                    None
+                }
+            }
+            None => Some(index > self.list.logical_scroll_top().item_ix),
+        }
+    }
+
+    /// Scroll the manuscript by `by` pixels — the test's stand-in for the
+    /// author scrolling away.
+    #[cfg(test)]
+    pub(crate) fn scroll_by(&mut self, by: f32, cx: &mut Context<Self>) {
+        self.list.scroll_by(px(by));
+        cx.notify();
+    }
+
+    /// The canvas's Away frame: when the line the story is on is off
+    /// screen — scrolled away to edit — a pill at the bottom of the
+    /// manuscript names where it is and takes you back (`BackToNow`).
+    fn now_pill(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let below = self.now_is_below(cx)?;
+        let loc = self.trail.borrow().active.clone()?;
+        // Where it is: the file, and the knot or stitch around the line.
+        let name = self.outlines.get(&loc.path).and_then(|scopes| {
+            let around = scopes
+                .iter()
+                .filter(|s| matches!(s.kind, ScopeKind::Knot | ScopeKind::Stitch))
+                .filter(|s| s.start <= loc.start && loc.start < s.end)
+                .max_by_key(|s| s.start)?;
+            let source = self.project.read(cx).loaded_source(&loc.path)?;
+            let header = source.get(around.start as usize..)?.lines().next()?;
+            let name = header.trim().trim_matches('=').trim();
+            Some(name.split_whitespace().next().unwrap_or(name).to_owned())
+        });
+        let file = loc.path.rsplit('/').next().unwrap_or(&loc.path).to_owned();
+        let label = match name {
+            Some(name) => format!("{file} · {name}, {}", if below { "below" } else { "above" }),
+            None => format!("{file}, {}", if below { "below" } else { "above" }),
+        };
+        let theme = cx.theme();
+        let (accent, fg, card, on_accent) = (
+            theme.primary,
+            theme.foreground,
+            theme.secondary,
+            theme.background,
+        );
+        Some(
+            h_flex()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(22.))
+                .justify_center()
+                .child(
+                    h_flex()
+                        .id("manuscript-now")
+                        .h(px(34.))
+                        .px(px(14.))
+                        .gap(px(10.))
+                        .items_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(accent)
+                        .bg(card)
+                        .shadow_lg()
+                        .text_sm()
+                        .text_color(fg)
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .h(px(18.))
+                                .px(px(6.))
+                                .rounded_full()
+                                .bg(accent)
+                                .text_color(on_accent)
+                                .text_size(px(10.))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .flex()
+                                .items_center()
+                                .child("NOW"),
+                        )
+                        .child(label)
+                        .child(
+                            gpui_component::Icon::new(if below {
+                                gpui_component::IconName::ArrowDown
+                            } else {
+                                gpui_component::IconName::ArrowUp
+                            })
+                            .size(px(14.))
+                            .text_color(accent),
+                        )
+                        .on_click(cx.listener(|_, _: &gpui::ClickEvent, _, cx| {
+                            cx.emit(ManuscriptEvent::BackToNow);
+                        })),
+                )
+                .into_any_element(),
+        )
     }
 
     /// A small `chosen` label just after each taken choice's line (the
@@ -1476,6 +1602,7 @@ impl Render for ContinuousView {
         let column = column_width(window, cx);
         let bracket = self.hover_bracket(column, cx);
         let chosen = self.chosen_labels(cx);
+        let now_pill = self.now_pill(cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
             let (path, lines, pushes) = self
@@ -1624,6 +1751,7 @@ impl Render for ContinuousView {
             )
             .children(bracket)
             .children(chosen)
+            .children(now_pill)
             // After layout: where the text starts, for the title bar's
             // crumb, and whether the caret is still on screen.
             .child({

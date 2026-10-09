@@ -3523,6 +3523,58 @@ mod modes_driven {
         eprintln!("choice marks screenshot: {}", shot.display());
     }
 
+    /// The canvas's Away frame: scroll the manuscript away from the line
+    /// the story is on and a NOW pill says which way it is; pressing it
+    /// goes back.
+    #[test]
+    fn scrolled_away_the_now_pill_brings_you_back() {
+        let dir = scratch_dir("away");
+        let mut story = String::from("-> tale\n=== tale ===\nThe first line.\n");
+        for n in 0..120 {
+            story.push_str(&format!("Line {n} of a long walk.\n"));
+        }
+        story.push_str("-> END\n");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"tale.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(dir.join("tale.ink"), story).expect("writing the story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (player, manuscript, write) = h.read(|cx| {
+            let s = studio.read(cx);
+            (s.player.clone(), s.manuscript.clone(), s.write.clone())
+        });
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.line_count() == 1 && !p.is_busy()));
+        h.advance(std::time::Duration::from_millis(600));
+        let away = |h: &mut Harness| h.read(|cx| manuscript.read(cx).now_is_below(cx));
+        assert_eq!(away(&mut h), None, "the playing line starts on screen");
+
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(3000., cx)));
+        h.advance(std::time::Duration::from_millis(100));
+        assert_eq!(
+            away(&mut h),
+            Some(false),
+            "scrolled down past it: it is above"
+        );
+        let shot = scratch_dir("shot").join("now-pill.png");
+        h.screenshot(window, &shot);
+        eprintln!("now pill screenshot: {}", shot.display());
+
+        h.update(|cx| {
+            manuscript.update(cx, |_, cx| {
+                cx.emit(crate::continuous::ManuscriptEvent::BackToNow)
+            });
+        });
+        let _ = write;
+        for _ in 0..6 {
+            h.advance(std::time::Duration::from_millis(50));
+        }
+        assert_eq!(away(&mut h), None, "the pill brought it back");
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {

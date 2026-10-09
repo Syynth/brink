@@ -449,6 +449,19 @@ impl Player {
         }
     }
 
+    /// The manuscript's NOW pill: follow again, and go back to the line the
+    /// story is on.
+    pub fn back_to_now(&mut self, cx: &mut Context<Self>) {
+        self.follow_paused = false;
+        if let Some(loc) = self.current_source().cloned() {
+            cx.emit(PlayerEvent::Follow {
+                path: loc.path,
+                span: loc.start as usize..loc.end as usize,
+            });
+        }
+        cx.notify();
+    }
+
     /// Follow: on → off; paused → on (resumed); off → on.
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
         let on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
