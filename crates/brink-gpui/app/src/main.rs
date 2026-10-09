@@ -3384,6 +3384,66 @@ mod modes_driven {
         );
     }
 
+    /// A transcript row links back to its source (#3436, ruled 2026-09-02):
+    /// hovering shows a go-to-source button in its top-right corner, and
+    /// it — or ⌘-click on the row — opens the line; a plain click does
+    /// not, so reading never jumps the manuscript.
+    #[test]
+    fn a_row_opens_its_source_from_its_chip_or_a_cmd_click() {
+        use std::{cell::Cell, rc::Rc};
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        h.advance(std::time::Duration::from_millis(600));
+        let opened = Rc::new(Cell::new(0));
+        let _watch = {
+            let opened = opened.clone();
+            h.update(|cx| {
+                cx.subscribe(&player, move |_, event: &crate::player::PlayerEvent, _| {
+                    if matches!(event, crate::player::PlayerEvent::Navigate { .. }) {
+                        opened.set(opened.get() + 1);
+                    }
+                })
+            })
+        };
+        // Where the row is now — measured again before each click, since a
+        // frame of NOW correction or the arrival's rise can still move it.
+        let row_at = |h: &mut Harness| {
+            for _ in 0..4 {
+                h.advance(std::time::Duration::from_millis(50));
+            }
+            h.read(|cx| player.read(cx).active_row_bounds())
+                .expect("the first line is laid out")
+        };
+        let middle = |row: gpui::Bounds<gpui::Pixels>| {
+            (
+                f32::from(row.left() + row.size.width / 3.),
+                f32::from(row.center().y),
+            )
+        };
+
+        let (x, y) = middle(row_at(&mut h));
+        h.click_with(window, x, y, gpui::Modifiers::default());
+        assert_eq!(opened.get(), 0, "a plain click only reads");
+
+        let (x, y) = middle(row_at(&mut h));
+        h.click_with(window, x, y, gpui::Modifiers::command());
+        assert_eq!(opened.get(), 1, "⌘-click opens the line's source");
+
+        // The chip: 22px in the row's top-right corner, 6px in and 4px down.
+        let row = row_at(&mut h);
+        let (x, y) = middle(row);
+        let (cx_, cy) = (
+            f32::from(row.right()) - 6. - 11.,
+            f32::from(row.top()) + 4. + 11.,
+        );
+        h.hover(window, x, y);
+        let shot = scratch_dir("shot").join("provenance.png");
+        h.screenshot(window, &shot);
+        eprintln!("provenance screenshot: {}", shot.display());
+        h.click_with(window, cx_, cy, gpui::Modifiers::default());
+        assert_eq!(opened.get(), 2, "the chip opens it too");
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {

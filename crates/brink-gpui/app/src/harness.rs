@@ -209,6 +209,36 @@ impl Harness {
         );
     }
 
+    /// A left click at `(x, y)` with `modifiers` held — press and release.
+    pub fn click_with(
+        &mut self,
+        window: AnyWindowHandle,
+        x: f32,
+        y: f32,
+        modifiers: gpui::Modifiers,
+    ) {
+        let position = gpui::point(px(x), px(y));
+        self.mouse(
+            window,
+            gpui::PlatformInput::MouseDown(gpui::MouseDownEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+                first_mouse: false,
+            }),
+        );
+        self.mouse(
+            window,
+            gpui::PlatformInput::MouseUp(gpui::MouseUpEvent {
+                button: gpui::MouseButton::Left,
+                position,
+                modifiers,
+                click_count: 1,
+            }),
+        );
+    }
+
     /// A right-click at `(x, y)`: press and release the right button.
     pub fn right_click(&mut self, window: AnyWindowHandle, x: f32, y: f32) {
         let position = gpui::point(px(x), px(y));
