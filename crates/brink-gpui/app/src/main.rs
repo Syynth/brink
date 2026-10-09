@@ -3145,26 +3145,153 @@ mod modes_driven {
         dir
     }
 
+    /// Wait, up to ten seconds, for the Player to satisfy `done`.
+    fn player_until(
+        h: &mut Harness,
+        player: &gpui::Entity<crate::player::Player>,
+        done: impl Fn(&crate::player::Player) -> bool,
+    ) -> bool {
+        h.settle_until(std::time::Duration::from_secs(10), |h| {
+            h.read(|cx| done(player.read(cx)))
+        })
+    }
+
+    /// Autoplay runs on timers, and the harness's clock is simulated: move
+    /// it on a pace at a time until the Player satisfies `done`.
+    fn autoplay_until(
+        h: &mut Harness,
+        player: &gpui::Entity<crate::player::Player>,
+        done: impl Fn(&crate::player::Player) -> bool,
+    ) -> bool {
+        let pace =
+            std::time::Duration::from_secs_f32(brink_gpui_shell::settings::MIN_AUTOPLAY_MS / 1000.);
+        for _ in 0..40 {
+            h.advance(pace);
+            if player_until(h, player, |p| !p.is_busy()) && h.read(|cx| done(player.read(cx))) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Open the Stage story in Write and press Play: one line, no more.
+    fn stage_started(h: &mut Harness) -> (AnyWindowHandle, gpui::Entity<crate::player::Player>) {
+        let window = h.open(&stage_project());
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(
+            player_until(h, &player, |p| p.line_count() == 1 && !p.is_busy()),
+            "Play delivers the first line"
+        );
+        (window, player)
+    }
+
+    /// ▶ plays one line — never a whole turn (decision log 2026-10-09).
+    #[test]
+    fn play_advances_one_line_per_press() {
+        let mut h = Harness::new();
+        let (_, player) = stage_started(&mut h);
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        let lines = h.read(|cx| player.read(cx).line_count());
+        assert_eq!(lines, 2, "one press, one more line");
+    }
+
+    /// `>|` runs straight to the next stop — here, the first choice.
+    #[test]
+    fn skip_runs_to_the_choice() {
+        let mut h = Harness::new();
+        let (_, player) = stage_started(&mut h);
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(
+            player_until(&mut h, &player, |p| p.state()
+                == crate::player::SessionState::AwaitingChoice),
+            "skip stops at the choice"
+        );
+    }
+
+    /// `>>` plays on at the Settings pace and stops itself at a choice.
+    #[test]
+    fn autoplay_plays_on_and_stops_at_the_choice() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            brink_gpui_shell::settings::update(cx, |s| {
+                s.autoplay_ms = brink_gpui_shell::settings::MIN_AUTOPLAY_MS;
+            });
+        });
+        let (_, player) = stage_started(&mut h);
+        h.update(|cx| player.update(cx, |p, cx| p.toggle_autoplay(cx)));
+        assert!(h.read(|cx| player.read(cx).is_autoplaying()));
+        assert!(
+            autoplay_until(&mut h, &player, |p| p.state()
+                == crate::player::SessionState::AwaitingChoice),
+            "autoplay reaches the choice"
+        );
+        let (autoplaying, lines) = h.read(|cx| {
+            (
+                player.read(cx).is_autoplaying(),
+                player.read(cx).line_count(),
+            )
+        });
+        assert!(!autoplaying, "a choice ends autoplay");
+        assert!(lines >= 4, "it played the run on its own: {lines} lines");
+    }
+
+    /// Autoplay holds BEFORE a breakpoint's line — not after it played.
+    #[test]
+    fn autoplay_holds_before_a_breakpoint_line() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            brink_gpui_shell::settings::update(cx, |s| {
+                s.autoplay_ms = brink_gpui_shell::settings::MIN_AUTOPLAY_MS;
+            });
+        });
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        // tower.ink line 11: "The boats knock against the pier."
+        h.update(|cx| {
+            project.update(cx, |p, cx| {
+                p.toggle_breakpoint("tower.ink", 11, cx);
+            });
+        });
+        // The marks reach the worker on their own; give them a frame.
+        h.settle();
+        h.update(|cx| player.update(cx, |p, cx| p.toggle_autoplay(cx)));
+        assert!(
+            autoplay_until(&mut h, &player, |p| p.held().is_some()),
+            "the breakpoint holds the story"
+        );
+        let (held, autoplaying, has_boats) = h.read(|cx| {
+            let p = player.read(cx);
+            (p.held().cloned(), p.is_autoplaying(), p.has_line("boats"))
+        });
+        assert_eq!(held, Some(("tower.ink".to_owned(), 11)));
+        assert!(!autoplaying, "a hold ends autoplay");
+        assert!(!has_boats, "held before the line, not after it played");
+    }
+
     /// The Stage pictures: the same session in Write (beside the
     /// manuscript, no Step) and Script (a centre tab, with Step), past
     /// one choice so the echo shows, for checking by eye.
     #[test]
     fn the_stage_player_pictures() {
         let mut h = Harness::new();
-        let window = h.open(&stage_project());
-        let studio = h.studio(window).expect("open");
-        let player = h.read(|cx| studio.read(cx).player.clone());
-        let state = |h: &mut Harness| h.read(|cx| player.read(cx).state());
-        h.dispatch(window, ModeWrite);
-        h.dispatch(window, super::Play);
+        let (window, player) = stage_started(&mut h);
         let waiting = |h: &mut Harness| {
-            h.settle_until(std::time::Duration::from_secs(10), |h| {
-                state(h) == crate::player::SessionState::AwaitingChoice
+            h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+            player_until(h, &player, |p| {
+                p.state() == crate::player::SessionState::AwaitingChoice
             })
         };
         assert!(waiting(&mut h), "the story never reached its first choice");
         h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
-        assert!(waiting(&mut h), "nor its second");
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        // One line of the lamp scene, so a "next" line is marked.
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
         let shot = scratch_dir("shot").join("stage-write.png");
         h.screenshot(window, &shot);
         eprintln!("stage screenshot: {}", shot.display());

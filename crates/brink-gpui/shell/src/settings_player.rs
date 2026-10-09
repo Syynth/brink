@@ -5,19 +5,20 @@
 //! in *your* Player and how large *your* transcript is are machine
 //! preferences, never properties of the project.
 //!
-//! Two settings, both of which something reads:
+//! Three settings, each of which something reads:
 //!
 //! - **Follow in editor** — the Player reveals each line's source as it
 //!   plays, which is what makes the Player and the editor one tool rather
 //!   than two windows onto the same story. It pauses itself while you are
 //!   editing and Play or Restart resumes it (`app/src/player.rs`).
+//! - **Autoplay pace** — how long `>>` waits between lines, in the web's
+//!   unit (milliseconds per line).
 //! - **Player font size** — the transcript's prose only. `0` follows the
 //!   app type scale, so the default needs no second number to keep in step
 //!   with the app's.
 //!
 //! What the web has here and this does not: paced auto-reveal (the native
-//! Player delivers a run in one go — there is no reveal pacing to
-//! configure), debug info (the compile always carries it) and the
+//! Player advances a line per press, and `>>` is its pacing), debug info (the compile always carries it) and the
 //! external-function check (nothing binds externals in the studio yet).
 
 use gpui::prelude::*;
@@ -26,9 +27,10 @@ use gpui_component::switch::Switch;
 use gpui_component::{ActiveTheme as _, v_flex};
 
 use crate::settings::{
-    self, AppSettings, MAX_EDITOR_FONT_SIZE, MIN_EDITOR_FONT_SIZE, clamp_font_size,
+    self, AppSettings, MAX_AUTOPLAY_MS, MAX_EDITOR_FONT_SIZE, MIN_AUTOPLAY_MS,
+    MIN_EDITOR_FONT_SIZE, clamp_font_size,
 };
-use crate::settings_modal::{setting_group, setting_row, setting_stepper};
+use crate::settings_modal::{setting_group, setting_row, setting_stepper, setting_stepper_by};
 
 pub struct PlayerSection;
 
@@ -56,6 +58,22 @@ impl Render for PlayerSection {
                         let on = *on;
                         settings::update(cx, |s| s.follow_in_editor = on);
                     }),
+                cx,
+            ))
+            .child(setting_row(
+                "Autoplay pace",
+                "How long >> waits from one line to the next. It stops at a breakpoint, a choice, or the end.",
+                setting_stepper_by(
+                    "autoplay-pace",
+                    settings.autoplay_ms,
+                    100.,
+                    format!("{:.1} s / line", settings.autoplay_ms / 1000.),
+                    |next, _, cx| {
+                        let next = next.clamp(MIN_AUTOPLAY_MS, MAX_AUTOPLAY_MS);
+                        settings::update(cx, |s| s.autoplay_ms = next);
+                    },
+                    cx,
+                ),
                 cx,
             ))
             .child(setting_group("Reading", cx))
