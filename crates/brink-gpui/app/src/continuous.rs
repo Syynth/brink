@@ -773,8 +773,78 @@ impl ContinuousView {
                 editor.update(cx, |_, cx| cx.notify());
             }
         }
-        // The hover bracket is drawn here, over the sections.
+        // Passed-by choices fade through the sections' highlighters, which
+        // read them from the Read cell they already share.
+        {
+            let trail = self.trail.borrow();
+            let mut passed: std::collections::BTreeMap<String, Vec<std::ops::Range<usize>>> =
+                std::collections::BTreeMap::new();
+            for loc in &trail.not_taken {
+                let Some(text) = self.project.read(cx).loaded_source(&loc.path) else {
+                    continue;
+                };
+                let start = text
+                    .get(..(loc.start as usize).min(text.len()))
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |at| at + 1);
+                let end = text
+                    .get(loc.start as usize..)
+                    .and_then(|after| after.find('\n'))
+                    .map_or(text.len(), |at| loc.start as usize + at);
+                passed.entry(loc.path.clone()).or_default().push(start..end);
+            }
+            *self.read.not_taken.borrow_mut() = passed;
+        }
+        for (editor, _) in self.editors.borrow().values() {
+            editor.update(cx, |_, cx| cx.notify());
+        }
+        // The hover bracket and the `chosen` labels are drawn here, over
+        // the sections.
         cx.notify();
+    }
+
+    /// A small `chosen` label just after each taken choice's line (the
+    /// canvas's Choices and Across frames), where its section is laid out.
+    /// In this view's own coordinates.
+    fn chosen_labels(&self, cx: &App) -> Vec<gpui::AnyElement> {
+        let Some(view) = self.last_view.get() else {
+            return Vec::new();
+        };
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let colour = brink_gpui_shell::theme::hsla(tokens.symbol_knot);
+        let trail = self.trail.borrow();
+        let mut seen = std::collections::BTreeSet::new();
+        trail
+            .chosen
+            .iter()
+            .filter(|loc| seen.insert((loc.path.clone(), loc.start)))
+            .filter_map(|loc| {
+                let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+                let state = editor.read(cx);
+                let text = state.value();
+                let end = text
+                    .get(loc.start as usize..)
+                    .and_then(|after| after.find('\n'))
+                    .map_or(text.len(), |at| loc.start as usize + at);
+                let at = state.range_to_bounds(&(end..end))?;
+                if at.bottom() < view.top() || at.top() > view.bottom() {
+                    return None;
+                }
+                Some(
+                    div()
+                        .absolute()
+                        .left(at.left() - view.left() + px(12.))
+                        .top(at.top() - view.top())
+                        .h(at.size.height)
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .text_color(colour)
+                        .child("chosen")
+                        .into_any_element(),
+                )
+            })
+            .collect()
     }
 
     /// The bracket beside the source lines of the Player row under the
@@ -1405,6 +1475,7 @@ impl Render for ContinuousView {
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
         let bracket = self.hover_bracket(column, cx);
+        let chosen = self.chosen_labels(cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
             let (path, lines, pushes) = self
@@ -1552,6 +1623,7 @@ impl Render for ContinuousView {
                 .flex_1(),
             )
             .children(bracket)
+            .children(chosen)
             // After layout: where the text starts, for the title bar's
             // crumb, and whether the caret is still on screen.
             .child({

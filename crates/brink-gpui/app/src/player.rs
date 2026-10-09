@@ -99,6 +99,9 @@ pub struct Player {
     /// manuscript's bracket (decision log 2026-10-09), and whether it is a
     /// choice.
     hovered: Option<(Location, bool)>,
+    /// Every choice offered and passed by this session (taken later or
+    /// not — `trail` subtracts the taken ones).
+    passed: Vec<Location>,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -190,6 +193,7 @@ impl Player {
             arrivals: Vec::new(),
             choices_at: None,
             hovered: None,
+            passed: Vec::new(),
             choices: Vec::new(),
             list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
@@ -290,6 +294,7 @@ impl Player {
         self.generation += 1;
         self.entries.clear();
         self.arrivals.clear();
+        self.passed.clear();
         self.choices.clear();
         // One item before the transcript and one past it — the head and the
         // tail, the room that lets its first and last rows reach NOW.
@@ -476,7 +481,11 @@ impl Player {
                 .enumerate()
                 .filter(|(ix, _)| Some(*ix) != active)
                 .filter_map(|(_, e)| match e {
+                    // A taken choice is a played line too: it gets the rail.
                     Entry::Line {
+                        source: Some(loc), ..
+                    }
+                    | Entry::Chosen {
                         source: Some(loc), ..
                     } => Some(loc.clone()),
                     _ => None,
@@ -489,7 +498,29 @@ impl Player {
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
             hover: self.hovered.clone(),
+            chosen: self.chosen_sources(),
+            not_taken: {
+                let chosen = self.chosen_sources();
+                self.passed
+                    .iter()
+                    .filter(|loc| !chosen.contains(loc))
+                    .cloned()
+                    .collect()
+            },
         }
+    }
+
+    /// Where each choice the reader took was written.
+    fn chosen_sources(&self) -> Vec<Location> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Chosen {
+                    source: Some(loc), ..
+                } => Some(loc.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The index of the newest story line — the active row.
@@ -548,6 +579,13 @@ impl Player {
         let Some(choice) = self.choices.iter().find(|c| c.index == index).cloned() else {
             return;
         };
+        // The rest of the offer, passed by — the manuscript dims them.
+        self.passed.extend(
+            self.choices
+                .iter()
+                .filter(|c| c.index != index)
+                .filter_map(|c| c.source.clone()),
+        );
         self.choices.clear();
         self.push(Entry::Chosen {
             text: choice.text.into(),
@@ -1636,6 +1674,9 @@ pub struct PlayTrail {
     /// The source of the transcript row (or choice card) under the
     /// pointer, and whether it is a choice — the manuscript brackets it.
     pub hover: Option<(Location, bool)>,
+    /// The choices taken, and the ones offered beside them and passed by.
+    pub chosen: Vec<Location>,
+    pub not_taken: Vec<Location>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`

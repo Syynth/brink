@@ -3494,6 +3494,35 @@ mod modes_driven {
         assert!(choice, "a choice is bracketed as one");
     }
 
+    /// Taking a choice marks it in the manuscript — the played rail and a
+    /// `chosen` label — and dims the options passed by (the canvas's
+    /// Choices and Across frames).
+    #[test]
+    fn a_taken_choice_is_marked_and_the_rest_are_dimmed() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.advance(std::time::Duration::from_millis(600));
+
+        let trail = h.read(|cx| player.read(cx).trail());
+        let line = |offset: u32| STAGE_STORY[..offset as usize].matches('\n').count() + 1;
+        let chosen: Vec<usize> = trail.chosen.iter().map(|l| line(l.start)).collect();
+        let passed: Vec<usize> = trail.not_taken.iter().map(|l| line(l.start)).collect();
+        assert_eq!(chosen, [12], "`* [Ask about the lamp]` was taken");
+        assert_eq!(passed, [13], "`+ [Say nothing]` was passed by");
+        assert!(
+            trail.played.iter().any(|l| line(l.start) == 12),
+            "a taken choice is played: it gets the rail"
+        );
+        let shot = scratch_dir("shot").join("choice-marks.png");
+        h.screenshot(window, &shot);
+        eprintln!("choice marks screenshot: {}", shot.display());
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {
