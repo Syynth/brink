@@ -60,6 +60,8 @@ pub enum PlayerEvent {
     Peek {
         path: String,
         span: Range<usize>,
+        /// A choice: shown with its body, not just its line.
+        choice: bool,
     },
     /// The pointer left the Player: back to NOW — the line the story is
     /// on, or the choices it is offering.
@@ -1507,6 +1509,7 @@ impl Player {
                     cx.emit(PlayerEvent::Peek {
                         path: loc.path.clone(),
                         span: loc.start as usize..loc.end as usize,
+                        choice,
                     });
                 }
             } else if this.hovered.as_ref().is_some_and(|(l, _)| *l == loc) {

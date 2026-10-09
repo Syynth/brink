@@ -234,6 +234,10 @@ pub struct ContinuousView {
     /// The pending reveal is the Player following: it lands its line on
     /// the NOW line rather than near the top.
     reveal_now: bool,
+    /// The pending reveal is a block to show whole — a hovered choice and
+    /// its body (decision log 2026-10-09): centred when it fits, else from
+    /// its first line at the top. Its end offset.
+    reveal_block: Option<usize>,
     /// The NOW line, in window coordinates, as of the last frame.
     now_y: f32,
     /// Room after the last file while a story plays, so a line near the
@@ -356,6 +360,7 @@ impl ContinuousView {
             pending_focus: None,
             gutters: Rc::default(),
             reveal_now: false,
+            reveal_block: None,
             now_y: 0.,
             now_tail: 0.,
             now_head: 0.,
@@ -503,8 +508,14 @@ impl ContinuousView {
         span: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) {
-        self.reveal_span(path, span, cx);
+        // The caret goes to where the followed span starts. Selecting the
+        // whole span put it at the span's END, and keeping the caret in view
+        // then scrolled there — for a choice point's span (first choice to
+        // last, bodies between) a long way from the choices.
+        self.reveal_span(path, span.start..span.start, cx);
         self.reveal_now = true;
+        // Its outline, so a hover there can show a choice whole.
+        self.request_outline(path, cx);
     }
 
     fn apply_pending_reveal(&mut self, cx: &mut Context<Self>) {
@@ -556,11 +567,43 @@ impl ContinuousView {
             return;
         };
         self.pending_reveal = None;
+        let pinned = (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height;
+        let block = self.reveal_block.take();
         let reserve = match self.last_view.get() {
+            // A block (a hovered choice and its body): centred in the view
+            // when it fits below the pinned rows; else its first line at the
+            // top, so the choice itself always stays in sight.
+            Some(view) if block.is_some() => {
+                self.reveal_now = false;
+                let end = block.unwrap_or(span.start);
+                let state = editor.read(cx);
+                let last = text
+                    .get(..end.min(text.len()))
+                    .map_or(0, |before| before.matches('\n').count());
+                let lines = text.matches('\n').count() + 1;
+                let end_row = if last + 1 < lines {
+                    state.display_row_of_buffer_line(last + 1)
+                } else {
+                    state.display_row_count()
+                };
+                let first = text
+                    .get(..span.start)
+                    .map_or(0, |before| before.matches('\n').count());
+                let rows = end_row
+                    .saturating_sub(state.display_row_of_buffer_line(first))
+                    .max(1);
+                let height = rows as f32 * line_height;
+                let room = f32::from(view.size.height) - pinned;
+                if height <= room {
+                    pinned + (room - height) / 2.
+                } else {
+                    pinned
+                }
+            }
             Some(view) if std::mem::take(&mut self.reveal_now) => {
                 self.now_y - f32::from(view.origin.y)
             }
-            _ => (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height,
+            _ => pinned,
         };
         let offset = (self.lead(index) + SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
@@ -583,15 +626,33 @@ impl ContinuousView {
     /// NOW — following, not scrolled away — show the hovered line's source
     /// on the NOW line, without moving the caret. Once peeking, further
     /// hovers follow the pointer; [`Self::end_peek`] goes back.
-    pub fn peek_span(&mut self, path: &str, span: std::ops::Range<usize>, cx: &mut Context<Self>) {
+    pub fn peek_span(
+        &mut self,
+        path: &str,
+        span: std::ops::Range<usize>,
+        choice: bool,
+        cx: &mut Context<Self>,
+    ) {
         if !self.peeking {
             if self.now_is_below(cx).is_some() {
                 return;
             }
             self.peeking = true;
         }
-        self.follow_span(path, span, cx);
+        self.follow_span(path, span.clone(), cx);
         self.reveal_select = false;
+        // A choice shows with its body (decision log 2026-10-09): the
+        // outline's choice block holding its line.
+        if choice {
+            self.reveal_block = self.outlines.get(path).and_then(|scopes| {
+                scopes
+                    .iter()
+                    .filter(|s| s.kind == ScopeKind::Choice)
+                    .filter(|s| (s.start as usize) <= span.start && span.start < s.end as usize)
+                    .max_by_key(|s| s.start)
+                    .map(|s| s.end as usize)
+            });
+        }
     }
 
     /// The pointer left the Player: back to NOW (`now`), if a peek had
@@ -926,6 +987,20 @@ impl ContinuousView {
                 + SEPARATOR_HEIGHT
                 + state.display_row_of_buffer_line(line) as f32 * line_height,
         )
+    }
+
+    /// Whether `path`'s outline (its scopes) has arrived.
+    #[cfg(test)]
+    pub(crate) fn has_outline_for_test(&self, path: &str) -> bool {
+        self.outlines.contains_key(path)
+    }
+
+    /// This view's top and bottom, in window coordinates, as last laid out.
+    #[cfg(test)]
+    pub(crate) fn view_bounds_for_test(&self) -> Option<(f32, f32)> {
+        self.last_view
+            .get()
+            .map(|v| (f32::from(v.top()), f32::from(v.bottom())))
     }
 
     /// Where the caret is in `path`'s section.

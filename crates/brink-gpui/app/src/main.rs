@@ -899,10 +899,10 @@ impl Studio {
                     PlayerEvent::Close => {}
                     // A hover's peek, in the manuscript only: Code view's
                     // tabs have no NOW to come back to.
-                    PlayerEvent::Peek { path, span } => {
+                    PlayerEvent::Peek { path, span, choice } => {
                         if this.workspace.read(cx).editor_view(cx) == EditorView::Write {
                             this.manuscript
-                                .update(cx, |m, cx| m.peek_span(path, span.clone(), cx));
+                                .update(cx, |m, cx| m.peek_span(path, span.clone(), *choice, cx));
                         }
                     }
                     PlayerEvent::PeekEnd { now } => {
@@ -3905,6 +3905,112 @@ mod modes_driven {
             h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
         });
         assert!(synced, "and back at NOW");
+    }
+
+    /// A choice point whose choices lie far apart (long bodies between
+    /// them) still puts the first choice on NOW — following used to select
+    /// the whole span and chase the caret to its far end — and hovering a
+    /// choice card centres that choice and its body (decision log
+    /// 2026-10-09).
+    #[test]
+    fn spread_out_choices_stay_on_now_and_a_hovered_choice_centres_its_block() {
+        let dir = scratch_dir("spread");
+        let mut story = String::from(
+            "-> pick\n=== pick ===\nWhich way?\n+ [Left]\n    You go left.\n    It is cold.\n    -> pick\n",
+        );
+        story.push_str("+ [Right]\n");
+        for n in 0..80 {
+            story.push_str(&format!("    Step {n} to the right.\n"));
+        }
+        story.push_str("    -> END\n");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"way.ink\"\n").expect("config");
+        std::fs::write(dir.join("way.ink"), &story).expect("story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (player, manuscript) = h.read(|cx| {
+            (
+                studio.read(cx).player.clone(),
+                studio.read(cx).manuscript.clone(),
+            )
+        });
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice
+            || p.line_count() > 0));
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(
+            synced,
+            "the choices sit on NOW, the caret not chasing their far end"
+        );
+        let left = u32::try_from(story.find("+ [Left]").expect("left")).expect("small");
+        let caret = h.read(|cx| manuscript.read(cx).caret_in("way.ink", cx));
+        assert!(
+            caret.is_some_and(|c| (left as usize..left as usize + "+ [Left]".len()).contains(&c)),
+            "the caret is on the first choice's line: {caret:?}"
+        );
+
+        // The choice point asked for the file's outline; let it arrive.
+        assert!(h.settle_until(std::time::Duration::from_secs(5), |h| {
+            h.read(|cx| manuscript.read(cx).has_outline_for_test("way.ink"))
+        }));
+        // Hover the first card: `+ [Left]` and its body, centred.
+        let (w, hh) = h.read(|cx| {
+            let win = cx
+                .windows()
+                .into_iter()
+                .find(|x| x.window_id() == window.window_id())
+                .expect("the window");
+            win.update(cx, |_, w, _| {
+                let s = w.viewport_size();
+                (f32::from(s.width), f32::from(s.height))
+            })
+            .expect("open")
+        });
+        let first_card = hh - 58. - 10. - 40. - 8. - 20.;
+        h.hover(window, w * 0.75, first_card);
+        let body = u32::try_from(story.find("It is cold.").expect("body")).expect("small");
+        let centred = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            let (top, bottom, view) = h.read(|cx| {
+                let m = manuscript.read(cx);
+                (
+                    m.offset_top("way.ink", left, cx),
+                    m.offset_top("way.ink", body, cx),
+                    m.view_bounds_for_test(),
+                )
+            });
+            match (top, bottom, view) {
+                (Some(top), Some(bottom), Some((vt, vb))) => {
+                    let above = top - vt;
+                    let below = vb - bottom;
+                    top > vt && bottom < vb && (above - below).abs() < 120.
+                }
+                _ => false,
+            }
+        });
+        let dbg = h.read(|cx| {
+            let m = manuscript.read(cx);
+            (
+                m.offset_top("way.ink", left, cx),
+                m.offset_top("way.ink", body, cx),
+                m.view_bounds_for_test(),
+                m.has_outline_for_test("way.ink"),
+                player.read(cx).trail().hover,
+            )
+        });
+        assert!(
+            centred,
+            "the hovered choice and its body sit in the middle: {dbg:?}"
+        );
     }
 
     /// `>|` runs straight to the next stop — here, the first choice.

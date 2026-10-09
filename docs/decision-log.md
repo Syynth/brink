@@ -6055,3 +6055,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** Putting Write mode's Player away pauses following for the session (the Follow setting is untouched): the manuscript stops moving, the NOW pill goes, and autoplay stops. Bringing the Player back resumes following and returns the manuscript to NOW, as Play and Restart do.
 - **WHY:** Maintainer: "if i close the player, disable following" — with the Player away the manuscript is the author's to write in.
+
+## A hovered choice shows with its body, centred; else the choice at the top
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** Hovering a choice in the Player (a card or a choice echo), while the manuscript is following, scrolls the manuscript to the choice together with its body (the outline's choice block): centred in the view when it fits, otherwise with the choice line at the top, so the choice itself always stays visible. Following "where it leads" past a divert is a later refinement.
+- **WHY:** Maintainer: "a kind of heuristic for showing the choice + 'where it leads' but if that is too big, the choice itself needs to stay visible, it should basically center the set of lines that are the choice + it's body, but if the viewport isn't big enough, it should put the choice at the top of the viewport."
