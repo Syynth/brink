@@ -403,9 +403,27 @@ pub fn run(
                 slot.park(outcome.state.clone());
                 return outcome;
             }
-            // On to the choice's first line — a breakpoint on it holds
-            // (decision log 2026-10-09: a breakpoint on a choice line
-            // holds when that choice is taken).
+            // A breakpoint on the taken choice's line (decision log
+            // 2026-10-09, option A) sits on the first instruction the
+            // choice runs — exactly where `choose` leaves the story. A debug
+            // run never stops at the position it starts from (that is how
+            // a hold resumes), so it would step straight past: the landing
+            // place is checked here, and a hit holds before anything plays.
+            if let Some(pos) = running.story.debug_position()
+                && let Some(bp) = running.breakpoints.iter().find(|b| {
+                    b.enabled && b.container_idx == pos.container_idx && b.offset == pos.offset
+                })
+            {
+                return PlayOutcome {
+                    stop: Some(PlayStop {
+                        kind: StopKind::Breakpoint,
+                        reason: format!("breakpoint {}", bp.name),
+                        at: current_line(running),
+                    }),
+                    ..PlayOutcome::default()
+                };
+            }
+            // On to the choice's first line.
             debug_command(slot, DebugVerb::Line)
         }
         PlayCommand::Stop => {
@@ -1069,6 +1087,49 @@ mod tests {
             })
             .collect();
         assert_eq!(texts, ["Two."], "{next:?}");
+    }
+
+    /// Decision log 2026-10-09, option A: a breakpoint on a choice line
+    /// holds when that choice is TAKEN — not while the choices are being
+    /// offered, and not when another one is taken.
+    #[test]
+    fn a_breakpoint_on_a_choice_line_holds_when_that_choice_is_taken() {
+        let src = "-> pick\n=== pick ===\nWhich way?\n* [Left] You go left.\n  -> END\n* [Right] You go right.\n  -> END\n";
+        let kinds = |d: &mut Driver, take: usize| {
+            let _ = d.go(PlayCommand::SetBreakpoints(vec![(
+                "main.ink".to_owned(),
+                6,
+            )]));
+            let mut out = d.go(PlayCommand::Start { at: None });
+            let mut seen = Vec::new();
+            for _ in 0..6 {
+                let kind = out.stop.as_ref().map(|s| s.kind);
+                seen.push(kind);
+                match kind {
+                    Some(StopKind::Choices) => out = d.go(PlayCommand::Choose(take)),
+                    Some(StopKind::Breakpoint | StopKind::Terminal) | None => break,
+                    _ => out = d.go(PlayCommand::Next),
+                }
+            }
+            seen
+        };
+        let mut d = Driver::new(src);
+        let right = kinds(&mut d, 1);
+        assert_eq!(
+            right.last(),
+            Some(&Some(StopKind::Breakpoint)),
+            "taking the marked choice holds: {right:?}"
+        );
+        assert!(
+            right.contains(&Some(StopKind::Choices)),
+            "and only after the choices were offered: {right:?}"
+        );
+        let mut d = Driver::new(src);
+        let left = kinds(&mut d, 0);
+        assert!(
+            !left.contains(&Some(StopKind::Breakpoint)),
+            "taking the other choice runs past it: {left:?}"
+        );
     }
 
     #[test]
