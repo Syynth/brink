@@ -50,8 +50,15 @@ pub struct IdeSession {
     /// have to exclude them — a mounted file is never the author's draft,
     /// and never theirs to rename or delete.
     mounted_std_ids: std::collections::BTreeSet<FileId>,
-    /// The registered host-capability manifest (tooling/author-time), if any.
+    /// The registered host-capability manifest (tooling/author-time), if any:
+    /// the one a host hands over through the API. It wins over
+    /// [`Self::config_host_manifest`] (decision log 2026-10-09).
     host_manifest: Option<HostManifest>,
+    /// The manifest the applied `brink.toml`'s `[host] manifest` names
+    /// (#3671), loaded by `apply_project_config`. A separate slot so a
+    /// registered manifest is never overwritten by the file, and clearing
+    /// the config drops only this one.
+    config_host_manifest: Option<HostManifest>,
     /// Host-pushed values for `host`-source semantic types (Tier 3, #174).
     /// Query-time only — not part of analysis, so a push needs no re-analyze.
     host_values: crate::HostValues,
@@ -150,6 +157,7 @@ impl IdeSession {
             file_lint_policy: LintPolicy::default(),
             mounted_std_ids: std::collections::BTreeSet::new(),
             host_manifest: None,
+            config_host_manifest: None,
             host_values: crate::HostValues::new(),
             external_check: ExternalCheckSeverity::default(),
             semantic_type_check: SemanticTypeDiagnosticSeverity::default(),
@@ -209,6 +217,27 @@ impl IdeSession {
     #[must_use]
     pub fn draft_globs(&self) -> &[String] {
         &self.draft_globs
+    }
+
+    /// Set the manifest the config names (#3671), re-analysing only when
+    /// the manifest analysis sees actually moved — a registered one hides
+    /// it, and a rewrite with the same content changes nothing.
+    pub(crate) fn set_config_host_manifest(&mut self, manifest: Option<HostManifest>) {
+        if self.config_host_manifest == manifest {
+            return;
+        }
+        let before = self.effective_host_manifest().cloned();
+        self.config_host_manifest = manifest;
+        if self.effective_host_manifest() != before.as_ref() {
+            self.reanalyze();
+        }
+    }
+
+    /// The manifest analysis uses: the registered one, else the config's.
+    fn effective_host_manifest(&self) -> Option<&HostManifest> {
+        self.host_manifest
+            .as_ref()
+            .or(self.config_host_manifest.as_ref())
     }
 
     /// Register (or replace) the host-capability manifest, then re-analyze.
@@ -770,7 +799,7 @@ impl IdeSession {
     /// gate-check passes too (#611, #660).
     pub fn analysis_options(&self) -> AnalysisOptions {
         AnalysisOptions {
-            host_manifest: self.host_manifest.clone(),
+            host_manifest: self.effective_host_manifest().cloned(),
             external_check: self.external_check,
             semantic_type_check: self.semantic_type_check,
             dialect: self.language_dialect,

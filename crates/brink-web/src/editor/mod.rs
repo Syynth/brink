@@ -156,6 +156,11 @@ pub struct EditorSession {
     /// `brink.toml` must not leave a stale set that silently suppresses the
     /// same warning if a new `brink.toml` reintroduces it later.
     last_config_warnings: BTreeSet<String>,
+    /// The full warning set of the config now applied, in the order it was
+    /// produced — the state [`Self::configured_warnings`] answers, beside
+    /// the delta every apply returns (#3671: the Problems panel shows what
+    /// is wrong now, not what changed).
+    current_config_warnings: Vec<String>,
 }
 
 impl Default for EditorSession {
@@ -209,6 +214,7 @@ impl EditorSession {
             explain_cache: brink_ir::ExplainMatchCache::new(),
             config_dir: None,
             last_config_warnings: BTreeSet::new(),
+            current_config_warnings: Vec::new(),
         }
     }
 
@@ -624,6 +630,7 @@ impl EditorSession {
             // disappeared. This branch returns before ever reaching that
             // shared filter, so it clears the set directly.
             self.last_config_warnings.clear();
+            self.current_config_warnings.clear();
             return Ok("[]".to_owned());
         };
         let text = brink_source_tree::SourceTree::read(&tree, &config_key).map_err(|e| {
@@ -728,6 +735,30 @@ impl EditorSession {
     #[must_use]
     pub fn configured_dialogue_error(&self) -> Option<String> {
         self.session.project_settings().dialogue_error.clone()
+    }
+
+    /// Why the manifest `[host] manifest` names could not be loaded
+    /// (#3671), or `None` when it loaded or none is named.
+    #[must_use]
+    pub fn configured_host_manifest_error(&self) -> Option<String> {
+        self.session.project_settings().host_manifest_error.clone()
+    }
+
+    /// Every file the applied config reads — `[dialogue]`'s file, the host
+    /// manifest — as project-relative paths, JSON `string[]` (#3671). A
+    /// host loads the ones the session does not hold, and applies the
+    /// config again when one changes.
+    #[must_use]
+    pub fn configured_config_reads(&self) -> String {
+        serde_json::to_string(&self.session.project_settings().config_reads)
+            .unwrap_or_else(|_| "[]".to_owned())
+    }
+
+    /// The applied config's whole warning set, JSON `string[]`, in order —
+    /// unlike the delta [`Self::apply_project_config`] returns (#3671).
+    #[must_use]
+    pub fn configured_warnings(&self) -> String {
+        serde_json::to_string(&self.current_config_warnings).unwrap_or_else(|_| "[]".to_owned())
     }
 
     /// Project-relative paths that are **drafts** (issue #3145) — JSON
@@ -1112,6 +1143,7 @@ impl EditorSession {
     /// iterated for output, so this never becomes a
     /// nondeterministic-iteration-order hazard.
     fn dedupe_config_warnings(&mut self, warnings: Vec<String>) -> Vec<String> {
+        self.current_config_warnings.clone_from(&warnings);
         let new_warnings: Vec<String> = warnings
             .iter()
             .filter(|w| !self.last_config_warnings.contains(w.as_str()))
@@ -5391,6 +5423,50 @@ mod tests {
                 .iter()
                 .any(|d| d.code == brink_ir::DiagnosticCode::E051),
             "discovered brink.toml's dialect = brink: no E051 on valid extension syntax: {:?}",
+            analysis.diagnostics
+        );
+    }
+
+    /// #3671: the web studio's session loads `[host] manifest` from its own
+    /// documents, reports what the config reads so the host can load and
+    /// watch it, and keeps the whole current warning set for Problems even
+    /// when the apply's delta is empty.
+    #[test]
+    fn discover_project_config_loads_the_host_manifest_and_reports_its_reads() {
+        let mut s = EditorSession::new();
+        s.update_file(
+            "brink.toml",
+            "[project]\ndialect = \"brink\"\n[host]\nmanifest = \"build/host.json\"\n",
+        );
+        s.update_file("story.brink", "flow a() {\n  <shake>whoa</shake>\n}\n");
+
+        let first = s.discover_project_config("story.brink").expect("applies");
+        assert!(
+            first.contains("build/host.json"),
+            "the missing manifest warns: {first}"
+        );
+        assert_eq!(s.configured_config_reads(), r#"["build/host.json"]"#);
+        assert!(s.configured_host_manifest_error().is_some());
+        let again = s.discover_project_config("story.brink").expect("applies");
+        assert_eq!(again, "[]", "the delta is empty the second time");
+        assert!(
+            s.configured_warnings().contains("build/host.json"),
+            "but the current set still has it: {}",
+            s.configured_warnings()
+        );
+
+        // The host loads the file the config reads, then applies again.
+        s.update_file("build/host.json", r#"{ "markup": [{ "name": "b" }] }"#);
+        s.discover_project_config("story.brink").expect("applies");
+        assert_eq!(s.configured_host_manifest_error(), None);
+        assert_eq!(s.configured_warnings(), "[]");
+        let analysis = s.session.analysis().expect("analysis");
+        assert!(
+            analysis
+                .diagnostics
+                .iter()
+                .any(|d| d.code == brink_ir::DiagnosticCode::E164),
+            "its vocabulary applies: {:?}",
             analysis.diagnostics
         );
     }

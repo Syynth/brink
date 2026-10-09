@@ -15,6 +15,7 @@ use brink_gpui_model::play::{
 use brink_gpui_model::query::Location;
 use brink_gpui_shell::icons::BrinkIcon;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
+use gpui::AnimationExt as _;
 use gpui::prelude::*;
 use gpui::{
     App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
@@ -88,6 +89,12 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// When the current choices arrived, so their cards slide in once.
+    choices_at: Option<std::time::Instant>,
+    /// When each entry arrived, parallel to `entries`: a row animates in
+    /// only while it is new, so one rebuilt later (scrolled back, the tab
+    /// re-shown) never replays its arrival.
+    arrivals: Vec<std::time::Instant>,
     /// The live prompt; empty while the story runs or is over.
     choices: Vec<PlayChoice>,
     list: ListState,
@@ -126,6 +133,9 @@ pub struct Player {
     /// Where the next line starts, as the last line's stop says: what ▶
     /// plays next, for the manuscript.
     next_at: Option<(String, u32)>,
+    /// Why the story is held, for the header: a breakpoint, a write, a
+    /// step.
+    held_why: Option<String>,
     /// Drawn for Write mode: the transport has no Step there (decision
     /// log 2026-10-08, "line-level breakpoints").
     write_mode: bool,
@@ -163,6 +173,8 @@ impl Player {
         Self {
             project,
             entries: Vec::new(),
+            arrivals: Vec::new(),
+            choices_at: None,
             choices: Vec::new(),
             list: ListState::new(1, ListAlignment::Top, px(600.)),
             busy: false,
@@ -180,6 +192,7 @@ impl Player {
             autoplay: false,
             autoplay_timer: None,
             next_at: None,
+            held_why: None,
             write_mode: false,
             reader: None,
             looks: Vec::new(),
@@ -260,6 +273,7 @@ impl Player {
     pub fn start(&mut self, at: Option<String>, cx: &mut Context<Self>) {
         self.generation += 1;
         self.entries.clear();
+        self.arrivals.clear();
         self.choices.clear();
         // One item past the transcript: the tail that lets its last row
         // reach the NOW line.
@@ -575,6 +589,16 @@ impl Player {
         self.paused = kind.is_some_and(StopKind::holds);
         let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
         self.held_at = if self.paused { at.clone() } else { None };
+        self.held_why = outcome
+            .stop
+            .as_ref()
+            .filter(|_| self.paused)
+            .map(|stop| match stop.kind {
+                StopKind::Breakpoint => "Held at a breakpoint".to_owned(),
+                StopKind::Watchpoint => format!("Held at a {}", stop.reason),
+                StopKind::Step => "Stepped".to_owned(),
+                _ => "Held".to_owned(),
+            });
         self.next_at = if kind == Some(StopKind::Line) {
             at
         } else {
@@ -615,7 +639,10 @@ impl Player {
                         source,
                     });
                 }
-                PlayStep::Choices(choices) => self.choices = choices,
+                PlayStep::Choices(choices) => {
+                    self.choices = choices;
+                    self.choices_at = Some(std::time::Instant::now());
+                }
                 PlayStep::Done => {
                     self.running = false;
                     self.push(Entry::Notice("— done —".into()));
@@ -699,6 +726,7 @@ impl Player {
         let ix = self.entries.len();
         let line = matches!(entry, Entry::Line { .. });
         self.entries.push(entry);
+        self.arrivals.push(std::time::Instant::now());
         self.list.splice(ix..ix, 1);
         // Beside the manuscript a story line's top sits on the NOW line,
         // where the manuscript puts its source (decision log 2026-10-09);
@@ -739,6 +767,28 @@ impl Player {
     /// printed once; action is dimmed; the reader's pick is a ring on the
     /// spine with its `*` / `+`.
     fn render_entry(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let row = self.render_row(ix, cx);
+        // A new row fades in and rises into place — the web Player's
+        // `player-row-in` (400ms, 6px). Only while it is new.
+        let fresh = self
+            .arrivals
+            .get(ix)
+            .is_some_and(|at| at.elapsed() < ROW_IN);
+        if !fresh {
+            return row;
+        }
+        div()
+            .relative()
+            .child(row)
+            .with_animation(
+                ("player-row-in", self.generation as usize * 100_000 + ix),
+                gpui::Animation::new(ROW_IN).with_easing(gpui::ease_out_quint()),
+                |el, delta| el.opacity(delta).top(px(ROW_RISE * (1. - delta))),
+            )
+            .into_any_element()
+    }
+
+    fn render_row(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
         use crate::player_stage::Role;
         let theme = cx.theme();
         let (fg, muted, danger, border, primary, hover) = (
@@ -947,7 +997,7 @@ impl Player {
                 .pb(px(10.))
                 .children(self.choices.iter().enumerate().map(|(n, choice)| {
                     let index = choice.index;
-                    h_flex()
+                    let card = h_flex()
                         .id(("play-choice", index))
                         .w_full()
                         .h(px(40.))
@@ -974,7 +1024,27 @@ impl Player {
                                 .truncate()
                                 .child(choice.text.trim().to_owned()),
                         )
-                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()))
+                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()));
+                    // The web Player's `player-choice-in`: each card slides
+                    // in from the left, one after another — while new.
+                    match self.choices_at.filter(|at| at.elapsed() < cards_in(n)) {
+                        None => card.into_any_element(),
+                        Some(_) => {
+                            let total = cards_in(n);
+                            let wait = CARD_STAGGER.as_secs_f32() * n as f32 / total.as_secs_f32();
+                            card.with_animation(
+                                ("player-card-in", self.generation as usize * 1_000 + n),
+                                gpui::Animation::new(total),
+                                move |el, delta| {
+                                    let t = gpui::ease_out_quint()(
+                                        ((delta - wait) / (1. - wait)).clamp(0., 1.),
+                                    );
+                                    el.opacity(t).left(px(-CARD_SLIDE * (1. - t)))
+                                },
+                            )
+                            .into_any_element()
+                        }
+                    }
                 }))
                 .into_any_element(),
         )
@@ -1017,48 +1087,63 @@ impl Player {
     }
 
     /// What the header says about the session, and in what colour.
-    fn status(&self, cx: &App) -> (SharedString, Hsla) {
+    /// What the header says about the session, in what colour, and
+    /// whether its dot is hollow (following paused — not a state of the
+    /// story, a state of the editor). The canvas's states, 2026-10-09.
+    fn status(&self, cx: &App) -> (SharedString, Hsla, bool) {
         let theme = cx.theme();
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
         let hsla = brink_gpui_shell::theme::hsla;
-        let place = |loc: &Location| {
-            let line = self
-                .project
+        let line_of = |path: &str, offset: u32| {
+            self.project
                 .read(cx)
-                .loaded_source(&loc.path)
-                .and_then(|text| text.get(..loc.start as usize))
-                .map_or(0, |before| before.matches('\n').count() + 1);
-            format!("{} {line}", loc.path)
+                .loaded_source(path)
+                .and_then(|text| text.get(..offset as usize))
+                .map_or(0, |before| before.matches('\n').count() + 1)
+        };
+        let here = self
+            .current_source()
+            .map(|loc| format!("{} {}", loc.path, line_of(&loc.path, loc.start)));
+        let with_here = |what: &str| match &here {
+            Some(at) => format!("{what} · {at}"),
+            None => what.to_owned(),
         };
         if self.stale {
-            return ("Sources changed — Restart".into(), theme.warning);
+            return ("Sources changed — Restart".into(), theme.warning, false);
         }
-        if self.busy {
-            return ("Working\u{2026}".into(), theme.muted_foreground);
+        // A line in flight is a beat, not a state: only a start says so.
+        if self.busy && self.entries.is_empty() {
+            return ("Starting\u{2026}".into(), theme.muted_foreground, false);
         }
-        if let Some((path, line)) = &self.held_at
-            && self.paused
-        {
-            return (format!("Held · {path} {line}").into(), hsla(tokens.warning));
+        if self.paused {
+            let why = self.held_why.as_deref().unwrap_or("Held");
+            let label = match &self.held_at {
+                Some((path, line)) => format!("{why} · {path} {line}"),
+                None => why.to_owned(),
+            };
+            return (label.into(), hsla(tokens.warning), false);
         }
         if !self.choices.is_empty() {
-            return ("Choose".into(), hsla(tokens.symbol_knot));
+            return ("Choose".into(), hsla(tokens.symbol_knot), false);
         }
         if self.autoplay {
-            return ("Autoplaying".into(), hsla(tokens.info));
+            return (with_here("Autoplaying").into(), hsla(tokens.info), false);
         }
         if self.running {
-            let at = self.current_source().map(place);
-            return (
-                at.map_or_else(|| "Playing".to_owned(), |at| format!("Playing · {at}"))
-                    .into(),
-                hsla(tokens.success),
-            );
+            let following = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
+            if following && self.follow_paused {
+                return (
+                    "Paused following — you\u{2019}re editing".into(),
+                    hsla(tokens.warning),
+                    true,
+                );
+            }
+            return (with_here("Playing").into(), hsla(tokens.success), false);
         }
         if self.entries.is_empty() {
-            ("Ready".into(), theme.muted_foreground)
+            ("Ready".into(), theme.muted_foreground, false)
         } else {
-            ("Ended".into(), theme.muted_foreground)
+            ("Ended".into(), theme.muted_foreground, false)
         }
     }
 
@@ -1075,7 +1160,11 @@ impl Player {
         );
         let amber =
             brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.warning);
-        let (label, colour) = self.status(cx);
+        let (label, colour, hollow) = self.status(cx);
+        // The list's width as last laid out — the panel's; 0 before it has
+        // laid out, which reads as wide.
+        let width = f32::from(self.list.viewport_bounds().size.width);
+        let narrow = width > 0. && width < NARROW_HEADER;
         let follow_on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
         let (follow_icon, follow_lit, follow_tip) = match (follow_on, self.follow_paused) {
             (true, true) => (
@@ -1109,7 +1198,14 @@ impl Player {
                     .text_xs()
                     .text_color(fg)
                     .cursor_pointer()
-                    .child(div().size(px(7.)).flex_none().rounded_full().bg(colour))
+                    .child(
+                        div()
+                            .size(px(8.))
+                            .flex_none()
+                            .rounded_full()
+                            .when(hollow, |el| el.border_1().border_color(colour))
+                            .when(!hollow, |el| el.bg(colour)),
+                    )
                     .child(div().truncate().child(label))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
                         if let Some(loc) = this.current_source().cloned() {
@@ -1132,41 +1228,43 @@ impl Player {
                 )
                 .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_follow(cx))),
             )
-            .child(
-                Self::icon_button(
-                    "player-tags",
-                    BrinkIcon::PlayerTags,
-                    "Show tags",
-                    self.show_tags.then_some(primary),
-                    true,
-                    cx,
+            // Narrow, Tags and Save fold into ⋯; Follow stays out, since
+            // it is the one toggle used mid-play (canvas, 2026-10-09).
+            .when(!narrow, |el| {
+                el.child(
+                    Self::icon_button(
+                        "player-tags",
+                        BrinkIcon::PlayerTags,
+                        "Show tags",
+                        self.show_tags.then_some(primary),
+                        true,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tags(cx))),
                 )
-                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                    this.show_tags = !this.show_tags;
-                    cx.notify();
-                })),
-            )
-            .child(Self::icon_button(
-                "player-save",
-                BrinkIcon::PlayerSave,
-                "Save state (coming)",
-                None,
-                false,
-                cx,
-            ))
-            .child(
-                Self::icon_button(
-                    "player-more",
-                    BrinkIcon::Dots,
-                    "Player settings",
+                .child(Self::icon_button(
+                    "player-save",
+                    BrinkIcon::PlayerSave,
+                    "Save state (coming)",
                     None,
-                    true,
+                    false,
                     cx,
+                ))
+                .child(
+                    Self::icon_button(
+                        "player-more",
+                        BrinkIcon::Dots,
+                        "Player settings",
+                        None,
+                        true,
+                        cx,
+                    )
+                    .on_click(
+                        cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::OpenSettings)),
+                    ),
                 )
-                .on_click(
-                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::OpenSettings)),
-                ),
-            )
+            })
+            .when(narrow, |el| el.child(self.render_more_menu(cx)))
             .when(self.write_mode, |el| {
                 el.child(
                     Self::icon_button(
@@ -1179,6 +1277,49 @@ impl Player {
                     )
                     .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::Close))),
                 )
+            })
+            .into_any_element()
+    }
+
+    /// Show or hide the transcript's tags.
+    fn toggle_tags(&mut self, cx: &mut Context<Self>) {
+        self.show_tags = !self.show_tags;
+        cx.notify();
+    }
+
+    /// The narrow header's ⋯: what folded out of the bar, then settings.
+    fn render_more_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_component::button::{Button, ButtonVariants as _};
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        use gpui_component::{IconName, Sizable as _};
+        let me = cx.entity().downgrade();
+        let tags = self.show_tags;
+        Button::new("player-more")
+            .ghost()
+            .small()
+            .icon(IconName::Ellipsis)
+            .tooltip("More")
+            .dropdown_menu(move |menu, _, _| {
+                let toggle_tags = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |this, cx| this.toggle_tags(cx));
+                    }
+                };
+                let settings = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |_, cx| cx.emit(PlayerEvent::OpenSettings));
+                    }
+                };
+                menu.item(
+                    PopupMenuItem::new("Show tags")
+                        .checked(tags)
+                        .on_click(toggle_tags),
+                )
+                .item(PopupMenuItem::new("Save state (coming)").disabled(true))
+                .separator()
+                .item(PopupMenuItem::new("Player settings").on_click(settings))
             })
             .into_any_element()
     }
@@ -1198,6 +1339,8 @@ impl Player {
             theme.background,
         );
         let started = !self.entries.is_empty();
+        let width = f32::from(self.list.viewport_bounds().size.width);
+        let roomy = width == 0. || width >= HINT_MIN_WIDTH;
         let can_primary = !self.running || self.autoplay || self.can_advance();
         let advance = self.can_advance();
         let hint: SharedString = if self.autoplay {
@@ -1337,14 +1480,17 @@ impl Player {
                     })),
                 )
             })
-            .child(
-                div()
-                    .absolute()
-                    .right(px(14.))
-                    .text_xs()
-                    .text_color(muted)
-                    .child(hint),
-            )
+            // The hint gives way before it would run into the transport.
+            .when(roomy, |el| {
+                el.child(
+                    div()
+                        .absolute()
+                        .right(px(14.))
+                        .text_xs()
+                        .text_color(muted)
+                        .child(hint),
+                )
+            })
             .into_any_element()
     }
 }
@@ -1543,6 +1689,27 @@ impl Render for Player {
             .child(strip)
     }
 }
+
+/// A new row's arrival: how long, and how far it rises (the web's
+/// `player-row-in`).
+const ROW_IN: std::time::Duration = std::time::Duration::from_millis(400);
+const ROW_RISE: f32 = 6.;
+/// A choice card's slide in (the web's `player-choice-in`), and the
+/// stagger between cards.
+const CARD_IN: std::time::Duration = std::time::Duration::from_millis(320);
+const CARD_STAGGER: std::time::Duration = std::time::Duration::from_millis(60);
+const CARD_SLIDE: f32 = 10.;
+
+/// How long card `n`'s arrival runs, its stagger included.
+fn cards_in(n: usize) -> std::time::Duration {
+    CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
+}
+
+/// Below this width the header folds Tags and Save into ⋯.
+const NARROW_HEADER: f32 = 380.;
+/// Below this width the strip drops its hint: the centred transport needs
+/// the room.
+const HINT_MIN_WIDTH: f32 = 560.;
 
 /// Where the NOW line sits, as a share of the window's height: the Player
 /// and the manuscript both put the current line's top there.

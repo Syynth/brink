@@ -837,14 +837,20 @@ export async function mountStudio(
       documentsForConfig?.refreshDialectFromProject();
       // The Player folds lines into runs with the same artifact (#3389).
       store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
-      // #3391: the declaration's CURRENT state as Problems rows on
-      // brink.toml (an unresolvable [dialogue] is a real error), and the
-      // dialect's malformed-cue near-misses on every story file.
+      // #3391/#3671: the config's CURRENT state as Problems rows on
+      // brink.toml — every warning (an unresolvable [dialogue] is an
+      // error; a manifest that cannot be loaded, an unknown key, a bad
+      // lint code are warnings) — and the dialect's malformed-cue
+      // near-misses on every story file. A session that cannot report its
+      // whole warning set falls back to the [dialogue] error alone.
+      const configWarnings = project.getConfiguredWarnings();
       store
         .getState()
         .setDialectDiagnostics(
           CONFIG_FILE,
-          configDiagnostics([], project.getConfiguredDialogueError()),
+          configWarnings === null
+            ? configDiagnostics([], project.getConfiguredDialogueError())
+            : configDiagnostics(configWarnings, null),
         );
       runMalformedCuePass();
     },

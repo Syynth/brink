@@ -878,26 +878,12 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 Some(&config_dir),
                 &read_file,
             ));
-            // The host manifest `[host] manifest` names (#3666), through
-            // the loader every producer shares — read like any file the
-            // config points at, so an unsaved edit to it, or the host
-            // rewriting it on disk, applies here. A manifest that cannot be
-            // loaded is a warning on `brink.toml`, and analysis goes on
-            // without one (decision log 2026-10-09).
-            let manifest = brink_environment::load_host_manifest(&config, &path, &|key| {
-                read_file(key).ok_or_else(|| "no such file".to_owned())
-            })
-            .unwrap_or_else(|e| {
-                warnings.push(e.to_string());
-                None
-            });
-            // Only when it moved: setting it re-analyses (#2966).
-            if session.analysis_options().host_manifest != manifest {
-                match manifest {
-                    Some(manifest) => session.set_host_manifest(manifest),
-                    None => session.clear_host_manifest(),
-                }
-            }
+            // The host manifest `[host] manifest` names (#3666) is loaded
+            // inside `apply_project_config_with_reader` above, through this
+            // same reader — so an unsaved edit to it, or the host rewriting
+            // it on disk, applies here — into the session's config slot,
+            // which a registered manifest would outrank (#3671). A manifest
+            // that cannot be loaded is among `warnings`.
             state.entry = state
                 .explicit_entry
                 .clone()

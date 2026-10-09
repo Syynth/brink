@@ -220,6 +220,9 @@ pub struct ContinuousView {
     reveal_now: bool,
     /// The NOW line, in window coordinates, as of the last frame.
     now_y: f32,
+    /// Room after the last file while a story plays, so a line near the
+    /// story's end can still come up to NOW (0 when nothing plays).
+    now_tail: f32,
     /// The running story's trail, for the sections' gutters and bands.
     trail: TrailCell,
     /// Each section's fold candidates.
@@ -330,6 +333,7 @@ impl ContinuousView {
             gutters: Rc::default(),
             reveal_now: false,
             now_y: 0.,
+            now_tail: 0.,
             trail: Rc::default(),
             folds: Rc::default(),
             reveal_retries: 0,
@@ -1288,6 +1292,23 @@ impl gpui::Focusable for ContinuousView {
 impl Render for ContinuousView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.now_y = crate::player::now_line(window);
+        // While a story plays, the manuscript's end needs room for its last
+        // lines to come up to NOW; the eight trailing rows are not enough.
+        let playing = {
+            let trail = self.trail.borrow();
+            trail.active.is_some() || !trail.played.is_empty()
+        };
+        let tail = match self.last_view.get() {
+            Some(view) if playing => (f32::from(view.bottom()) - self.now_y).max(0.),
+            _ => 0.,
+        };
+        if (tail - self.now_tail).abs() > 0.5 {
+            self.now_tail = tail;
+            let n = self.files.len();
+            if n > 0 {
+                self.list.remeasure_items(n - 1..n);
+            }
+        }
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -1302,6 +1323,7 @@ impl Render for ContinuousView {
         let surface = cx.theme().background;
         let files = self.files.clone();
         let count = files.len();
+        let now_tail = self.now_tail;
         let project = self.project.clone();
         let me = self.me.clone();
         let editors = self.editors.clone();
@@ -1457,6 +1479,9 @@ impl Render for ContinuousView {
                                     },
                                 )),
                         )
+                        .when(index + 1 == count && now_tail > 0., |el| {
+                            el.child(div().h(px(now_tail)))
+                        })
                         .into_any_element()
                 })
                 .flex_1(),
