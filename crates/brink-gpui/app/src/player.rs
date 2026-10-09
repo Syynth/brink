@@ -145,6 +145,9 @@ pub struct Player {
     to_now: Option<(usize, u8)>,
     /// `>>`: playing on by itself at the Settings pace, until a stop.
     autoplay: bool,
+    /// Where autoplay will stop, found by running a copy of the story
+    /// ahead when it starts (`PlayCommand::Lookahead`).
+    autoplay_stop: Option<brink_gpui_model::play::PlayStop>,
     /// The wait before autoplay's next line; dropping it cancels it.
     autoplay_timer: Option<gpui::Task<()>>,
     /// Where the next line starts, as the last line's stop says: what ▶
@@ -211,6 +214,7 @@ impl Player {
             to_now: None,
             autoplay: false,
             autoplay_timer: None,
+            autoplay_stop: None,
             next_at: None,
             held_why: None,
             write_mode: false,
@@ -390,6 +394,12 @@ impl Player {
         Some((f32::from(row.top()), self.now_y))
     }
 
+    /// What the header's status says.
+    #[cfg(test)]
+    pub(crate) fn status_label(&self, cx: &App) -> String {
+        self.status(cx).0.to_string()
+    }
+
     /// Whether `>>` is playing on.
     #[cfg(test)]
     pub(crate) fn is_autoplaying(&self) -> bool {
@@ -415,14 +425,36 @@ impl Player {
             self.halt_autoplay();
         } else if self.can_advance() {
             self.autoplay = true;
+            self.look_ahead(cx);
             self.send(PlayCommand::Next, cx);
         }
         cx.notify();
     }
 
+    /// Ask where autoplay will stop, for the status line. Sent before the
+    /// first line it plays, so the worker answers from where it starts.
+    fn look_ahead(&mut self, cx: &mut Context<Self>) {
+        self.autoplay_stop = None;
+        let generation = self.generation;
+        let task = self.project.read(cx).play(PlayCommand::Lookahead, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(outcome) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.generation == generation && this.autoplay {
+                    this.autoplay_stop = outcome.stop;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
     fn halt_autoplay(&mut self) {
         self.autoplay = false;
         self.autoplay_timer = None;
+        self.autoplay_stop = None;
     }
 
     /// Autoplay's next line, after the pace's wait.
@@ -1339,7 +1371,24 @@ impl Player {
             return ("Choose".into(), hsla(tokens.symbol_knot), false);
         }
         if self.autoplay {
-            return (with_here("Autoplaying").into(), hsla(tokens.info), false);
+            // Where it will stop, as the lookahead found (the canvas's
+            // "stops at ● tower.ink 6"); where it is until that answers.
+            let label = match self.autoplay_stop.as_ref() {
+                Some(stop) => match (stop.kind, &stop.at) {
+                    (StopKind::Breakpoint, Some((path, line))) => {
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        format!("Autoplaying · stops at ● {name} {line}")
+                    }
+                    (StopKind::Watchpoint, _) => {
+                        format!("Autoplaying · stops at a {}", stop.reason)
+                    }
+                    (StopKind::Choices, _) => "Autoplaying · to the next choice".to_owned(),
+                    (StopKind::Terminal, _) => "Autoplaying · to the end".to_owned(),
+                    _ => with_here("Autoplaying"),
+                },
+                None => with_here("Autoplaying"),
+            };
+            return (label.into(), hsla(tokens.info), false);
         }
         if self.running {
             let following = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;

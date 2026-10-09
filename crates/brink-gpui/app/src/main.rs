@@ -3647,6 +3647,16 @@ mod modes_driven {
         // The marks reach the worker on their own; give them a frame.
         h.settle();
         h.update(|cx| player.update(cx, |p, cx| p.toggle_autoplay(cx)));
+        // The status names where it will stop, looked ahead on a copy.
+        let said = h.settle_until(std::time::Duration::from_secs(5), |h| {
+            h.read(|cx| player.read(cx).status_label(cx))
+                .contains("stops at ● tower.ink 11")
+        });
+        assert!(
+            said,
+            "status: {}",
+            h.read(|cx| player.read(cx).status_label(cx))
+        );
         assert!(
             autoplay_until(&mut h, &player, |p| p.held().is_some()),
             "the breakpoint holds the story"

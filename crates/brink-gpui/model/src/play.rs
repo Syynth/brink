@@ -60,6 +60,12 @@ pub enum PlayCommand {
     /// the instructions it became at once.
     StepLine,
     StepInstruction,
+    /// Where a `Continue` would stop now — a breakpoint, a watched write, a
+    /// choice point or the end — found by running a copy of the story
+    /// ahead, so the story itself does not move. What the Player's status
+    /// says while autoplaying ("stops at ● tower.ink 6"). Answered with a
+    /// [`PlayOutcome`] whose `stop` is that place (and no steps).
+    Lookahead,
     /// Read the running story's state without advancing it — what the
     /// State View shows. Answered with a [`PlayOutcome`] carrying no
     /// steps and a `state`; a session that is not running answers with
@@ -379,6 +385,7 @@ pub fn run(
         // A fault answers here too, for as long as nothing has superseded
         // it: the panel that asks this is the one an author opens to find
         // out WHY the story died.
+        PlayCommand::Lookahead => lookahead(slot),
         PlayCommand::Snapshot => PlayOutcome {
             state: slot
                 .play
@@ -656,11 +663,56 @@ pub fn debug_value_display(value: &brink_runtime::DebugValue) -> String {
 
 /// The file and 1-based line the flow is stopped on.
 fn current_line(play: &Play) -> Option<(String, u32)> {
-    let position = play.story.debug_snapshot().position?;
-    let loc = play.program.resolve_debug_position(position)?;
+    line_of(&play.story, &play.program)
+}
+
+/// The file and 1-based line `story` is stopped on.
+fn line_of(story: &Story<FastRng>, program: &brink_runtime::Program) -> Option<(String, u32)> {
+    let position = story.debug_snapshot().position?;
+    let loc = program.resolve_debug_position(position)?;
     let file = loc.file?;
-    let line0 = play.program.line_at(&file, loc.range_start)?;
+    let line0 = program.line_at(&file, loc.range_start)?;
     Some((file, line0 + 1))
+}
+
+/// Run a copy of the story to where a `Continue` would stop, and say
+/// where — the story itself does not move. The copy carries the RNG, so
+/// what it meets is what the story will meet. A fault on the way, or the
+/// budget running out, answers no stop rather than a guess.
+fn lookahead(slot: &PlaySlot) -> PlayOutcome {
+    let Some(running) = slot.play.as_ref() else {
+        return PlayOutcome::failed(PlayError::NotStarted);
+    };
+    let mut story = running.story.clone();
+    let watching: Vec<u32> = slot
+        .watched
+        .iter()
+        .filter_map(|name| running.program.global_index(name))
+        .collect();
+    let result = if watching.is_empty() {
+        story.debug_run(&running.breakpoints, DEFAULT_DEBUG_BUDGET)
+    } else {
+        let mut observer = brink_runtime::WatchpointObserver::new(watching);
+        story.debug_run_watching(&running.breakpoints, &mut observer, DEFAULT_DEBUG_BUDGET)
+    };
+    let Ok(outcome) = result else {
+        return PlayOutcome::default();
+    };
+    let kind = match outcome.reason {
+        DebugStopReason::Breakpoint { .. } => StopKind::Breakpoint,
+        DebugStopReason::Watchpoint { .. } => StopKind::Watchpoint,
+        DebugStopReason::Choices => StopKind::Choices,
+        DebugStopReason::Terminal => StopKind::Terminal,
+        _ => StopKind::Other,
+    };
+    PlayOutcome {
+        stop: Some(PlayStop {
+            kind,
+            reason: describe(&outcome.reason, &running.program),
+            at: line_of(&story, &running.program),
+        }),
+        ..PlayOutcome::default()
+    }
 }
 
 fn describe(reason: &DebugStopReason, program: &brink_runtime::Program) -> String {
@@ -988,6 +1040,35 @@ mod tests {
             !last.contains("So much") && !last.contains("cigarette"),
             "and nothing before them: {last:?}"
         );
+    }
+
+    /// Looking ahead says where a `Continue` would stop — and moves
+    /// nothing: the next line is still the next line.
+    #[test]
+    fn lookahead_finds_the_next_stop_without_moving_the_story() {
+        let mut d = Driver::new("-> top\n=== top ===\nOne.\nTwo.\nThree.\n-> END\n");
+        // On `-> END`: past "Three.", so the lines before it still play.
+        let _ = d.go(PlayCommand::SetBreakpoints(vec![(
+            "main.ink".to_owned(),
+            6,
+        )]));
+        let first = d.go(PlayCommand::Start { at: None });
+        assert!(first.error.is_none(), "{first:?}");
+        let ahead = d.go(PlayCommand::Lookahead);
+        let stop = ahead.stop.expect("a stop ahead");
+        assert_eq!(stop.kind, StopKind::Breakpoint, "{stop:?}");
+        assert_eq!(stop.at, Some(("main.ink".to_owned(), 6)), "{stop:?}");
+        // Nothing moved: Next still plays "Two.".
+        let next = d.go(PlayCommand::Next);
+        let texts: Vec<&str> = next
+            .steps
+            .iter()
+            .filter_map(|s| match s {
+                PlayStep::Line { text, .. } => Some(text.trim_end()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["Two."], "{next:?}");
     }
 
     #[test]
