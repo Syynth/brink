@@ -69,6 +69,9 @@ pub(crate) struct Trail {
     pub played: Vec<usize>,
     pub active: Vec<usize>,
     pub held: Option<usize>,
+    /// Where the next line starts — what ▶ plays. A promise, not a fact:
+    /// an edit or a choice can change it, so it is only a faint band.
+    pub next: Option<usize>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -112,12 +115,18 @@ pub(crate) fn trail_in(trail: &crate::player::PlayTrail, path: &str, text: &str)
             .as_ref()
             .filter(|(p, _)| p == path)
             .and_then(|(_, line)| (*line as usize).checked_sub(1)),
+        next: trail
+            .next
+            .as_ref()
+            .filter(|(p, _)| p == path)
+            .and_then(|(_, line)| (*line as usize).checked_sub(1)),
     }
 }
 
 /// How a line stands on the trail; the held line wins, then the active.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Stand {
+    Next,
     Played,
     Active,
     Held,
@@ -131,6 +140,8 @@ impl Trail {
             Some(Stand::Active)
         } else if self.played.binary_search(&line).is_ok() {
             Some(Stand::Played)
+        } else if self.next == Some(line) {
+            Some(Stand::Next)
         } else {
             None
         }
@@ -184,11 +195,15 @@ impl Marks {
     /// A line's rail colour, if it is on the trail.
     fn rail(&self, line: usize) -> Option<Hsla> {
         let colours = self.trail_colours.get();
-        self.trail.borrow().stand(line).map(|stand| match stand {
-            Stand::Played => colours.played,
-            Stand::Active => colours.active,
-            Stand::Held => colours.held,
-        })
+        self.trail
+            .borrow()
+            .stand(line)
+            .and_then(|stand| match stand {
+                Stand::Next => None,
+                Stand::Played => Some(colours.played),
+                Stand::Active => Some(colours.active),
+                Stand::Held => Some(colours.held),
+            })
     }
 
     /// A line's band, if it has one: the active and held lines do.
@@ -196,6 +211,7 @@ impl Marks {
         let colours = self.trail_colours.get();
         match self.trail.borrow().stand(line)? {
             Stand::Played => None,
+            Stand::Next => Some(colours.active.opacity(0.06)),
             Stand::Active => Some(colours.active.opacity(0.16)),
             Stand::Held => Some(colours.held.opacity(0.14)),
         }

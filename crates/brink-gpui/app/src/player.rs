@@ -9,7 +9,9 @@
 
 use std::ops::Range;
 
-use brink_gpui_model::play::{Fault, PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep};
+use brink_gpui_model::play::{
+    Fault, PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep, StopKind,
+};
 use brink_gpui_model::query::Location;
 use brink_gpui_shell::icons::BrinkIcon;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
@@ -117,6 +119,13 @@ pub struct Player {
     tail: f32,
     /// A row was scrolled to the top to be backed off to NOW once laid out.
     to_now: bool,
+    /// `>>`: playing on by itself at the Settings pace, until a stop.
+    autoplay: bool,
+    /// The wait before autoplay's next line; dropping it cancels it.
+    autoplay_timer: Option<gpui::Task<()>>,
+    /// Where the next line starts, as the last line's stop says: what ▶
+    /// plays next, for the manuscript.
+    next_at: Option<(String, u32)>,
     /// Drawn for Write mode: the transport has no Step there (decision
     /// log 2026-10-08, "line-level breakpoints").
     write_mode: bool,
@@ -168,6 +177,9 @@ impl Player {
             now_y: 0.,
             tail: 0.,
             to_now: false,
+            autoplay: false,
+            autoplay_timer: None,
+            next_at: None,
             write_mode: false,
             reader: None,
             looks: Vec::new(),
@@ -254,6 +266,8 @@ impl Player {
         self.list = ListState::new(1, ListAlignment::Top, px(600.));
         self.running = true;
         self.stale = false;
+        self.halt_autoplay();
+        self.next_at = None;
         // Play and Restart are the way back to following, as the web's are.
         self.follow_paused = false;
         if let Some(path) = &at {
@@ -280,6 +294,8 @@ impl Player {
         self.running = false;
         self.paused = false;
         self.held_at = None;
+        self.next_at = None;
+        self.halt_autoplay();
         self.choices.clear();
         self.busy = false;
         self.push(Entry::Notice("— stopped —".into()));
@@ -288,14 +304,99 @@ impl Player {
         cx.notify();
     }
 
-    /// The big round button: start when nothing runs, play the held line
-    /// when the story is held. Line-at-a-time Continue arrives with the
-    /// hook-up (decision log 2026-10-09).
-    fn primary(&mut self, cx: &mut Context<Self>) {
+    /// The big round button (decision log 2026-10-09): start when nothing
+    /// runs; pause autoplay while it plays; otherwise play the next line —
+    /// a held one included.
+    pub(crate) fn primary(&mut self, cx: &mut Context<Self>) {
         if !self.running {
             let at = self.start_at.clone();
             self.start(at, cx);
-        } else if self.paused && !self.busy {
+        } else if self.autoplay {
+            self.halt_autoplay();
+            cx.notify();
+        } else if self.can_advance() {
+            self.send(PlayCommand::Next, cx);
+        }
+    }
+
+    /// How many story lines the transcript holds.
+    #[cfg(test)]
+    pub(crate) fn line_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Line { .. }))
+            .count()
+    }
+
+    /// Whether a command is in flight.
+    #[cfg(test)]
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Whether any story line so far contains `needle`.
+    #[cfg(test)]
+    pub(crate) fn has_line(&self, needle: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
+    }
+
+    /// Whether `>>` is playing on.
+    #[cfg(test)]
+    pub(crate) fn is_autoplaying(&self) -> bool {
+        self.autoplay
+    }
+
+    /// The line a breakpoint holds the story before, if one does.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> Option<&(String, u32)> {
+        self.held_at.as_ref().filter(|_| self.paused)
+    }
+
+    /// Whether a line can be played now: running, nothing in flight, and
+    /// no choice waiting to be made.
+    fn can_advance(&self) -> bool {
+        self.running && !self.busy && self.choices.is_empty()
+    }
+
+    /// `>>`: play on by itself at the Settings pace, until a breakpoint, a
+    /// choice or the end; a second press (or ▶) pauses it.
+    pub(crate) fn toggle_autoplay(&mut self, cx: &mut Context<Self>) {
+        if self.autoplay {
+            self.halt_autoplay();
+        } else if self.can_advance() {
+            self.autoplay = true;
+            self.send(PlayCommand::Next, cx);
+        }
+        cx.notify();
+    }
+
+    fn halt_autoplay(&mut self) {
+        self.autoplay = false;
+        self.autoplay_timer = None;
+    }
+
+    /// Autoplay's next line, after the pace's wait.
+    fn schedule_autoplay(&mut self, cx: &mut Context<Self>) {
+        let wait = std::time::Duration::from_secs_f32(
+            brink_gpui_shell::settings::AppSettings::get(cx).autoplay_ms / 1000.,
+        );
+        let generation = self.generation;
+        self.autoplay_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.autoplay && this.generation == generation && this.can_advance() {
+                    this.send(PlayCommand::Next, cx);
+                }
+            });
+        }));
+    }
+
+    /// `>|`: straight to the next stop — a breakpoint, a choice, the end.
+    pub(crate) fn skip(&mut self, cx: &mut Context<Self>) {
+        if self.can_advance() {
+            self.halt_autoplay();
             self.send(PlayCommand::Continue, cx);
         }
     }
@@ -343,6 +444,7 @@ impl Player {
                 _ => None,
             }),
             held: self.held_at.clone().filter(|_| self.paused),
+            next: self.next_at.clone().filter(|_| self.running),
         }
     }
 
@@ -427,9 +529,25 @@ impl Player {
                 if this.generation == generation {
                     this.busy = false;
                     match outcome {
-                        Ok(outcome) => this.apply(outcome, cx),
+                        Ok(outcome) => {
+                            // Autoplay goes on only past an ordinary line.
+                            let line = outcome.error.is_none()
+                                && outcome
+                                    .stop
+                                    .as_ref()
+                                    .is_some_and(|stop| stop.kind == StopKind::Line);
+                            this.apply(outcome, cx);
+                            if this.autoplay {
+                                if line && this.can_advance() {
+                                    this.schedule_autoplay(cx);
+                                } else {
+                                    this.halt_autoplay();
+                                }
+                            }
+                        }
                         Err(e) => {
                             this.running = false;
+                            this.halt_autoplay();
                             let text = SharedString::from(format!("{e:#}"));
                             this.push(Entry::Error {
                                 text: text.clone(),
@@ -451,13 +569,14 @@ impl Player {
 
     fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
         // Every outcome says afresh whether the flow is held by the
-        // debugger: a stop that isn't the story's own end.
-        self.paused = outcome
-            .stop
-            .as_ref()
-            .is_some_and(|stop| stop.reason != "terminal");
-        self.held_at = if self.paused {
-            outcome.stop.as_ref().and_then(|stop| stop.at.clone())
+        // debugger — a breakpoint, a watch, a step — rather than resting
+        // after a line or at a place the story itself yields.
+        let kind = outcome.stop.as_ref().map(|stop| stop.kind);
+        self.paused = kind.is_some_and(StopKind::holds);
+        let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
+        self.held_at = if self.paused { at.clone() } else { None };
+        self.next_at = if kind == Some(StopKind::Line) {
+            at
         } else {
             None
         };
@@ -470,9 +589,10 @@ impl Player {
             self.project
                 .update(cx, |project, cx| project.set_unbound(unbound, cx));
         }
-        // Where a debug verb came to rest — the transcript says so, and
-        // the studio reveals it.
-        if let Some(stop) = &outcome.stop {
+        // Where the debugger holds the story — the transcript says so, and
+        // the studio reveals it. A line played, a choice point and the end
+        // are the story's own rhythm, and say nothing.
+        if let Some(stop) = outcome.stop.as_ref().filter(|stop| stop.kind.holds()) {
             let text: SharedString = match &stop.at {
                 Some((path, line)) => {
                     format!("— stopped at {path}:{line} ({})", stop.reason).into()
@@ -924,6 +1044,9 @@ impl Player {
         if !self.choices.is_empty() {
             return ("Choose".into(), hsla(tokens.symbol_knot));
         }
+        if self.autoplay {
+            return ("Autoplaying".into(), hsla(tokens.info));
+        }
         if self.running {
             let at = self.current_source().map(place);
             return (
@@ -1075,8 +1198,11 @@ impl Player {
             theme.background,
         );
         let started = !self.entries.is_empty();
-        let can_primary = !self.busy && (!self.running || self.paused);
-        let hint: SharedString = if !self.choices.is_empty() {
+        let can_primary = !self.running || self.autoplay || self.can_advance();
+        let advance = self.can_advance();
+        let hint: SharedString = if self.autoplay {
+            "space · pause".into()
+        } else if !self.choices.is_empty() {
             format!("1\u{2013}{} · choose", self.choices.len()).into()
         } else if !self.running {
             "space · play".into()
@@ -1084,6 +1210,11 @@ impl Player {
             "space · play the held line".into()
         } else {
             "space · continue".into()
+        };
+        let (primary_icon, primary_tip) = if self.autoplay {
+            (BrinkIcon::TransportPause, "Pause (space)")
+        } else {
+            (BrinkIcon::TransportPlay, "Continue (space)")
         };
         let stepping = !self.write_mode && self.paused && !self.busy;
         h_flex()
@@ -1152,30 +1283,32 @@ impl Player {
                     .justify_center()
                     .when(!can_primary, |el| el.opacity(0.3))
                     .when(can_primary, |el| el.cursor_pointer())
-                    .tooltip(|window, cx| Tooltip::new("Continue (space)").build(window, cx))
-                    .child(brink_gpui_shell::icons::icon(
-                        BrinkIcon::TransportPlay,
-                        px(18.),
-                        bg,
-                    ))
+                    .tooltip(move |window, cx| Tooltip::new(primary_tip).build(window, cx))
+                    .child(brink_gpui_shell::icons::icon(primary_icon, px(18.), bg))
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.primary(cx))),
             )
-            .child(Self::icon_button(
-                "player-auto",
-                BrinkIcon::TransportAuto,
-                "Autoplay (coming)",
-                None,
-                false,
-                cx,
-            ))
-            .child(Self::icon_button(
-                "player-skip",
-                BrinkIcon::TransportSkip,
-                "Skip to the next stop (coming)",
-                None,
-                false,
-                cx,
-            ))
+            .child(
+                Self::icon_button(
+                    "player-auto",
+                    BrinkIcon::TransportAuto,
+                    "Autoplay — on at the reading pace until a breakpoint, a choice or the end",
+                    self.autoplay.then_some(primary),
+                    self.autoplay || advance,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_autoplay(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-skip",
+                    BrinkIcon::TransportSkip,
+                    "Skip to the next breakpoint, choice or end",
+                    None,
+                    advance,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.skip(cx))),
+            )
             .when(!self.write_mode, |el| {
                 el.child(
                     Self::icon_button(
@@ -1222,6 +1355,7 @@ pub struct PlayTrail {
     pub played: Vec<Location>,
     pub active: Option<Location>,
     pub held: Option<(String, u32)>,
+    pub next: Option<(String, u32)>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`

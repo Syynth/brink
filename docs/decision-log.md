@@ -5929,3 +5929,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The native studio's player delivers one line per Continue (or per Autoplay tick), in Script and Write alike. It never plays everything up to the next choice in one go (`continue_maximally`). Skip (`>|`) also goes line by line, only faster: every line still arrives as its own step, so the transcript, the line states and the follow see each one.
 - **WHY:** Playing a whole turn at once hides exactly what the Write-mode player exists to show: which line is playing, where it came from in the manuscript, and what comes next. A line at a time is what keeps the manuscript level with playback and lets breakpoints hold before a line rather than somewhere inside a burst.
+
+## The native player plays on the debugger's road
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** moderate
+- **WHAT:** The native player's ▶ (one line), Start and taking a choice advance with the runtime's debug verb `debug_run_to_line`, not `continue_single`; `>|` Skip uses `debug_run`. One road for everything the Player does.
+- **WHY:** Only the debug road can hold *before* a breakpoint line, which is what a line breakpoint means while playing in Write mode; `continue_single` cannot see breakpoints, and two roads would split the delivery stream. The road's quirks (a blank line flushed at a yield point, a line completing only once the next output begins) are handled at the worker's edge.
