@@ -28,6 +28,11 @@ pub const DEFAULT_EDITOR_FONT_SIZE: f32 = 14.;
 pub const DEFAULT_MANUSCRIPT_WIDTH: f32 = 80.;
 pub const MIN_MANUSCRIPT_WIDTH: f32 = 40.;
 pub const MAX_MANUSCRIPT_WIDTH: f32 = 200.;
+/// Autoplay's pace, its bounds, in milliseconds per line.
+pub const DEFAULT_AUTOPLAY_MS: f32 = 1200.;
+pub const MIN_AUTOPLAY_MS: f32 = 200.;
+pub const MAX_AUTOPLAY_MS: f32 = 5000.;
+
 pub const MIN_EDITOR_FONT_SIZE: f32 = 8.;
 pub const MAX_EDITOR_FONT_SIZE: f32 = 32.;
 
@@ -110,6 +115,10 @@ pub struct AppSettings {
     /// The Player's prose size in logical pixels; `0` follows the app
     /// type scale. Sizes the reading surface only, never the chrome.
     pub player_font_size: f32,
+    /// Autoplay's (`>>`) pace: milliseconds from one line to the next —
+    /// the reading pace (decision log 2026-10-09). In the web's unit for
+    /// its paced reveal, so the two studios agree on what a number means.
+    pub autoplay_ms: f32,
     /// Write mode's manuscript column width in characters, centred in the
     /// room beside the sidebar and the Player. `0` is full width. In
     /// characters so it follows the editor's font size.
@@ -315,6 +324,7 @@ impl Default for AppSettings {
             default_view: None,
             follow_in_editor: true,
             player_font_size: 0.,
+            autoplay_ms: DEFAULT_AUTOPLAY_MS,
             manuscript_width: DEFAULT_MANUSCRIPT_WIDTH,
             recents: Vec::new(),
             reopen_last: false,
@@ -374,6 +384,7 @@ impl AppSettings {
             "default_view": self.default_view.clone(),
             "follow_in_editor": self.follow_in_editor,
             "player_font_size": self.player_font_size,
+            "autoplay_ms": self.autoplay_ms,
             "manuscript_width": self.manuscript_width,
             "recents": self.recents.clone(),
             "reopen_last": self.reopen_last,
@@ -448,6 +459,9 @@ impl AppSettings {
                 .get("follow_in_editor")
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.follow_in_editor),
+            autoplay_ms: num("autoplay_ms").map_or(defaults.autoplay_ms, |ms| {
+                ms.clamp(MIN_AUTOPLAY_MS, MAX_AUTOPLAY_MS)
+            }),
             // `0` means "follow the app", so it is not clamped to the
             // minimum the way a real size is.
             player_font_size: match num("player_font_size") {
@@ -662,6 +676,7 @@ mod tests {
             default_view: Some("continuous".to_owned()),
             follow_in_editor: false,
             player_font_size: 20.,
+            autoplay_ms: 900.,
             manuscript_width: 72.,
             recents: vec!["/home/me/harbour/story.ink".to_owned()],
             reopen_last: true,
@@ -891,10 +906,18 @@ mod tests {
         let s = AppSettings {
             follow_in_editor: false,
             player_font_size: 20.,
+            autoplay_ms: 700.,
             ..AppSettings::default()
         };
         let back = AppSettings::from_json(&s.to_json());
         assert!(!back.follow_in_editor);
+        assert!((back.autoplay_ms - 700.).abs() < f32::EPSILON);
+        assert!(
+            (AppSettings::from_json(&json!({"autoplay_ms": 5.})).autoplay_ms - MIN_AUTOPLAY_MS)
+                .abs()
+                < f32::EPSILON,
+            "a pace too fast to read is pulled up to the floor"
+        );
         assert!((back.player_font_size - 20.).abs() < f32::EPSILON);
 
         // 0 is "follow the app", not a size, so it is not pulled up to the

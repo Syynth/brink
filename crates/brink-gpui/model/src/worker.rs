@@ -1341,12 +1341,36 @@ mod tests {
         answer.recv_blocking().expect("the worker answers")
     }
 
+    /// Send `command`, then play on a line at a time until the story
+    /// yields — a choice, an end, or anything but an ordinary line —
+    /// folding every outcome's steps into one.
+    fn play_turn(worker: &Worker, command: PlayCommand) -> PlayOutcome {
+        let mut turn = play(worker, command);
+        let mut lines = 0;
+        while turn.error.is_none()
+            && turn
+                .stop
+                .as_ref()
+                .is_some_and(|s| s.kind == crate::play::StopKind::Line)
+        {
+            lines += 1;
+            assert!(lines < 100, "a turn this long is a runaway");
+            let next = play(worker, PlayCommand::Next);
+            turn.steps.extend(next.steps);
+            turn.stop = next.stop;
+            turn.error = next.error;
+        }
+        turn
+    }
+
     fn line_texts(outcome: &PlayOutcome) -> Vec<&str> {
         outcome
             .steps
             .iter()
             .filter_map(|s| match s {
-                crate::play::PlayStep::Line { text, .. } => Some(text.as_str()),
+                // The debug road's lines carry no trailing newline; the
+                // production road's did. Compared without it.
+                crate::play::PlayStep::Line { text, .. } => Some(text.trim_end_matches('\n')),
                 _ => None,
             })
             .collect()
@@ -1553,6 +1577,26 @@ mod tests {
         assert_eq!(cleared.state, None, "{cleared:?}");
     }
 
+    /// The native player advances a line at a time, never a whole turn
+    /// (decision log 2026-10-09): Start and Next each deliver one line,
+    /// and the last line before a choice comes with the choices.
+    #[test]
+    fn play_advances_a_line_at_a_time() {
+        use crate::play::StopKind;
+        let tree = nav_tree("play-lines");
+        let worker = drive(&tree);
+        let first = play(&worker, PlayCommand::Start { at: None });
+        assert_eq!(line_texts(&first), ["Start here."], "{first:?}");
+        assert_eq!(first.stop.as_ref().map(|s| s.kind), Some(StopKind::Line));
+        let second = play(&worker, PlayCommand::Next);
+        assert_eq!(line_texts(&second), ["Hello."], "{second:?}");
+        assert_eq!(
+            second.stop.as_ref().map(|s| s.kind),
+            Some(StopKind::Choices),
+            "{second:?}"
+        );
+    }
+
     #[test]
     fn play_runs_to_choices_and_on_through_one() {
         use crate::play::{PlayError, PlayStep};
@@ -1564,9 +1608,9 @@ mod tests {
         assert_eq!(early.error, Some(PlayError::NotStarted));
 
         // No brink.toml: `main.ink` stands in for the entry.
-        let started = play(&worker, PlayCommand::Start { at: None });
+        let started = play_turn(&worker, PlayCommand::Start { at: None });
         assert_eq!(started.error, None, "{started:?}");
-        assert_eq!(line_texts(&started), ["Start here.\n", "Hello.\n"]);
+        assert_eq!(line_texts(&started), ["Start here.", "Hello."]);
         let Some(PlayStep::Choices(choices)) = started.steps.last() else {
             panic!("ends on the choices: {started:?}");
         };
@@ -1580,25 +1624,25 @@ mod tests {
             "the choice knows where it was written: {choices:?}"
         );
 
-        let again = play(&worker, PlayCommand::Choose(0));
+        let again = play_turn(&worker, PlayCommand::Choose(0));
         assert_eq!(again.error, None, "{again:?}");
-        assert_eq!(line_texts(&again), ["Hello.\n"]);
+        assert_eq!(line_texts(&again), ["Hello."]);
         assert!(matches!(again.steps.last(), Some(PlayStep::Choices(_))));
 
-        let stop = play(&worker, PlayCommand::Choose(1));
+        let stop = play_turn(&worker, PlayCommand::Choose(1));
         assert_eq!(stop.error, None, "{stop:?}");
         assert_eq!(stop.steps.last(), Some(&PlayStep::Done));
         assert!(stop.is_over());
 
         // Play from here: straight into the knot, no "Start here.".
-        let from = play(
+        let from = play_turn(
             &worker,
             PlayCommand::Start {
                 at: Some("greet".to_owned()),
             },
         );
         assert_eq!(from.error, None, "{from:?}");
-        assert_eq!(line_texts(&from), ["Hello.\n"]);
+        assert_eq!(line_texts(&from), ["Hello."]);
 
         // An edit after a start is not folded in until the next start.
         worker.send(Request::Edit {
@@ -1606,10 +1650,10 @@ mod tests {
             text: GREET.replace("Hello.", "Hi."),
             revision: 1,
         });
-        let stale = play(&worker, PlayCommand::Choose(0));
-        assert_eq!(line_texts(&stale), ["Hello.\n"]);
-        let fresh = play(&worker, PlayCommand::Start { at: None });
-        assert_eq!(line_texts(&fresh), ["Start here.\n", "Hi.\n"]);
+        let stale = play_turn(&worker, PlayCommand::Choose(0));
+        assert_eq!(line_texts(&stale), ["Hello."]);
+        let fresh = play_turn(&worker, PlayCommand::Start { at: None });
+        assert_eq!(line_texts(&fresh), ["Start here.", "Hi."]);
 
         // A broken project has no program to run.
         worker.send(Request::Edit {

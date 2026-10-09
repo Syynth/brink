@@ -46,7 +46,13 @@ pub enum PlayCommand {
     /// run: a stored slot index would watch the wrong global after a
     /// recompile.
     SetWatchpoints(Vec<String>),
-    /// Run until a breakpoint, a choice point, or the story ends.
+    /// Play the next line — the Player's ▶ (decision log 2026-10-09: the
+    /// native player advances a line at a time, never a whole turn). Stops
+    /// early at a breakpoint, before the line it is on, and at a choice
+    /// point or the story's end.
+    Next,
+    /// Run until a breakpoint, a choice point, or the story ends — the
+    /// Player's `>|`, and Script's F5.
     Continue,
     /// One source line (`step`), or one VM instruction (`stepi`). Both
     /// are first-class (RULED 2026-08-28) — the Program Explorer shows
@@ -222,9 +228,41 @@ pub struct PlayOutcome {
     pub unbound: Vec<(String, u32)>,
 }
 
+/// What kind of place a command stopped at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopKind {
+    /// After a line, as [`PlayCommand::Next`] asked — nothing to report.
+    Line,
+    /// Held by a breakpoint, before the line it is on.
+    Breakpoint,
+    /// Held by a write to a watched global.
+    Watchpoint,
+    /// A step finished.
+    Step,
+    /// At a choice point: the choices are in the steps.
+    Choices,
+    /// The story is over (or out of content).
+    Terminal,
+    /// Waiting on an external, or anything else the engine reports.
+    Other,
+}
+
+impl StopKind {
+    /// Whether the story is held by the debugger here, rather than at a
+    /// place the story itself yields.
+    #[must_use]
+    pub fn holds(self) -> bool {
+        matches!(
+            self,
+            Self::Breakpoint | Self::Watchpoint | Self::Step | Self::Other
+        )
+    }
+}
+
 /// Where a debug command came to rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayStop {
+    pub kind: StopKind,
     /// `breakpoint` / `step` / `choices` / `terminal` / `watchpoint` /
     /// `awaiting external`, plus a breakpoint's own name.
     pub reason: String,
@@ -328,15 +366,11 @@ pub fn run(
                     // any of them armed runs on the DEBUG road, so the
                     // first one hits instead of the story running past it.
                     let unbound = arm(running, &slot.wanted);
-                    let mut outcome = if slot.wanted.is_empty() && slot.watched.is_empty() {
-                        advance(running)
-                    } else {
-                        debug_command(slot, DebugVerb::Continue)
-                    };
+                    // To the first line, on the debug road whether or not
+                    // anything is armed: one road, so a breakpoint on the
+                    // first line holds and the delivery stream is one.
+                    let mut outcome = debug_command(slot, DebugVerb::Line);
                     outcome.unbound = unbound;
-                    if outcome.error.is_some() {
-                        slot.park(outcome.state.clone());
-                    }
                     outcome
                 }
                 Err(e) => PlayOutcome::failed(e),
@@ -362,18 +396,10 @@ pub fn run(
                 slot.park(outcome.state.clone());
                 return outcome;
             }
-            // With breakpoints armed, taking a choice continues on the
-            // DEBUG road: the production `continue_maximally` knows
-            // nothing about them, so a breakpoint past a choice could
-            // never hit and the mark in the gutter would be a lie.
-            if running.breakpoints.iter().next().is_some() || !slot.watched.is_empty() {
-                return debug_command(slot, DebugVerb::Continue);
-            }
-            let outcome = advance(running);
-            if outcome.error.is_some() {
-                slot.park(outcome.state.clone());
-            }
-            outcome
+            // On to the choice's first line — a breakpoint on it holds
+            // (decision log 2026-10-09: a breakpoint on a choice line
+            // holds when that choice is taken).
+            debug_command(slot, DebugVerb::Line)
         }
         PlayCommand::Stop => {
             slot.play = None;
@@ -397,6 +423,7 @@ pub fn run(
             slot.watched = names;
             PlayOutcome::default()
         }
+        PlayCommand::Next => debug_command(slot, DebugVerb::Line),
         PlayCommand::Continue => debug_command(slot, DebugVerb::Continue),
         PlayCommand::StepLine => debug_command(slot, DebugVerb::StepLine),
         PlayCommand::StepInstruction => debug_command(slot, DebugVerb::StepInstruction),
@@ -440,6 +467,8 @@ fn faulted(play: &Play, message: String) -> PlayOutcome {
 /// drain/convert/stop bookkeeping.
 #[derive(Clone, Copy)]
 enum DebugVerb {
+    /// To the next completed line (`debug_run_to_line`).
+    Line,
     Continue,
     StepLine,
     StepInstruction,
@@ -489,6 +518,17 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
         .filter_map(|name| running.program.global_index(name))
         .collect();
     let result = match verb {
+        DebugVerb::Line if !watching.is_empty() => {
+            let mut observer = brink_runtime::WatchpointObserver::new(watching);
+            running.story.debug_run_to_line_watching(
+                &running.breakpoints,
+                &mut observer,
+                DEFAULT_DEBUG_BUDGET,
+            )
+        }
+        DebugVerb::Line => running
+            .story
+            .debug_run_to_line(&running.breakpoints, DEFAULT_DEBUG_BUDGET),
         DebugVerb::Continue if !watching.is_empty() => {
             let mut observer = brink_runtime::WatchpointObserver::new(watching);
             running.story.debug_run_watching(
@@ -538,29 +578,37 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
     lines.extend(running.story.debug_drain_buffered_lines());
     let mut steps: Vec<PlayStep> = lines
         .into_iter()
+        // The drain's flush at a yield point can hand back an empty line —
+        // the newline the last line ended with, flushed on its own. It has
+        // no content; ink shows none, and neither did the production road
+        // this replaced.
+        .filter(|(text, _, _)| !text.trim().is_empty())
         .map(|(text, tags, source)| PlayStep::Line {
             text,
             tags,
             source: location(source),
         })
         .collect();
-    // A stop at a choice point offers choices; the transcript needs them
-    // the same way a production advance delivers them.
-    if matches!(outcome.reason, DebugStopReason::Choices) {
-        let snap = running.story.debug_snapshot();
-        steps.push(PlayStep::Choices(
-            snap.pending_choices
-                .into_iter()
-                .enumerate()
-                .map(|(i, c)| PlayChoice {
-                    text: c.text,
-                    index: i,
-                    tags: Vec::new(),
-                    sticky: false,
-                    source: None,
-                })
-                .collect(),
-        ));
+    let kind = match (&outcome.reason, verb) {
+        (DebugStopReason::Step, DebugVerb::Line) => StopKind::Line,
+        (DebugStopReason::Step, _) => StopKind::Step,
+        (DebugStopReason::Breakpoint { .. }, _) => StopKind::Breakpoint,
+        (DebugStopReason::Watchpoint { .. }, _) => StopKind::Watchpoint,
+        (DebugStopReason::Choices, _) => StopKind::Choices,
+        (DebugStopReason::Terminal, _) => StopKind::Terminal,
+        _ => StopKind::Other,
+    };
+    match kind {
+        // A stop at a choice point offers choices, exactly as a production
+        // advance delivers them — sticky, tagged and sourced.
+        StopKind::Choices => steps.push(convert(Step::Choices(running.story.pending_choices()))),
+        // The story's own end: `-> END`, or `-> DONE` / out of content.
+        StopKind::Terminal => steps.push(if running.story.debug_snapshot().status == "ended" {
+            PlayStep::End
+        } else {
+            PlayStep::Done
+        }),
+        _ => {}
     }
     PlayOutcome {
         steps,
@@ -571,6 +619,7 @@ fn debug_command(slot: &mut PlaySlot, verb: DebugVerb) -> PlayOutcome {
             .map(ToString::to_string)
             .collect(),
         stop: Some(PlayStop {
+            kind,
             reason: describe(&outcome.reason, &running.program),
             at: current_line(running),
         }),
@@ -743,26 +792,6 @@ fn snapshot(story: &Story<FastRng>) -> PlayState {
     }
 }
 
-/// Run to the next yield point.
-fn advance(play: &mut Play) -> PlayOutcome {
-    let mut outcome = match play.story.continue_maximally() {
-        Ok(steps) => PlayOutcome {
-            steps: steps.into_iter().map(convert).collect(),
-            ..PlayOutcome::default()
-        },
-        // The site and the state are read here, while the story is still
-        // alive; the caller drops it immediately after.
-        Err(e) => faulted(play, e.to_string()),
-    };
-    outcome.warnings = play
-        .story
-        .take_runtime_warnings()
-        .iter()
-        .map(ToString::to_string)
-        .collect();
-    outcome
-}
-
 fn location(source: Option<brink_format::SourceLocation>) -> Option<Location> {
     source.map(|s| Location {
         path: s.file,
@@ -887,21 +916,32 @@ mod tests {
         let set = d.go(PlayCommand::SetWatchpoints(vec!["gold".to_owned()]));
         assert!(set.error.is_none(), "watching needs no session");
 
+        // The write comes before the first line is complete — a line
+        // completes only once the next output begins — so the start holds.
         let started = d.go(PlayCommand::Start { at: None });
-        let stop = started.stop.expect("a start with a watch is a debug run");
+        let stop = started.stop.expect("every verb says where it stopped");
+        assert_eq!(stop.kind, StopKind::Watchpoint, "{stop:?}");
         assert_eq!(stop.reason, "write to gold", "{stop:?}");
 
         let on = d.go(PlayCommand::Continue);
         assert!(
-            on.stop.as_ref().is_none_or(|s| s.reason != "write to gold"),
+            on.stop
+                .as_ref()
+                .is_none_or(|s| s.kind != StopKind::Watchpoint),
             "one write, one stop: {:?}",
             on.stop
         );
 
-        // Unwatched, a fresh start runs straight through.
+        // Unwatched, a fresh start runs to the end without holding.
         let _ = d.go(PlayCommand::SetWatchpoints(Vec::new()));
-        let plain = d.go(PlayCommand::Start { at: None });
-        assert!(plain.stop.is_none(), "{:?}", plain.stop);
+        let _ = d.go(PlayCommand::Start { at: None });
+        let plain = d.go(PlayCommand::Continue);
+        assert_eq!(
+            plain.stop.as_ref().map(|s| s.kind),
+            Some(StopKind::Terminal),
+            "{:?}",
+            plain.stop
+        );
     }
 
     #[test]
