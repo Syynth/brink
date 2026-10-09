@@ -420,7 +420,8 @@ impl OutputLog {
                 ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged
-                | ProjectEvent::ProseOptionsChanged => return,
+                | ProjectEvent::ProseOptionsChanged
+                | ProjectEvent::GrammarChecked { .. } => return,
             }
             cx.notify();
         });

@@ -48,6 +48,13 @@ pub enum ProjectEvent {
     /// No text moved, so no analysis follows: every editor asks for its
     /// prose again itself, and drops any lints it was keeping by text.
     ProseOptionsChanged,
+    /// A "Check Grammar with Apple Intelligence" ended. Its findings are
+    /// already among `path`'s prose lints; every editor over it asks for
+    /// them again, and the studio says how it went.
+    GrammarChecked {
+        path: String,
+        outcome: brink_gpui_model::prose::ModelCheck,
+    },
     /// The disk moved under the project. The changes are already applied
     /// — this is what the studio should SAY about them.
     DiskChanged(Vec<DiskReport>),
@@ -378,6 +385,17 @@ impl Project {
         }
     }
 
+    /// Ask Apple's grammar model about the prose that `start..end` (bytes
+    /// of `path`) touches. The answer comes back as
+    /// [`ProjectEvent::GrammarChecked`]; the caller seeds the text first.
+    pub fn check_grammar(&mut self, path: &str, start: usize, end: usize) {
+        self.worker.send(Request::CheckGrammar {
+            path: path.to_owned(),
+            start: u32::try_from(start).unwrap_or(u32::MAX),
+            end: u32::try_from(end).unwrap_or(u32::MAX),
+        });
+    }
+
     /// Send the worker the grammar the settings now name, if it moved,
     /// and have every editor check its prose again under it.
     fn sync_prose_options(&mut self, cx: &mut Context<Self>) {
@@ -431,6 +449,9 @@ impl Project {
                 }
                 Err(message) => cx.emit(ProjectEvent::OpenFailed(message)),
             },
+            Response::GrammarChecked { path, outcome } => {
+                cx.emit(ProjectEvent::GrammarChecked { path, outcome });
+            }
             Response::Analyzed(analyzed) => {
                 self.diagnostics = analyzed.diagnostics;
                 self.kinds = analyzed.kinds;

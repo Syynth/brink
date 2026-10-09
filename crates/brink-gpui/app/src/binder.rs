@@ -515,6 +515,7 @@ impl Binder {
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged
                 | ProjectEvent::ProseOptionsChanged
+                | ProjectEvent::GrammarChecked { .. }
                 | ProjectEvent::DiskChanged(_)
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}

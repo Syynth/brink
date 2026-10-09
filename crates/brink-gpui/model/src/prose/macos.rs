@@ -29,15 +29,23 @@
 //! the language to its last question.
 
 use std::collections::HashMap;
-use std::sync::{Mutex, PoisonError};
+use std::ptr::NonNull;
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::{Mutex, Once, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
+use block2::RcBlock;
 use objc2::rc::{Retained, autoreleasepool};
 use objc2::runtime::AnyObject;
 use objc2_app_kit::NSSpellChecker;
-use objc2_foundation::{NSArray, NSDictionary, NSRange, NSString, NSTextCheckingType, NSValue};
+use objc2_foundation::{
+    NSArray, NSDictionary, NSNumber, NSOrthography, NSRange, NSString, NSTextCheckingResult,
+    NSTextCheckingType, NSValue,
+};
 
-use super::{Lint16, MAX_FIXES, ProseFix, SPELLING};
+use super::{
+    Lint16, MAX_FIXES, ModelCheck, ModelChunk, ModelReport, ModelState, ProseFix, SPELLING,
+};
 
 /// How long one check may spend asking for suggestions it has not cached.
 /// `guessesForWordRange` costs 5–26 ms a word; past this, a misspelling
@@ -49,6 +57,39 @@ const SUGGESTION_BUDGET: Duration = Duration::from_millis(100);
 /// are. Bounds, not targets (CLAUDE.md, "Guard against unbounded growth").
 const SPAN_CACHE: usize = 4096;
 const GUESS_CACHE: usize = 2048;
+/// Spans whose grammar-model findings are remembered.
+const MODEL_CACHE: usize = 2048;
+
+/// The option that makes a check wait for the grammar model (macOS 27's
+/// `NSTextCheckingWaitForAllGrammarCheckingResultsKey`). Named by its
+/// value, not linked: the symbol does not exist before macOS 27, and an
+/// unknown option is ignored there — the canary then finds no model and
+/// the command is not offered, which is the right answer for that Mac.
+const WAIT_FOR_MODEL: &str = "WaitForAllGrammarCheckingResults";
+
+/// A sentence only the model gets right (the quick rules pass it), with
+/// the fix it offers. Measured on macOS 27.0.1.
+const CANARY: &str = "There is three apples on the table.";
+const CANARY_FIX: &str = "are";
+/// How long the canary waits. A Mac that has run it before answers from
+/// the system's cache in milliseconds; a fresh one takes seconds.
+const CANARY_WAIT: Duration = Duration::from_secs(30);
+
+/// Model requests in flight at once, per project. Eight concurrent ones
+/// took 4.8 s together in the probe, so concurrency helps; this is on-device
+/// compute on the author's battery, so it is capped.
+const MODEL_IN_FLIGHT: usize = 4;
+/// A model request not answered by then is counted as failed.
+const MODEL_WAIT: Duration = Duration::from_secs(60);
+/// Prose per model request, in bytes.
+pub(super) const MODEL_CHUNK: usize = 2048;
+
+/// [`ModelState`], process-wide: 0 unknown, 1 available, 2 unavailable.
+static MODEL: AtomicU8 = AtomicU8::new(0);
+static PROBE: Once = Once::new();
+/// Model-check ids, process-wide, so an answer for a project since closed
+/// can never be taken for one of the next project's.
+static JOBS: AtomicU64 = AtomicU64::new(1);
 
 /// Held for the whole of a check: the shared checker's language is set at
 /// its start and must still be that language at its end.
@@ -70,6 +111,29 @@ pub(super) struct OsChecker {
     spans: Recent<Scan>,
     /// A word → the checker's suggestions for it, in `language`.
     guesses: Recent<Vec<String>>,
+    /// A span's text → what the grammar model found in it, relative to the
+    /// span: filled by "Check Grammar with Apple Intelligence" (spec §7),
+    /// read by every later check while the span's text is unchanged.
+    model: Recent<Vec<Lint16>>,
+    /// Model checks under way, oldest first.
+    jobs: Vec<Job>,
+    /// Model requests sent and not yet answered.
+    in_flight: usize,
+}
+
+/// One "Check Grammar with Apple Intelligence": the spans it covers, in
+/// chunks of about [`MODEL_CHUNK`], and how far it has got.
+struct Job {
+    id: u64,
+    path: String,
+    chunks: Vec<Vec<String>>,
+    dictionary: Vec<String>,
+    dialect: Option<String>,
+    /// Chunks sent, and chunks answered (or given up on).
+    sent: usize,
+    done: usize,
+    found: usize,
+    timed_out: bool,
 }
 
 /// One span's answer, in UTF-16 code units from the span's start.
@@ -91,6 +155,9 @@ struct Miss {
 
 impl OsChecker {
     pub(super) fn new() -> Self {
+        // The first project to check prose finds out, once per launch,
+        // whether the grammar model answers here.
+        probe_model();
         Self {
             checker: NSSpellChecker::sharedSpellChecker(),
             tag: NSSpellChecker::uniqueSpellDocumentTag(),
@@ -99,21 +166,25 @@ impl OsChecker {
             grammar: false,
             spans: Recent::new(SPAN_CACHE),
             guesses: Recent::new(GUESS_CACHE),
+            model: Recent::new(MODEL_CACHE),
+            jobs: Vec::new(),
+            in_flight: 0,
         }
     }
 
     /// Check `spans` — each a span's text and where it starts in the file,
-    /// in UTF-16 — and answer `(spelling, grammar)` as lints in the file's
-    /// UTF-16. The grammar is the checker's quick rules plus whatever its
-    /// model has cached for these sentences (spec §2.1), and only when
-    /// `grammar` asks for it.
+    /// in UTF-16 — and answer `(spelling, grammar, model)` as lints in the
+    /// file's UTF-16. `grammar` is the checker's quick rules plus whatever
+    /// its model has cached for these sentences (spec §2.1), and only when
+    /// asked for; `model` is what "Check Grammar with Apple Intelligence"
+    /// found in spans whose text has not changed since.
     pub(super) fn check(
         &mut self,
         spans: &[(&str, u32)],
         dictionary: &[String],
         dialect: Option<&str>,
         grammar: bool,
-    ) -> (Vec<Lint16>, Vec<Lint16>) {
+    ) -> (Vec<Lint16>, Vec<Lint16>, Vec<Lint16>) {
         // A poisoned lock guards nothing but the language, which this
         // check sets again first thing.
         let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
@@ -122,6 +193,7 @@ impl OsChecker {
             let deadline = Instant::now() + SUGGESTION_BUDGET;
             let mut spelling = Vec::new();
             let mut found = Vec::new();
+            let mut model = Vec::new();
             for &(text, at) in spans {
                 let scan = if let Some(scan) = self.spans.get(text) {
                     scan.clone()
@@ -141,13 +213,12 @@ impl OsChecker {
                         fixes,
                     });
                 }
-                found.extend(scan.grammar.into_iter().map(|lint| Lint16 {
-                    start: at + lint.start,
-                    end: at + lint.end,
-                    ..lint
-                }));
+                found.extend(scan.grammar.into_iter().map(|lint| shift(lint, at)));
+                if let Some(seen) = self.model.get(text) {
+                    model.extend(seen.iter().cloned().map(|lint| shift(lint, at)));
+                }
             }
-            (spelling, found)
+            (spelling, found, model)
         })
     }
 
@@ -166,6 +237,7 @@ impl OsChecker {
             self.language = language;
             self.spans.clear();
             self.guesses.clear();
+            self.model.clear();
         }
         if grammar != self.grammar {
             self.grammar = grammar;
@@ -183,55 +255,10 @@ impl OsChecker {
         }
     }
 
-    /// Ask the checker about one span.
+    /// Ask the checker about one span, with or without grammar as the
+    /// setting has it.
     fn scan(&self, text: &str) -> Scan {
-        let string = NSString::from_str(text);
-        let whole = NSRange::new(0, string.length());
-        // Grammar is never asked for alone: on its own the checker answers
-        // nothing at all (spec §2.1).
-        let types = if self.grammar {
-            NSTextCheckingType::Spelling.0 | NSTextCheckingType::Grammar.0
-        } else {
-            NSTextCheckingType::Spelling.0
-        };
-        // SAFETY: no options dictionary is passed, so there is no generic
-        // to get wrong, and the word count is not wanted — the binding
-        // accepts a null pointer there.
-        let results = unsafe {
-            self.checker
-                .checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(
-                    &string,
-                    whole,
-                    types,
-                    None,
-                    self.tag,
-                    None,
-                    std::ptr::null_mut(),
-                )
-        };
-        let units: Vec<u16> = text.encode_utf16().collect();
-        let mut scan = Scan::default();
-        for result in &results {
-            let range = result.range();
-            if result.resultType() == NSTextCheckingType::Spelling {
-                if let Some(miss) = miss(&units, range) {
-                    scan.misses.push(miss);
-                }
-            } else if result.resultType() == NSTextCheckingType::Grammar {
-                let details = result
-                    .grammarDetails()
-                    .map(|d| d.to_vec())
-                    .unwrap_or_default();
-                scan.grammar.extend(
-                    details
-                        .iter()
-                        .filter_map(|d| grammar_lint(&units, range, d)),
-                );
-            }
-            // Anything else (an orthography result comes back on some
-            // inputs) is not a finding.
-        }
-        scan
+        scan_text(&self.checker, self.tag, text, self.grammar)
     }
 
     /// A misspelling's fixes: the cached suggestions, fresh ones while the
@@ -280,10 +307,301 @@ impl OsChecker {
     }
 }
 
+impl OsChecker {
+    /// Start a model check of `spans` (each a whole span's text), for
+    /// `path`. Answers at once only when there is nothing to do; otherwise
+    /// [`OsChecker::model_chunk_done`] answers once every chunk is in.
+    pub(super) fn start_model_check(
+        &mut self,
+        path: &str,
+        spans: Vec<String>,
+        dictionary: &[String],
+        dialect: Option<&str>,
+        report: &ModelReport,
+    ) -> Option<ModelCheck> {
+        if model_state() != ModelState::Available {
+            return Some(ModelCheck::Unavailable);
+        }
+        let chunks = super::chunks(spans, MODEL_CHUNK);
+        if chunks.is_empty() {
+            return Some(ModelCheck::NoProse);
+        }
+        self.jobs.push(Job {
+            id: JOBS.fetch_add(1, Ordering::Relaxed),
+            path: path.to_owned(),
+            chunks,
+            dictionary: dictionary.to_vec(),
+            dialect: dialect.map(str::to_owned),
+            sent: 0,
+            done: 0,
+            found: 0,
+            timed_out: false,
+        });
+        self.pump(report);
+        None
+    }
+
+    /// One chunk answered (or given up on). Its spans are checked again —
+    /// synchronously, from the system's cache, which now holds the model's
+    /// findings — and kept; the next chunk goes out. Answers `(path,
+    /// outcome)` when that was its job's last chunk, and nothing for a job
+    /// this project does not have (one from a project since closed).
+    pub(super) fn model_chunk_done(
+        &mut self,
+        done: ModelChunk,
+        report: &ModelReport,
+    ) -> Option<(String, ModelCheck)> {
+        let index = self.jobs.iter().position(|job| job.id == done.job)?;
+        self.in_flight = self.in_flight.saturating_sub(1);
+        if done.answered {
+            let (spans, dictionary, dialect) = {
+                let job = &self.jobs[index];
+                (
+                    job.chunks.get(done.chunk).cloned().unwrap_or_default(),
+                    job.dictionary.clone(),
+                    job.dialect.clone(),
+                )
+            };
+            let found = {
+                let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
+                autoreleasepool(|_| {
+                    self.configure(&dictionary, dialect.as_deref(), self.grammar);
+                    let mut found = 0;
+                    for text in spans {
+                        let grammar = scan_text(&self.checker, self.tag, &text, true).grammar;
+                        found += grammar.len();
+                        self.model.insert(text, grammar);
+                    }
+                    found
+                })
+            };
+            self.jobs[index].found += found;
+        } else {
+            self.jobs[index].timed_out = true;
+        }
+        self.jobs[index].done += 1;
+        let finished = (self.jobs[index].done == self.jobs[index].chunks.len()).then(|| {
+            let job = self.jobs.remove(index);
+            (
+                job.path,
+                ModelCheck::Checked {
+                    found: job.found,
+                    timed_out: job.timed_out,
+                },
+            )
+        });
+        self.pump(report);
+        finished
+    }
+
+    /// Send chunks, oldest job first, while fewer than
+    /// [`MODEL_IN_FLIGHT`] are out. Each one's answer comes back through
+    /// `report`, from a thread that waits for it — at most
+    /// [`MODEL_WAIT`], so a request the system never answers still ends.
+    fn pump(&mut self, report: &ModelReport) {
+        let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
+        autoreleasepool(|_| {
+            while self.in_flight < MODEL_IN_FLIGHT {
+                let Some(index) = self.jobs.iter().position(|job| job.sent < job.chunks.len())
+                else {
+                    break;
+                };
+                let (id, chunk, text, dictionary, dialect) = {
+                    let job = &mut self.jobs[index];
+                    let chunk = job.sent;
+                    job.sent += 1;
+                    (
+                        job.id,
+                        chunk,
+                        job.chunks[chunk].join("\n\n"),
+                        job.dictionary.clone(),
+                        job.dialect.clone(),
+                    )
+                };
+                self.configure(&dictionary, dialect.as_deref(), self.grammar);
+                let (tx, rx) = mpsc::channel();
+                ask_model(&self.checker, self.tag, &text, tx);
+                self.in_flight += 1;
+                let waiter = report.clone();
+                let waited = std::thread::Builder::new()
+                    .name("brink-grammar-model".to_owned())
+                    .spawn(move || {
+                        let answered = rx.recv_timeout(MODEL_WAIT).is_ok();
+                        waiter(ModelChunk {
+                            job: id,
+                            chunk,
+                            answered,
+                        });
+                    });
+                if waited.is_err() {
+                    // No thread to wait with: report the chunk unanswered
+                    // now rather than leave its job open forever.
+                    report(ModelChunk {
+                        job: id,
+                        chunk,
+                        answered: false,
+                    });
+                }
+            }
+        });
+    }
+}
+
 impl Drop for OsChecker {
     fn drop(&mut self) {
         self.checker.closeSpellDocumentWithTag(self.tag);
     }
+}
+
+/// A lint relative to a span, moved to where the span starts.
+fn shift(lint: Lint16, at: u32) -> Lint16 {
+    Lint16 {
+        start: at + lint.start,
+        end: at + lint.end,
+        ..lint
+    }
+}
+
+/// Ask `checker` about one span's text.
+fn scan_text(checker: &NSSpellChecker, tag: isize, text: &str, grammar: bool) -> Scan {
+    let string = NSString::from_str(text);
+    let whole = NSRange::new(0, string.length());
+    // Grammar is never asked for alone: on its own the checker answers
+    // nothing at all (spec §2.1).
+    let types = if grammar {
+        NSTextCheckingType::Spelling.0 | NSTextCheckingType::Grammar.0
+    } else {
+        NSTextCheckingType::Spelling.0
+    };
+    // SAFETY: no options dictionary is passed, so there is no generic
+    // to get wrong, and the word count is not wanted — the binding
+    // accepts a null pointer there.
+    let results = unsafe {
+        checker.checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(
+            &string,
+            whole,
+            types,
+            None,
+            tag,
+            None,
+            std::ptr::null_mut(),
+        )
+    };
+    let units: Vec<u16> = text.encode_utf16().collect();
+    let mut scan = Scan::default();
+    for result in &results {
+        let range = result.range();
+        if result.resultType() == NSTextCheckingType::Spelling {
+            if let Some(miss) = miss(&units, range) {
+                scan.misses.push(miss);
+            }
+        } else if result.resultType() == NSTextCheckingType::Grammar {
+            let details = result
+                .grammarDetails()
+                .map(|d| d.to_vec())
+                .unwrap_or_default();
+            scan.grammar.extend(
+                details
+                    .iter()
+                    .filter_map(|d| grammar_lint(&units, range, d)),
+            );
+        }
+        // Anything else (an orthography result comes back on some
+        // inputs) is not a finding.
+    }
+    scan
+}
+
+/// Ask the grammar model about `text`, and wait for all of it. `done`
+/// hears once the answer is in; the handler runs "in an arbitrary
+/// context", per AppKit's header, so it makes no ObjC calls — the answer is
+/// read back on the asking thread, from the system's cache (spec §7.3).
+fn ask_model(checker: &NSSpellChecker, tag: isize, text: &str, done: mpsc::Sender<()>) {
+    let string = NSString::from_str(text);
+    let key = NSString::from_str(WAIT_FOR_MODEL);
+    let yes = NSNumber::new_bool(true);
+    let options: Retained<NSDictionary<NSString, AnyObject>> =
+        NSDictionary::from_slices(&[&*key], &[yes.as_ref() as &AnyObject]);
+    let handler = RcBlock::new(
+        move |_: isize,
+              _: NonNull<NSArray<NSTextCheckingResult>>,
+              _: NonNull<NSOrthography>,
+              _: isize| {
+            let _ = done.send(());
+        },
+    );
+    // SAFETY: the options dictionary holds one NSNumber, the type its key
+    // documents; the handler takes exactly the four arguments the binding
+    // declares and touches none of them.
+    unsafe {
+        checker
+            .requestCheckingOfString_range_types_options_inSpellDocumentWithTag_completionHandler(
+                &string,
+                NSRange::new(0, string.length()),
+                NSTextCheckingType::Spelling.0 | NSTextCheckingType::Grammar.0,
+                Some(&options),
+                tag,
+                Some(&handler),
+            );
+    }
+}
+
+/// Whether the grammar model answers on this Mac, as far as is known.
+pub(super) fn model_state() -> ModelState {
+    match MODEL.load(Ordering::Acquire) {
+        1 => ModelState::Available,
+        2 => ModelState::Unavailable,
+        _ => ModelState::Unknown,
+    }
+}
+
+/// Find out, once per launch and off every thread that matters, whether
+/// the grammar model answers here (spec §8).
+fn probe_model() {
+    PROBE.call_once(|| {
+        let spawned = std::thread::Builder::new()
+            .name("brink-grammar-probe".to_owned())
+            .spawn(|| {
+                let answers = canary();
+                MODEL.store(if answers { 1 } else { 2 }, Ordering::Release);
+            });
+        if spawned.is_err() {
+            MODEL.store(2, Ordering::Release);
+        }
+    });
+}
+
+/// Ask the model about [`CANARY`]: it answers here if it offers
+/// [`CANARY_FIX`]. A Mac without it (no Apple Intelligence, or a macOS
+/// before 27) gets the quick rules' answer, which passes the sentence.
+fn canary() -> bool {
+    autoreleasepool(|_| {
+        let checker = NSSpellChecker::sharedSpellChecker();
+        let tag = NSSpellChecker::uniqueSpellDocumentTag();
+        let english = |checker: &NSSpellChecker| {
+            checker.setAutomaticallyIdentifiesLanguages(false);
+            let _ = checker.setLanguage(&NSString::from_str("en_US"));
+        };
+        let (tx, rx) = mpsc::channel();
+        {
+            let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
+            english(&checker);
+            ask_model(&checker, tag, CANARY, tx);
+        }
+        let answers = rx.recv_timeout(CANARY_WAIT).is_ok() && {
+            let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
+            english(&checker);
+            scan_text(&checker, tag, CANARY, true)
+                .grammar
+                .iter()
+                .any(|lint| {
+                    lint.fixes
+                        .contains(&ProseFix::Replace(CANARY_FIX.to_owned()))
+                })
+        };
+        checker.closeSpellDocumentWithTag(tag);
+        answers
+    })
 }
 
 /// A spelling result as a [`Miss`]; `None` for a range that does not fit
@@ -482,7 +800,7 @@ mod tests {
     fn grammar_comes_back_where_it_is_with_its_fix() {
         let mut checker = OsChecker::new();
         let text = "She ate a apple. He opened the the door.";
-        let (spelling, grammar) = checker.check(&[(text, 7)], &[], None, true);
+        let (spelling, grammar, _) = checker.check(&[(text, 7)], &[], None, true);
         assert!(spelling.is_empty(), "nothing misspelled: {spelling:?}");
         let units: Vec<u16> = text.encode_utf16().collect();
         let found: Vec<(String, Vec<ProseFix>)> = grammar
@@ -515,11 +833,11 @@ mod tests {
     fn grammar_is_asked_for_only_when_wanted() {
         let mut checker = OsChecker::new();
         let text = "She ate a apple.";
-        let (_, off) = checker.check(&[(text, 0)], &[], None, false);
+        let (_, off, _) = checker.check(&[(text, 0)], &[], None, false);
         assert!(off.is_empty(), "spelling only: {off:?}");
         // Same text, now with grammar: the span cache must not answer for
         // the spelling-only check.
-        let (_, on) = checker.check(&[(text, 0)], &[], None, true);
+        let (_, on, _) = checker.check(&[(text, 0)], &[], None, true);
         assert!(
             !on.is_empty(),
             "the cache did not keep the spelling-only answer"

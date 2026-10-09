@@ -104,6 +104,8 @@ brink-prose = { path = "../brink-prose" }
 # versions gpui already brings in, so no new crate enters the graph — only
 # features of ones already in it.
 objc2 = "0.6.4"
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSEnumerator", "NSObject", "NSRange", "NSTextCheckingResult", "NSValue"] }
-objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSSpellChecker"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSDictionary", "NSEnumerator", "NSObject", "NSOrthography", "NSRange", "NSTextCheckingResult", "NSValue"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSSpellChecker", "block2"] }
+# The completion handler of the grammar model's asynchronous check.
+block2 = "0.6.2"
 

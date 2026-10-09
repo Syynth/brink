@@ -83,6 +83,52 @@ impl Grammar {
     }
 }
 
+/// Whether "Check Grammar with Apple Intelligence" can run on this Mac
+/// (`docs/gpui-prose-checker-spec.md` §8). Process-wide, found out once per
+/// launch in the background: `Unknown` until then, and on every other
+/// platform `Unavailable`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelState {
+    Unknown,
+    Available,
+    Unavailable,
+}
+
+/// Whether the grammar model answers here, as far as is known.
+#[must_use]
+pub fn model_state() -> ModelState {
+    #[cfg(target_os = "macos")]
+    return macos::model_state();
+    #[cfg(not(target_os = "macos"))]
+    ModelState::Unavailable
+}
+
+/// How a "Check Grammar with Apple Intelligence" ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelCheck {
+    /// The model read the selection's prose; its findings are now among the
+    /// file's prose lints. `timed_out` when some of it never answered.
+    Checked { found: usize, timed_out: bool },
+    /// The selection holds no prose — only machinery, or nothing.
+    NoProse,
+    /// `[prose] enable = false` for this project.
+    ProseOff,
+    /// The model does not answer on this Mac.
+    Unavailable,
+}
+
+/// One chunk of a model check answered (or given up on), as the thread
+/// that waited for it reports it back to the worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ModelChunk {
+    pub job: u64,
+    pub chunk: usize,
+    pub answered: bool,
+}
+
+/// How a waiting thread hands a [`ModelChunk`] back to the worker loop.
+pub type ModelReport = std::sync::Arc<dyn Fn(ModelChunk) + Send + Sync>;
+
 /// The rule category every engine reports a misspelling under. Everything
 /// else a checker says is grammar, for [`Grammar`]'s purposes.
 const SPELLING: &str = "Spelling";
@@ -304,6 +350,69 @@ impl Checker {
         )
     }
 
+    /// "Check Grammar with Apple Intelligence" over the prose spans that
+    /// `start..end` (bytes) touches — whole spans, because grammar is read
+    /// a sentence at a time and the findings are kept per span (spec §7).
+    /// `Some` when it is answered at once; otherwise the answer comes from
+    /// [`Checker::model_chunk_done`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn check_grammar(
+        &mut self,
+        session: &IdeSession,
+        path: &str,
+        start: u32,
+        end: u32,
+        dictionary: &[String],
+        dialect: Option<&str>,
+        report: &ModelReport,
+    ) -> Option<ModelCheck> {
+        // A file the session does not have holds no prose to check; `None`
+        // here would read as "started".
+        let Some((source, projection)) = session
+            .file_id(path)
+            .and_then(|id| Some((session.source(id)?.to_owned(), session.projection(id)?)))
+        else {
+            return Some(ModelCheck::NoProse);
+        };
+        let touched = spans_touching(&prose_ranges(&projection.spans), start, end);
+        let mut seen = BTreeSet::new();
+        let texts: Vec<String> = touched
+            .iter()
+            .filter_map(|&(a, b)| source.get(a as usize..b as usize))
+            .filter(|text| !text.trim().is_empty() && seen.insert(*text))
+            .map(str::to_owned)
+            .collect();
+        if texts.is_empty() {
+            return Some(ModelCheck::NoProse);
+        }
+        #[cfg(target_os = "macos")]
+        return self
+            .os
+            .get_or_insert_with(macos::OsChecker::new)
+            .start_model_check(path, texts, dictionary, dialect, report);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (dictionary, dialect, report);
+            Some(ModelCheck::Unavailable)
+        }
+    }
+
+    /// A chunk of a model check came back: `Some((path, outcome))` when it
+    /// finished its check.
+    pub fn model_chunk_done(
+        &mut self,
+        done: ModelChunk,
+        report: &ModelReport,
+    ) -> Option<(String, ModelCheck)> {
+        #[cfg(target_os = "macos")]
+        return self.os.as_mut()?.model_chunk_done(done, report);
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = (done, report);
+            None
+        }
+    }
+
     /// Harper, for both halves.
     #[cfg(not(target_os = "macos"))]
     fn run(
@@ -338,13 +447,11 @@ impl Checker {
             .zip(spans)
             .filter_map(|(&(a, b), &(at, _))| Some((source.get(a as usize..b as usize)?, at)))
             .collect();
-        let (spelling, os_grammar) = self.os.get_or_insert_with(macos::OsChecker::new).check(
-            &texts,
-            dictionary,
-            dialect,
-            grammar == Grammar::MacOs,
-        );
-        let grammar = match grammar {
+        let (spelling, os_grammar, model) = self
+            .os
+            .get_or_insert_with(macos::OsChecker::new)
+            .check(&texts, dictionary, dialect, grammar == Grammar::MacOs);
+        let typing = match grammar {
             Grammar::Harper => harper::check(source, spans, dictionary, dialect)
                 .into_iter()
                 .filter(|lint| lint.kind != SPELLING)
@@ -352,6 +459,14 @@ impl Checker {
             Grammar::MacOs => os_grammar,
             Grammar::Off => Vec::new(),
         };
+        // When the author has asked for the model's reading, it wins where
+        // the two say something about the same words (spec §4.3).
+        let typing: Vec<Lint16> = typing
+            .into_iter()
+            .filter(|lint| !model.iter().any(|seen| overlaps(seen, lint)))
+            .collect();
+        let mut grammar = model;
+        grammar.extend(typing);
         merge(spelling, grammar)
     }
 }
@@ -366,6 +481,50 @@ fn compose(found: Vec<Lint16>, grammar: Grammar) -> Vec<Lint16> {
         .collect()
 }
 
+/// Whether two findings cover any of the same text. Touching is not
+/// overlapping: a doubled word right after a misspelled one is a second
+/// finding, not the same one.
+#[cfg(any(target_os = "macos", test))]
+fn overlaps(a: &Lint16, b: &Lint16) -> bool {
+    a.start < b.end && b.start < a.end
+}
+
+/// The prose spans `start..end` touches, whole. A selection of nothing is
+/// the span the caret sits in.
+fn spans_touching(ranges: &[(u32, u32)], start: u32, end: u32) -> Vec<(u32, u32)> {
+    ranges
+        .iter()
+        .copied()
+        .filter(|&(a, b)| {
+            if start == end {
+                a <= start && start <= b
+            } else {
+                a < end && start < b
+            }
+        })
+        .collect()
+}
+
+/// `texts` grouped, in order, into runs of about `size` bytes each. A text
+/// longer than `size` is a run of its own rather than split: a span cut in
+/// two would be two fragments of a sentence.
+#[cfg(any(target_os = "macos", test))]
+fn chunks(texts: Vec<String>, size: usize) -> Vec<Vec<String>> {
+    let mut out: Vec<Vec<String>> = Vec::new();
+    let mut bytes = 0;
+    for text in texts {
+        if out.is_empty() || bytes + text.len() > size {
+            out.push(Vec::new());
+            bytes = 0;
+        }
+        bytes += text.len();
+        if let Some(run) = out.last_mut() {
+            run.push(text);
+        }
+    }
+    out
+}
+
 /// Spelling from one engine and grammar from another (spec §4.3).
 ///
 /// A grammar finding over a misspelling is the same word seen twice —
@@ -378,9 +537,7 @@ fn compose(found: Vec<Lint16>, grammar: Grammar) -> Vec<Lint16> {
 fn merge(mut spelling: Vec<Lint16>, grammar: Vec<Lint16>) -> Vec<Lint16> {
     let mut out = Vec::with_capacity(spelling.len() + grammar.len());
     for found in grammar {
-        let over = spelling
-            .iter_mut()
-            .find(|miss| miss.start < found.end && found.start < miss.end);
+        let over = spelling.iter_mut().find(|miss| overlaps(miss, &found));
         if let Some(miss) = over {
             let mut fixes = found.fixes;
             for fix in std::mem::take(&mut miss.fixes) {
@@ -534,6 +691,38 @@ mod tests {
             at,
             vec![(0, "Agreement"), (20, SPELLING), (30, "Repetition")]
         );
+    }
+
+    #[test]
+    fn a_selection_takes_the_spans_it_touches_whole() {
+        let spans = [(0, 10), (12, 30), (40, 50)];
+        assert_eq!(spans_touching(&spans, 15, 18), vec![(12, 30)], "inside one");
+        assert_eq!(
+            spans_touching(&spans, 5, 45),
+            vec![(0, 10), (12, 30), (40, 50)]
+        );
+        assert_eq!(
+            spans_touching(&spans, 10, 12),
+            Vec::new(),
+            "the gap between"
+        );
+        assert_eq!(spans_touching(&spans, 31, 39), Vec::new(), "machinery only");
+        assert_eq!(spans_touching(&spans, 20, 20), vec![(12, 30)], "a caret");
+    }
+
+    #[test]
+    fn chunks_keep_order_and_never_split_a_span() {
+        let texts = |xs: &[&str]| xs.iter().map(|x| (*x).to_owned()).collect::<Vec<_>>();
+        assert_eq!(
+            chunks(texts(&["aaaa", "bbb", "cc", "dddddddddd", "e"]), 8),
+            vec![
+                texts(&["aaaa", "bbb"]),
+                texts(&["cc"]),
+                texts(&["dddddddddd"]),
+                texts(&["e"]),
+            ]
+        );
+        assert!(chunks(Vec::new(), 8).is_empty());
     }
 
     #[test]

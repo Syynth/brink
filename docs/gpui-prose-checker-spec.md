@@ -289,31 +289,39 @@ only advertise a feature they cannot have.
 
 ### 7.2 What it checks
 
-The selection's byte range, intersected with the file's prose ranges. So
-selecting across a knot header or an interpolation checks only the prose
-pieces. If there are no prose pieces, the status bar says "No prose in the
-selection" and nothing runs.
+Every prose span the selection touches, **whole**. So selecting across a knot
+header or an interpolation checks only prose, and selecting half a sentence
+checks the sentence. (Built this way in step 4, rather than cutting spans at
+the selection's edges as first written here: grammar is read a sentence at a
+time, and the findings are kept per span text, so a half-selected span would
+never match on a later check.) If no prose span is touched, the studio says
+"There is no prose in the selection to check" and nothing runs.
 
 The pieces are grouped into **chunks of about 2 KB**, joined by a blank line
 so each keeps its own sentences. One `requestCheckingOfString` goes out per
 chunk, with types `Spelling | Grammar` and options
 `{ WaitForAllGrammarCheckingResults: YES }`. At most **4 chunks are in
 flight**; the rest queue. A select-all over a long file therefore takes a
-while, and that is the author's choice. The status bar shows "Checking
-grammar… (n of m)" until the job finishes. A second command while one is
-running joins the queue.
+while, and that is the author's choice. The studio says "Checking grammar
+with Apple Intelligence…" when the command starts, and how it went when it
+ends. Both are notifications (the studio's one door for status messages);
+a progress count per chunk was dropped, since a toast per chunk would be
+noise. A second command while one is running joins the queue.
 
 ### 7.3 How results come back
 
 The model can take seconds, so this is not a `Query`, which the worker
 answers inside its loop. It is a fire-and-report request:
 
-1. The app sends `Request::CheckGrammar { path, range }` and shows the status.
+1. The app sends `Request::CheckGrammar { path, start, end }` and says it
+   has started.
 2. The worker computes the chunks, sends the first requests, and returns to
    its loop.
 3. Each completion handler runs "in an arbitrary context", per the header.
-   It **makes no ObjC calls**. It sends `Request::GrammarChunkDone { job,
-   chunk }` on the worker's own request sender, and returns.
+   It **makes no ObjC calls**. It tells a waiting thread, which sends
+   `Request::GrammarChunkDone` on a **weak** clone of the worker's own request
+   sender. (Weak, because a strong sender held for the worker would keep its
+   request channel open, and the worker thread would never end.)
 4. On `GrammarChunkDone`, the worker re-checks each span text in that chunk
    with a **synchronous** call. The system cache now holds the model's
    results, so this takes about 2 ms per span, and decoding happens on the
@@ -321,9 +329,12 @@ answers inside its loop. It is a fire-and-report request:
    relative to each span, in the **model-results store**: span text →
    findings, bounded LRU, for the session's lifetime.
 5. When the job's last chunk is in, the worker sends
-   `Response::GrammarChecked { path, found, timed_out }`.
-6. The app clears the status ("Grammar: 3 suggestions", or "No grammar
-   issues found") and re-checks that path's prose. A Script tab calls
+   `Response::GrammarChecked { path, outcome }`. The outcome is
+   `Checked { found, timed_out }`, `NoProse`, `ProseOff` or `Unavailable`;
+   the last three come back at once, without asking any model.
+6. The app says how it went ("Apple Intelligence found 3 grammar
+   suggestions.", or "…found no grammar issues in the selection.") and
+   re-checks that path's prose. A Script tab calls
    `refresh_prose`. The manuscript **drops that path's `ProseCache` entry**
    first: its cache is keyed by the text, which has not changed, so it would
    otherwise keep serving the lints from before the command.
@@ -357,17 +368,21 @@ is there on macOS 27, and the fallbacks above cover it missing.
 ## 8. Availability
 
 - **macOS older than 27:** the `WaitForAllGrammarCheckingResults` key does not
-  exist there, and `NSGrammarSystemCategory` may not either. Look the key up
-  with `dlsym` rather than linking it, or the binary will not load on older
-  systems. When it is missing, the command is not offered. Spelling and the
-  while-typing grammar work as usual.
+  exist there, and `NSGrammarSystemCategory` may not either. The key is passed
+  **by its value** (`"WaitForAllGrammarCheckingResults"`, read off macOS
+  27.0.1) rather than linked, or the binary would not load on older systems.
+  (Built that way instead of with `dlsym`: no `unsafe` lookup is needed.) An
+  older macOS ignores an option it does not know, the canary then gets only
+  quick results, and the command is not offered. Spelling and the
+  while-typing grammar work as usual. If Apple ever changes the key's value,
+  the same thing happens: the command disappears, nothing breaks.
 - **Apple Intelligence unavailable or off** (Intel Macs, unsupported regions,
   the user's choice): the probe could not test this. The likely result is
   that model requests return quickly with quick results only. So once per
   launch, in the background, the macOS engine runs a **canary**: "There is
   three apples on the table." with the model option and a 30 s timeout. The
-  command is offered only once the canary comes back with a `Verb Form`
-  finding. On a Mac that has run it before, the system cache answers in
+  command is offered only once the canary comes back offering the fix `are`
+  (matched on the fix rather than on the category's wording). On a Mac that has run it before, the system cache answers in
   milliseconds. On a fresh Mac it takes a few seconds, during which the
   command is not yet offered.
 - **What the author sees:** Settings ▸ Spelling & Grammar says "Apple
