@@ -99,4 +99,11 @@ brink-intl = { path = "../internal/brink-intl" }
 # to blow, so the studio links it directly and the worker runs it in
 # process rather than shipping a second artifact nobody downloads.
 brink-prose = { path = "../brink-prose" }
+# macOS's own spell checker (`NSSpellChecker`), which the prose checker
+# uses for spelling there (`docs/gpui-prose-checker-spec.md`). The same
+# versions gpui already brings in, so no new crate enters the graph — only
+# features of ones already in it.
+objc2 = "0.6.4"
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSString", "NSArray", "NSEnumerator", "NSObject", "NSRange", "NSTextCheckingResult"] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSSpellChecker"] }
 

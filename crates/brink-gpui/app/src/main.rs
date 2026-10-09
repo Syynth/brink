@@ -3735,7 +3735,10 @@ mod modes_driven {
         h.advance(std::time::Duration::from_millis(400));
     }
 
-    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a noir themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
+    // `wierd` is a typo to every checker; a word one dictionary merely
+    // lacks (`noir` is missing from Harper's, present in macOS's) makes
+    // the test about the dictionary instead of the card.
+    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a wierd themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
 
     fn linted_project() -> std::path::PathBuf {
         let dir = scratch_dir("linted");
@@ -3768,12 +3771,12 @@ mod modes_driven {
                 editor
                     .read(cx)
                     .diagnostics()
-                    .is_some_and(|set| set.iter().any(|d| d.message.contains("noir")))
+                    .is_some_and(|set| set.iter().any(|d| d.message.contains("wierd")))
             })
         });
         assert!(prose_ready, "the misspelling is linted");
 
-        hover_text(&mut h, window, "story.ink", "noir");
+        hover_text(&mut h, window, "story.ink", "wierd");
         let under = h.read(|cx| {
             editor
                 .read(cx)
@@ -3783,7 +3786,7 @@ mod modes_driven {
                 .collect::<Vec<_>>()
         });
         assert!(
-            under.iter().any(|m| m.contains("noir")),
+            under.iter().any(|m| m.contains("wierd")),
             "the card has the lint under the pointer: {under:?}"
         );
         let shot = scratch_dir("shot").join("card-spelling.png");
@@ -3798,7 +3801,7 @@ mod modes_driven {
         h.dispatch(
             window,
             crate::hover_card::AddToDictionary {
-                word: "noir".to_owned(),
+                word: "wierd".to_owned(),
             },
         );
         let config = h.read(|cx| {
@@ -3811,7 +3814,7 @@ mod modes_driven {
         assert!(
             config
                 .as_deref()
-                .is_some_and(|c| c.contains("dictionary") && c.contains("noir")),
+                .is_some_and(|c| c.contains("dictionary") && c.contains("wierd")),
             "the word is in brink.toml: {config:?}"
         );
         let gone = h.settle_until(std::time::Duration::from_secs(10), |h| {
@@ -3819,7 +3822,7 @@ mod modes_driven {
                 editor
                     .read(cx)
                     .diagnostics()
-                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("noir")))
+                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("wierd")))
             })
         });
         assert!(gone, "and once it is a word, the lint is gone");
@@ -3841,19 +3844,19 @@ mod modes_driven {
                     .section_editor("story.ink")
             })
             .expect("mounted");
-        let start = LINTED.find("noir").expect("the word");
+        let start = LINTED.find("wierd").expect("the word");
         h.app_window(window, |window, cx| {
-            crate::hover_card::apply_fix(&editor, start..start + 4, "nor", window, cx);
+            crate::hover_card::apply_fix(&editor, start..start + 5, "weird", window, cx);
         });
         let text = h.read(|cx| editor.read(cx).value().to_string());
-        assert!(text.contains("It's a nor themed card."), "{text}");
+        assert!(text.contains("It's a weird themed card."), "{text}");
         let saved_in_project = h.read(|cx| {
             studio
                 .read(cx)
                 .project
                 .read(cx)
                 .loaded_source("story.ink")
-                .is_some_and(|s| s.contains("a nor themed"))
+                .is_some_and(|s| s.contains("a weird themed"))
         });
         assert!(
             saved_in_project,

@@ -32,3 +32,9 @@ brink-runtime = { workspace = true, features = ["debug-hooks"] }
 brink-format.workspace = true
 brink-intl.workspace = true
 brink-prose.workspace = true
+
+# Spelling comes from the OS on macOS (`src/prose/macos.rs`).
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true

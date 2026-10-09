@@ -221,12 +221,16 @@ the steady-state cost is one `guesses` call per newly typed misspelling.
   shown on macOS.
 - **Dialect:** `setAutomaticallyIdentifiesLanguages(false)` and
   `setLanguage(...)` on the shared checker, mapped American → `en_US`,
-  British → `en_GB`, Canadian → `en_CA`, Australian → `en_AU`. This is global
-  state, but the worker is the checker's only user: gpui draws its own text
-  and has no `NSTextView` that would share it. Re-apply it before each check
-  in case something else changed it, since it is a cheap setter. The probe
-  showed `en_CA` accepting "colour" and flagging "realise", which is correct
-  Canadian spelling. Harper gets the same dialect, as today.
+  British → `en_GB`, Canadian → `en_CA`, Australian → `en_AU`. This is
+  **process-wide** state: every open project has its own worker thread, and
+  all of them share `sharedSpellChecker`. So a check holds a process-wide
+  lock from setting the language to its last call, and sets the language
+  again every time, since it is a cheap setter. (Found in step 2: parallel
+  tests in two dialects set it under each other's checks. Two project
+  windows would do the same.) gpui draws its own text and has no
+  `NSTextView` to share it with. The probe showed `en_CA` accepting "colour"
+  and flagging "realise", which is correct Canadian spelling. Harper gets the
+  same dialect, as today.
 
 ## 6. Grammar while typing
 

@@ -421,6 +421,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     let mut play = PlaySlot::default();
     // The app's prose options, which outlive any one project.
     let mut grammar = crate::prose::Grammar::default();
+    // The checkers and their caches, which do not: a project's spell
+    // document is its own.
+    let mut prose = crate::prose::Checker::default();
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -442,6 +445,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     session = session_with_stdlib();
                     config = ConfigState::default();
                     play = PlaySlot::default();
+                    prose = crate::prose::Checker::default();
                     files.clear();
                     let opened = match open(&mut session, root, entry) {
                         Ok((opened, state)) => {
@@ -551,14 +555,9 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     let dictionary =
                         crate::prose::project_dictionary(&session, config.prose_dictionary());
                     QueryResult::Prose(
-                        crate::prose::check(
-                            &session,
-                            path,
-                            &dictionary,
-                            config.prose_dialect(),
-                            grammar,
-                        )
-                        .unwrap_or_default(),
+                        prose
+                            .check(&session, path, &dictionary, config.prose_dialect(), grammar)
+                            .unwrap_or_default(),
                     )
                 } else {
                     QueryResult::Prose(Vec::new())
