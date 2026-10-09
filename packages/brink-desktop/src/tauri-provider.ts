@@ -443,6 +443,21 @@ export async function discoverProjectConfig(
 }
 
 /**
+ * `[project] name` from a `brink.toml`'s text, parsed shell-side by the
+ * config crate (decision log 2026-10-09). Null when the text sets no name or
+ * does not parse — and when the shell has no such command: an OTA'd bundle
+ * can run on a shell older than it, and a title then falls back to the
+ * folder's name rather than failing (`ota-bundle.json` `minShellVersion`).
+ */
+export async function configProjectName(text: string): Promise<string | null> {
+  try {
+    return await invoke<string | null>("config_project_name", { text });
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Create a new project (#3012): the starter story at `entry` plus a
  * `brink.toml` naming it, in the EXISTING directory `dir`. Refuses to
  * overwrite. Resolves to the absolute path of the created `brink.toml` —

@@ -1813,6 +1813,27 @@ async fn discover_project_config(path: String) -> Option<DiscoveredProjectConfig
     discover_project_config_impl(Path::new(&path))
 }
 
+/// `[project] name` from a `brink.toml`'s text (decision log 2026-10-09):
+/// what the window title and the landing's recents call the project. `None`
+/// when the text does not parse or sets no name — the caller falls back to
+/// the folder, and a title is no place to report a broken config (the
+/// studio's own Output and Problems already do).
+fn config_project_name_impl(text: &str) -> Option<String> {
+    let (config, _) = brink_project_config::parse_str(text).ok()?;
+    config
+        .name
+        .map(|name| name.trim().to_owned())
+        .filter(|name| !name.is_empty())
+}
+
+/// Parsed here rather than in the webview because the config crate is the
+/// one `brink.toml` parser; the frontend passes TEXT, not a path, so the
+/// title can follow an unsaved edit to the file.
+#[tauri::command]
+async fn config_project_name(text: String) -> Option<String> {
+    config_project_name_impl(&text)
+}
+
 /// The starter story New Project writes — small, but genuinely playable on
 /// first Run (the "plays immediately" guarantee the dialog's "Will create"
 /// panel shows; `docs/design/project-open-flow/NewProject.dc.html`).
@@ -2589,6 +2610,7 @@ pub fn run() -> tauri::Result<()> {
             pick_project_folder,
             pick_project_file,
             discover_project_config,
+            config_project_name,
             create_project,
             save_bytes_dialog,
             take_pending_opens,
@@ -5446,6 +5468,27 @@ mod project_open_tests {
             "starter brink.toml warned: {warnings:?}"
         );
         assert_eq!(config.entry.as_deref(), Some("main.ink"));
+    }
+
+    #[test]
+    fn a_configs_project_name_is_read_trimmed_and_anything_less_is_none() {
+        assert_eq!(
+            config_project_name_impl("[project]\nname = \"Harbour Lights\"\n").as_deref(),
+            Some("Harbour Lights")
+        );
+        assert_eq!(
+            config_project_name_impl("[project]\nname = \" Lanterns \"\n").as_deref(),
+            Some("Lanterns")
+        );
+        for nameless in [
+            "[project]\nentry = \"main.ink\"\n",
+            "[project]\nname = \"  \"\n",
+            "[project]\nname = 3\n",
+            "[project\nname = \"Broken\"",
+            "",
+        ] {
+            assert_eq!(config_project_name_impl(nameless), None, "{nameless:?}");
+        }
     }
 
     #[test]
