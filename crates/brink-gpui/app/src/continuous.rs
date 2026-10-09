@@ -879,6 +879,55 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// The canvas's "next" line state: a dashed outline round the line ▶
+    /// plays next — a promise, not a fact, so drawn and not filled. Across
+    /// the text column, over the line's rows (wrapped ones counted). In
+    /// this view's own coordinates.
+    fn next_outline(&self, column: Option<gpui::Pixels>, cx: &App) -> Option<gpui::AnyElement> {
+        let (path, line1) = self.trail.borrow().next.clone()?;
+        let index = self.files.iter().position(|f| *f == path)?;
+        let (editor, _) = self.editors.borrow().get(&path).cloned()?;
+        let state = editor.read(cx);
+        let line_height = f32::from(state.line_height()?);
+        let line = (line1 as usize).checked_sub(1)?;
+        let lines = state.value().matches('\n').count() + 1;
+        let top_row = state.display_row_of_buffer_line(line);
+        let end_row = if line + 1 < lines {
+            state.display_row_of_buffer_line(line + 1)
+        } else {
+            state.display_row_count()
+        };
+        let item = self.list.bounds_for_item(index)?;
+        let view = self.last_view.get()?;
+        let top = f32::from(item.top() - view.top())
+            + self.lead(index)
+            + SEPARATOR_HEIGHT
+            + top_row as f32 * line_height;
+        let height = end_row.saturating_sub(top_row).max(1) as f32 * line_height;
+        let width = f32::from(view.size.width);
+        let (left, right) = match column {
+            Some(c) if f32::from(c) < width => {
+                ((width - f32::from(c)) / 2., (width + f32::from(c)) / 2.)
+            }
+            _ => (0., width),
+        };
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let colour = brink_gpui_shell::theme::hsla(tokens.accent).opacity(0.55);
+        Some(
+            div()
+                .absolute()
+                .left(px(left + 2.))
+                .top(px(top + 1.))
+                .w(px((right - left - 4.).max(0.)))
+                .h(px((height - 2.).max(2.)))
+                .border_1()
+                .border_dashed()
+                .rounded(px(3.))
+                .border_color(colour)
+                .into_any_element(),
+        )
+    }
+
     /// The canvas's Away frame: when the line the story is on is off
     /// screen — scrolled away to edit — a pill at the bottom of the
     /// manuscript names where it is and takes you back (`BackToNow`).
@@ -1649,6 +1698,7 @@ impl Render for ContinuousView {
         let bracket = self.hover_bracket(column, cx);
         let chosen = self.chosen_labels(cx);
         let now_pill = self.now_pill(cx);
+        let next_outline = self.next_outline(column, cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
             let (path, lines, pushes) = self
@@ -1798,6 +1848,7 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
+            .children(next_outline)
             .children(bracket)
             .children(chosen)
             .children(now_pill)

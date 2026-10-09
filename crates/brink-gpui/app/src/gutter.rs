@@ -211,7 +211,8 @@ impl Marks {
         let colours = self.trail_colours.get();
         match self.trail.borrow().stand(line)? {
             Stand::Played => None,
-            Stand::Next => Some(colours.active.opacity(0.06)),
+            // Outlined by the manuscript (dashed, a promise), not banded.
+            Stand::Next => None,
             Stand::Active => Some(colours.active.opacity(0.16)),
             Stand::Held => Some(colours.held.opacity(0.14)),
         }
