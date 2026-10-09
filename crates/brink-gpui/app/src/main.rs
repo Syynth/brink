@@ -824,10 +824,15 @@ impl Studio {
                         notify(severity, "project", text, window, cx);
                     }
                 }
+                ProjectEvent::GrammarChecked { outcome, .. } => {
+                    let (severity, text) = grammar_checked_notice(outcome);
+                    notify(severity, "prose", text, window, cx);
+                }
                 ProjectEvent::OpenFailed(_)
                 | ProjectEvent::SourceChanged { .. }
                 | ProjectEvent::BreakpointsChanged
                 | ProjectEvent::ProseChanged
+                | ProjectEvent::ProseOptionsChanged
                 | ProjectEvent::Saved
                 | ProjectEvent::SaveFailed { .. } => {}
             },
@@ -1250,6 +1255,42 @@ impl Studio {
 
     /// The editor a navigation command acts on: the manuscript's focused
     /// section in Write mode, else Script mode's active document.
+    /// The editor menu's "Check Grammar with Apple Intelligence": the
+    /// worker reads the focused editor's text as it is now, and asks the
+    /// model about the prose its selection touches. The answer arrives as
+    /// `ProjectEvent::GrammarChecked`, seconds later.
+    fn check_grammar(
+        &mut self,
+        _: &editor_menu::CheckGrammar,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(site) = self.focused_site(window, cx) else {
+            return;
+        };
+        let (rope, selection) = {
+            let state = site.editor.read(cx);
+            (state.text().clone(), state.selected_range())
+        };
+        crate::document::seed_edit(
+            &site.project,
+            &site.path,
+            &rope,
+            site.editor.entity_id(),
+            cx,
+        );
+        site.project.update(cx, |project, _| {
+            project.check_grammar(&site.path, selection.start, selection.end);
+        });
+        notify(
+            Severity::Info,
+            "prose",
+            "Checking grammar with Apple Intelligence\u{2026}",
+            window,
+            cx,
+        );
+    }
+
     fn focused_site(&self, window: &Window, cx: &gpui::App) -> Option<navigation::EditorSite> {
         let view = self.workspace.read(cx).editor_root().read(cx).view();
         if view == EditorView::Write {
@@ -2733,6 +2774,7 @@ impl Render for Studio {
                     });
                 }),
             )
+            .on_action(cx.listener(Self::check_grammar))
             .on_action(cx.listener(|this, _: &editor_menu::ShowTodos, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.open_tool_window("todos", window, cx);
@@ -2791,6 +2833,42 @@ fn recent_label(path: &str) -> String {
 /// The recent is remembered there, after this, because `Studio::new`
 /// registers one command per recent and a window must not offer to reopen
 /// itself.
+/// What the studio says when a model check ends.
+fn grammar_checked_notice(outcome: &brink_gpui_model::prose::ModelCheck) -> (Severity, String) {
+    use brink_gpui_model::prose::ModelCheck;
+    match outcome {
+        ModelCheck::Checked { found, timed_out } => {
+            let said = match found {
+                0 => "Apple Intelligence found no grammar issues in the selection.".to_owned(),
+                1 => "Apple Intelligence found 1 grammar suggestion.".to_owned(),
+                n => format!("Apple Intelligence found {n} grammar suggestions."),
+            };
+            if *timed_out {
+                (
+                    Severity::Warning,
+                    format!("{said} Part of the selection got no answer and was not checked."),
+                )
+            } else if *found == 0 {
+                (Severity::Success, said)
+            } else {
+                (Severity::Info, said)
+            }
+        }
+        ModelCheck::NoProse => (
+            Severity::Info,
+            "There is no prose in the selection to check.".to_owned(),
+        ),
+        ModelCheck::ProseOff => (
+            Severity::Info,
+            "Prose checking is off for this project ([prose] enable).".to_owned(),
+        ),
+        ModelCheck::Unavailable => (
+            Severity::Warning,
+            "Apple Intelligence grammar is not available on this Mac.".to_owned(),
+        ),
+    }
+}
+
 fn open_project_window(
     root: PathBuf,
     entry: Option<String>,
@@ -3805,6 +3883,353 @@ mod modes_driven {
         assert!(not_a_source, "the config's file, never a story source");
     }
 
+    /// The grammar setting reaches the checker and both kinds of editor,
+    /// with no edit to prompt them: the manuscript drops the grammar it was
+    /// keeping by text when grammar goes off, and a Script tab brings it
+    /// back when it comes on. The misspelling stays throughout — the
+    /// setting is about grammar only.
+    #[test]
+    fn the_grammar_setting_moves_the_squiggles_and_spares_the_misspellings() {
+        use brink_gpui_model::prose::Grammar;
+        let mut h = Harness::new();
+        let dir = scratch_dir("grammar");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nShe recieve the letter. He opened the the door.\n-> DONE\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let codes_of = |h: &mut Harness, write: bool| {
+            h.read(|cx| {
+                let s = studio.read(cx);
+                let editor = if write {
+                    s.manuscript.read(cx).section_editor("story.ink")
+                } else {
+                    s.code
+                        .read(cx)
+                        .active_document()
+                        .map(|d| d.read(cx).editor().clone())
+                };
+                editor
+                    .and_then(|e| {
+                        e.read(cx).diagnostics().map(|set| {
+                            set.iter()
+                                .filter_map(|d| d.code.as_ref().map(|c| c.to_string()))
+                                .filter(|c| c.starts_with("prose."))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let has = |codes: &[String], code: &str| codes.iter().any(|c| c == code);
+        // Through the window, as the Settings UI does: `Harness::update`
+        // runs on the app outside an update cycle, so the global's
+        // observers would not hear of the change until something else
+        // flushed it.
+        let set = |h: &mut Harness, grammar: Grammar| {
+            h.app_window(window, |_, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = grammar);
+            });
+        };
+        // Harper builds its dictionary on a worker's first check, which
+        // takes seconds in an unoptimized test build.
+        let wait = std::time::Duration::from_secs(30);
+
+        // Write, with Harper's grammar: both halves.
+        h.dispatch(window, ModeWrite);
+        let both = h.settle_until(wait, |h| {
+            let codes = codes_of(h, true);
+            has(&codes, "prose.Spelling") && has(&codes, "prose.Repetition")
+        });
+        assert!(both, "spelling and grammar: {:?}", codes_of(&mut h, true));
+
+        // Off: the manuscript checks again although its text did not move.
+        set(&mut h, Grammar::Off);
+        let spelling_only = h.settle_until(wait, |h| {
+            let codes = codes_of(h, true);
+            has(&codes, "prose.Spelling") && !has(&codes, "prose.Repetition")
+        });
+        assert!(
+            spelling_only,
+            "the manuscript drops its kept grammar: {:?}",
+            codes_of(&mut h, true)
+        );
+
+        // A Script tab opened under Off checks under Off…
+        h.dispatch(window, ModeScript);
+        let tab_off = h.settle_until(wait, |h| {
+            let codes = codes_of(h, false);
+            has(&codes, "prose.Spelling") && !has(&codes, "prose.Repetition")
+        });
+        assert!(
+            tab_off,
+            "the tab checks under Off: {:?}",
+            codes_of(&mut h, false)
+        );
+
+        // …and brings the grammar back when it is switched on again.
+        set(&mut h, Grammar::Harper);
+        let tab_on = h.settle_until(wait, |h| {
+            let codes = codes_of(h, false);
+            has(&codes, "prose.Spelling") && has(&codes, "prose.Repetition")
+        });
+        assert!(tab_on, "the tab re-checks: {:?}", codes_of(&mut h, false));
+    }
+
+    /// macOS's own grammar replaces Harper's when it is picked: the doubled
+    /// word is still marked, by the OS's rule instead of Harper's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn picking_macos_grammar_swaps_the_checker_not_the_finding() {
+        use brink_gpui_model::prose::Grammar;
+        let mut h = Harness::new();
+        let dir = scratch_dir("os-grammar");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nHe opened the the door.\n-> DONE\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        let codes = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .code
+                    .read(cx)
+                    .active_document()
+                    .map(|d| d.read(cx).editor().clone())
+                    .and_then(|e| {
+                        e.read(cx).diagnostics().map(|set| {
+                            set.iter()
+                                .filter_map(|d| d.code.as_ref().map(|c| c.to_string()))
+                                .filter(|c| c.starts_with("prose."))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let harper = h.settle_until(wait, |h| codes(h).contains(&"prose.Repetition".to_owned()));
+        assert!(harper, "Harper's by default: {:?}", codes(&mut h));
+
+        h.app_window(window, |_, cx| {
+            brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = Grammar::MacOs);
+        });
+        let swapped = h.settle_until(wait, |h| {
+            let codes = codes(h);
+            !codes.contains(&"prose.Repetition".to_owned())
+                && codes.iter().any(|c| c != "prose.Spelling")
+        });
+        assert!(swapped, "the OS's rule instead: {:?}", codes(&mut h));
+    }
+
+    /// A story whose one prose line only the grammar model objects to.
+    fn model_grammar_project() -> std::path::PathBuf {
+        let dir = scratch_dir("model-grammar");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(dir.join("story.ink"), MODEL_GRAMMAR_STORY).expect("story");
+        dir
+    }
+
+    const MODEL_GRAMMAR_STORY: &str =
+        "-> start\n=== start ===\nThere is three apples on the table.\n-> DONE\n";
+
+    /// Focus the Script tab's editor, select `range` in it, and run the
+    /// menu's "Check Grammar with Apple Intelligence".
+    fn check_grammar_over(
+        h: &mut Harness,
+        window: gpui::AnyWindowHandle,
+        studio: &gpui::Entity<crate::Studio>,
+        range: std::ops::Range<usize>,
+    ) -> gpui::Entity<gpui_component::input::EditorState> {
+        let editor = h
+            .read(|cx| {
+                studio
+                    .read(cx)
+                    .code
+                    .read(cx)
+                    .active_document()
+                    .map(|d| d.read(cx).editor().clone())
+            })
+            .expect("a Script tab");
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_selected_range(range, cx);
+            });
+        });
+        h.dispatch(window, crate::editor_menu::CheckGrammar);
+        editor
+    }
+
+    fn notices(h: &mut Harness) -> Vec<String> {
+        h.read(|cx| {
+            brink_gpui_shell::notify::Notifications::get(cx)
+                .iter()
+                .map(|n| n.message.to_string())
+                .collect()
+        })
+    }
+
+    /// A selection with no prose in it — a knot header — is answered at
+    /// once, without asking any model, on every Mac.
+    #[test]
+    fn checking_grammar_over_machinery_says_there_is_no_prose() {
+        let mut h = Harness::new();
+        let window = h.open(&model_grammar_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        let header = MODEL_GRAMMAR_STORY.find("=== start").expect("the header");
+        check_grammar_over(&mut h, window, &studio, header..header + 13);
+        let said = h.settle_until(std::time::Duration::from_secs(30), |h| {
+            notices(h)
+                .iter()
+                .any(|n| n.contains("no prose in the selection"))
+        });
+        assert!(said, "{:?}", notices(&mut h));
+    }
+
+    /// The whole road, against the real model: run by hand on a Mac with
+    /// Apple Intelligence (`cargo test -p brink-gpui -- --ignored
+    /// model_grammar`). Ignored by default because its answer depends on
+    /// the machine, the OS, and what the system's grammar cache holds.
+    #[cfg(target_os = "macos")]
+    #[test]
+    #[ignore = "needs Apple Intelligence; run by hand"]
+    fn model_grammar_marks_the_selection_until_it_is_edited() {
+        use brink_gpui_model::prose::{Grammar, ModelState, model_state};
+        let mut h = Harness::new();
+        let window = h.open(&model_grammar_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        // No grammar while typing, so any grammar code is the model's.
+        h.app_window(window, |_, cx| {
+            brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = Grammar::Off);
+        });
+        let known = h.settle_until(std::time::Duration::from_secs(60), |_| {
+            model_state() != ModelState::Unknown
+        });
+        assert!(
+            known && model_state() == ModelState::Available,
+            "{:?}",
+            model_state()
+        );
+
+        let line = MODEL_GRAMMAR_STORY.find("There is").expect("the line");
+        let editor = check_grammar_over(&mut h, window, &studio, line..line + 10);
+        let grammar_codes = |h: &mut Harness| {
+            h.read(|cx| {
+                editor
+                    .read(cx)
+                    .diagnostics()
+                    .map(|set| {
+                        set.iter()
+                            .filter_map(|d| d.code.as_ref().map(|c| c.to_string()))
+                            .filter(|c| c.starts_with("prose.") && c != "prose.Spelling")
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let marked = h.settle_until(std::time::Duration::from_secs(90), |h| {
+            !grammar_codes(h).is_empty()
+        });
+        assert!(
+            marked,
+            "the model's finding is marked: {:?}",
+            notices(&mut h)
+        );
+        assert!(
+            notices(&mut h)
+                .iter()
+                .any(|n| n.contains("grammar suggestion")),
+            "{:?}",
+            notices(&mut h)
+        );
+
+        // An edit to the sentence: the finding was about the old text.
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                let at = line + "There is three apples".len();
+                state.set_selected_range(at..at, cx);
+                state.replace(" and pears", window, cx);
+            });
+        });
+        let gone = h.settle_until(std::time::Duration::from_secs(30), |h| {
+            grammar_codes(h).is_empty()
+        });
+        assert!(
+            gone,
+            "an edited sentence drops it: {:?}",
+            grammar_codes(&mut h)
+        );
+    }
+
+    /// Settings ▸ Spelling & Grammar: the grammar choice follows the
+    /// setting, and on macOS the model's availability is said once known.
+    /// Screenshots for a reviewer's eye; the assertions are on the state
+    /// the section reads.
+    #[test]
+    fn the_spelling_settings_show_the_choice_and_the_model() {
+        use brink_gpui_model::prose::{Grammar, ModelState, model_state};
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let open_on = |h: &mut Harness, section: &'static str| {
+            h.app_window(window, |window, cx| {
+                let workspace = studio.read(cx).workspace.clone();
+                workspace.update(cx, |w, cx| {
+                    w.close_settings(window, cx);
+                    w.open_settings(Some(section), window, cx);
+                });
+            });
+        };
+        let known = h.settle_until(std::time::Duration::from_secs(60), |_| {
+            model_state() != ModelState::Unknown
+        });
+        assert!(known, "the model's availability is found out at launch");
+        open_on(&mut h, "spelling");
+        let shot = scratch_dir("shot").join("settings-spelling.png");
+        h.screenshot(window, &shot);
+        eprintln!("spelling settings: {}", shot.display());
+
+        #[cfg(target_os = "macos")]
+        {
+            h.app_window(window, |_, cx| {
+                brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = Grammar::MacOs);
+            });
+            let shot = scratch_dir("shot").join("settings-spelling-macos.png");
+            h.screenshot(window, &shot);
+            eprintln!("spelling settings, macOS grammar: {}", shot.display());
+        }
+        // A click on "Off", where the screenshot draws it: the last of the
+        // three segments at the right of the "While typing" row (macOS has
+        // three; elsewhere there are two, and "Off" sits elsewhere).
+        #[cfg(target_os = "macos")]
+        {
+            h.mouse_down(window, 1060., 274.);
+            h.mouse_up(window, 1060., 274.);
+            let chosen =
+                h.read(|cx| brink_gpui_shell::settings::AppSettings::get(cx).prose_grammar);
+            assert_eq!(chosen, Grammar::Off, "the segment sets the setting");
+        }
+
+        open_on(&mut h, "prose");
+        let shot = scratch_dir("shot").join("settings-prose.png");
+        h.screenshot(window, &shot);
+        eprintln!("prose settings: {}", shot.display());
+    }
+
     /// Write mode draws the same squiggles as Script: a bad reference is
     /// marked where it is, not only counted. (The manuscript's sections
     /// never received the analysis's diagnostics at all.)
@@ -3914,7 +4339,10 @@ mod modes_driven {
         h.advance(std::time::Duration::from_millis(400));
     }
 
-    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a noir themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
+    // `wierd` is a typo to every checker; a word one dictionary merely
+    // lacks (`noir` is missing from Harper's, present in macOS's) makes
+    // the test about the dictionary instead of the card.
+    const LINTED: &str = "VAR gold = 5\n-> start\n=== start ===\nIt's a wierd themed card. You have {nonexistent} coins.\nThe the lamp gutters.\n-> DONE\n";
 
     fn linted_project() -> std::path::PathBuf {
         let dir = scratch_dir("linted");
@@ -3947,12 +4375,12 @@ mod modes_driven {
                 editor
                     .read(cx)
                     .diagnostics()
-                    .is_some_and(|set| set.iter().any(|d| d.message.contains("noir")))
+                    .is_some_and(|set| set.iter().any(|d| d.message.contains("wierd")))
             })
         });
         assert!(prose_ready, "the misspelling is linted");
 
-        hover_text(&mut h, window, "story.ink", "noir");
+        hover_text(&mut h, window, "story.ink", "wierd");
         let under = h.read(|cx| {
             editor
                 .read(cx)
@@ -3962,7 +4390,7 @@ mod modes_driven {
                 .collect::<Vec<_>>()
         });
         assert!(
-            under.iter().any(|m| m.contains("noir")),
+            under.iter().any(|m| m.contains("wierd")),
             "the card has the lint under the pointer: {under:?}"
         );
         let shot = scratch_dir("shot").join("card-spelling.png");
@@ -3977,7 +4405,7 @@ mod modes_driven {
         h.dispatch(
             window,
             crate::hover_card::AddToDictionary {
-                word: "noir".to_owned(),
+                word: "wierd".to_owned(),
             },
         );
         let config = h.read(|cx| {
@@ -3990,7 +4418,7 @@ mod modes_driven {
         assert!(
             config
                 .as_deref()
-                .is_some_and(|c| c.contains("dictionary") && c.contains("noir")),
+                .is_some_and(|c| c.contains("dictionary") && c.contains("wierd")),
             "the word is in brink.toml: {config:?}"
         );
         let gone = h.settle_until(std::time::Duration::from_secs(10), |h| {
@@ -3998,7 +4426,7 @@ mod modes_driven {
                 editor
                     .read(cx)
                     .diagnostics()
-                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("noir")))
+                    .is_some_and(|set| !set.iter().any(|d| d.message.contains("wierd")))
             })
         });
         assert!(gone, "and once it is a word, the lint is gone");
@@ -4020,19 +4448,19 @@ mod modes_driven {
                     .section_editor("story.ink")
             })
             .expect("mounted");
-        let start = LINTED.find("noir").expect("the word");
+        let start = LINTED.find("wierd").expect("the word");
         h.app_window(window, |window, cx| {
-            crate::hover_card::apply_fix(&editor, start..start + 4, "nor", window, cx);
+            crate::hover_card::apply_fix(&editor, start..start + 5, "weird", window, cx);
         });
         let text = h.read(|cx| editor.read(cx).value().to_string());
-        assert!(text.contains("It's a nor themed card."), "{text}");
+        assert!(text.contains("It's a weird themed card."), "{text}");
         let saved_in_project = h.read(|cx| {
             studio
                 .read(cx)
                 .project
                 .read(cx)
                 .loaded_source("story.ink")
-                .is_some_and(|s| s.contains("a nor themed"))
+                .is_some_and(|s| s.contains("a weird themed"))
         });
         assert!(
             saved_in_project,

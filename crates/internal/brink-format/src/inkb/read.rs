@@ -9,10 +9,10 @@ use crate::codec::{
 use crate::counting::CountingFlags;
 use crate::definition::{
     AddressDef, AddressPath, AliasEntry, CallAtom, CapabilityParam, ContainerDef,
-    DebugContainerTable, DebugEntry, DebugFileEntry, DebugInfoSection, DebugLocalEntry,
-    DirectEffects, DispatchEntry, EffectRowEntry, ExternalFnDef, FileSurface, FrameShapeDef,
-    GlobalVarDef, LineEntry, ListDef, ListItemDef, ParamMeta, ScopeLineTable, SlotInfo,
-    SourceLocation, StructShapeDef,
+    DebugContainerTable, DebugEntry, DebugFileEntry, DebugInfoSection, DebugLineSite,
+    DebugLocalEntry, DirectEffects, DispatchEntry, EffectRowEntry, ExternalFnDef, FileSurface,
+    FrameShapeDef, GlobalVarDef, LineEntry, ListDef, ListItemDef, ParamMeta, ScopeLineTable,
+    SlotInfo, SourceLocation, StructShapeDef,
 };
 use crate::id::{DefinitionId, NameId};
 use crate::line::{LineContent, LinePart, PluralCategory, SelectKey};
@@ -23,9 +23,9 @@ use crate::value::{
 };
 
 use super::write::{
-    ALIAS_TABLE_SECTION_VERSION, DEBUG_INFO_SECTION_VERSION, EFFECT_ROWS_SECTION_VERSION,
-    FRAME_SHAPES_SECTION_VERSION, LINE_VARIANT_GROUPS_SECTION_VERSION, LOCAL_FLAG_HAS_RANGE,
-    LOCAL_FLAG_SYNTHETIC, LOCAL_FLAGS_KNOWN,
+    ALIAS_TABLE_SECTION_VERSION, DEBUG_INFO_SECTION_MIN_VERSION, DEBUG_INFO_SECTION_VERSION,
+    EFFECT_ROWS_SECTION_VERSION, FRAME_SHAPES_SECTION_VERSION, LINE_VARIANT_GROUPS_SECTION_VERSION,
+    LOCAL_FLAG_HAS_RANGE, LOCAL_FLAG_SYNTHETIC, LOCAL_FLAGS_KNOWN,
 };
 use super::{
     CAP_PARAM_ANY, CAT_FEW, CAT_MANY, CAT_ONE, CAT_OTHER, CAT_TWO, CAT_ZERO, HANDLE_PARAM_NONE,
@@ -895,6 +895,77 @@ pub fn read_section_line_variant_groups(
     Ok(groups)
 }
 
+/// One container's locals table (`docs/debugger-spec.md` §3, D7/#3185).
+fn read_debug_locals(buf: &[u8], off: &mut usize) -> Result<Vec<DebugLocalEntry>, DecodeError> {
+    let local_count =
+        usize::try_from(read_varint(buf, off)?).map_err(|_| DecodeError::UnexpectedEof)?;
+    // Minimum per-local footprint: slot u16(2) + name length prefix
+    // u32(4) + has_range u8(1) = 7 bytes.
+    let mut locals = Vec::with_capacity(safe_capacity(local_count, buf.len(), *off, 7));
+    for _ in 0..local_count {
+        let slot = read_u16(buf, off)?;
+        let name = read_str(buf, off)?;
+        // Flags byte (section version 2, #3395): bit 0 = a declaring
+        // range follows, bit 1 = synthetic. Strict on the reserved bits,
+        // like `DirectEffects`' extension-flags byte.
+        let flags = read_u8(buf, off)?;
+        if flags & !LOCAL_FLAGS_KNOWN != 0 {
+            return Err(DecodeError::InvalidDebugLocalFlags(flags));
+        }
+        let synthetic = flags & LOCAL_FLAG_SYNTHETIC != 0;
+        let declaring_range = if flags & LOCAL_FLAG_HAS_RANGE == 0 {
+            None
+        } else {
+            #[expect(clippy::cast_possible_truncation)]
+            let file_idx = read_varint(buf, off)? as u32;
+            #[expect(clippy::cast_possible_truncation)]
+            let range_start = read_varint(buf, off)? as u32;
+            #[expect(clippy::cast_possible_truncation)]
+            let range_len = read_varint(buf, off)? as u32;
+            Some((file_idx, range_start, range_len))
+        };
+        locals.push(DebugLocalEntry {
+            slot,
+            name,
+            declaring_range,
+            synthetic,
+        });
+    }
+    Ok(locals)
+}
+
+/// One container's line-site table (`DebugInfo` section version 3,
+/// #3670): a count, then each site's offset (delta-coded, like the entries)
+/// and its file, start and length.
+fn read_debug_line_sites(buf: &[u8], off: &mut usize) -> Result<Vec<DebugLineSite>, DecodeError> {
+    let count = usize::try_from(read_varint(buf, off)?).map_err(|_| DecodeError::UnexpectedEof)?;
+    // Minimum per-site footprint: 4 varints of at least 1 byte.
+    let mut sites = Vec::with_capacity(safe_capacity(count, buf.len(), *off, 4));
+    let mut prev_offset: u32 = 0;
+    for _ in 0..count {
+        #[expect(
+            clippy::cast_possible_truncation,
+            reason = "wire fields are u32-domain values re-widened to u64 for varint transport"
+        )]
+        let (delta, file_idx, range_start, range_len) = (
+            read_varint(buf, off)? as u32,
+            read_varint(buf, off)? as u32,
+            read_varint(buf, off)? as u32,
+            read_varint(buf, off)? as u32,
+        );
+        // `wrapping_add` mirrors the entry table's decode tolerance.
+        let bytecode_offset = prev_offset.wrapping_add(delta);
+        prev_offset = bytecode_offset;
+        sites.push(DebugLineSite {
+            bytecode_offset,
+            file_idx,
+            range_start,
+            range_len,
+        });
+    }
+    Ok(sites)
+}
+
 /// see [`crate::StoryData::debug_info`]'s doc for why presence itself is
 /// meaningful here.
 ///
@@ -913,7 +984,7 @@ pub fn read_section_debug_info(
     };
     let mut off = range.start;
     let section_version = read_u8(buf, &mut off)?;
-    if section_version != DEBUG_INFO_SECTION_VERSION {
+    if !(DEBUG_INFO_SECTION_MIN_VERSION..=DEBUG_INFO_SECTION_VERSION).contains(&section_version) {
         return Err(DecodeError::UnsupportedSectionVersion {
             section: SectionKind::DebugInfo as u8,
             version: section_version,
@@ -993,42 +1064,21 @@ pub fn read_section_debug_info(
             });
         }
 
-        let local_count =
-            usize::try_from(read_varint(buf, &mut off)?).map_err(|_| DecodeError::UnexpectedEof)?;
-        // Minimum per-local footprint: slot u16(2) + name length prefix
-        // u32(4) + has_range u8(1) = 7 bytes.
-        let mut locals = Vec::with_capacity(safe_capacity(local_count, buf.len(), off, 7));
-        for _ in 0..local_count {
-            let slot = read_u16(buf, &mut off)?;
-            let name = read_str(buf, &mut off)?;
-            // Flags byte (section version 2, #3395): bit 0 = a declaring
-            // range follows, bit 1 = synthetic. Strict on the reserved bits,
-            // like `DirectEffects`' extension-flags byte.
-            let flags = read_u8(buf, &mut off)?;
-            if flags & !LOCAL_FLAGS_KNOWN != 0 {
-                return Err(DecodeError::InvalidDebugLocalFlags(flags));
-            }
-            let synthetic = flags & LOCAL_FLAG_SYNTHETIC != 0;
-            let declaring_range = if flags & LOCAL_FLAG_HAS_RANGE == 0 {
-                None
-            } else {
-                #[expect(clippy::cast_possible_truncation)]
-                let file_idx = read_varint(buf, &mut off)? as u32;
-                #[expect(clippy::cast_possible_truncation)]
-                let range_start = read_varint(buf, &mut off)? as u32;
-                #[expect(clippy::cast_possible_truncation)]
-                let range_len = read_varint(buf, &mut off)? as u32;
-                Some((file_idx, range_start, range_len))
-            };
-            locals.push(DebugLocalEntry {
-                slot,
-                name,
-                declaring_range,
-                synthetic,
-            });
-        }
+        let locals = read_debug_locals(buf, &mut off)?;
 
-        containers.push(DebugContainerTable { entries, locals });
+        // Section version 3 (#3670): the line sites. A version-2 section
+        // has none — every line then resolves through the line table.
+        let line_sites = if section_version >= 3 {
+            read_debug_line_sites(buf, &mut off)?
+        } else {
+            Vec::new()
+        };
+
+        containers.push(DebugContainerTable {
+            entries,
+            locals,
+            line_sites,
+        });
     }
 
     Ok(Some(DebugInfoSection { files, containers }))

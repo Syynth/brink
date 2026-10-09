@@ -135,6 +135,10 @@ pub struct AppSettings {
     /// Honoured only after a clean exit (see `exit_was_clean`), so a
     /// project that crashed the app cannot crash it again on every launch.
     pub reopen_last: bool,
+    /// The grammar the editor checks while the author types. Here rather
+    /// than in `[prose]` because it picks between the checkers on this
+    /// machine (`docs/gpui-prose-checker-spec.md` §6.1).
+    pub prose_grammar: brink_gpui_model::prose::Grammar,
 }
 
 /// How many recent projects are remembered. A recents list is a
@@ -328,6 +332,7 @@ impl Default for AppSettings {
             manuscript_width: DEFAULT_MANUSCRIPT_WIDTH,
             recents: Vec::new(),
             reopen_last: false,
+            prose_grammar: brink_gpui_model::prose::Grammar::default(),
         }
     }
 }
@@ -388,6 +393,7 @@ impl AppSettings {
             "manuscript_width": self.manuscript_width,
             "recents": self.recents.clone(),
             "reopen_last": self.reopen_last,
+            "prose_grammar": self.prose_grammar.as_str(),
         })
     }
 
@@ -497,6 +503,13 @@ impl AppSettings {
                 .get("reopen_last")
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.reopen_last),
+            // A value from a build with a checker this one lacks (say, a
+            // macOS file copied to Linux) is the default, not an error.
+            prose_grammar: value
+                .get("prose_grammar")
+                .and_then(Value::as_str)
+                .and_then(brink_gpui_model::prose::Grammar::parse)
+                .unwrap_or(defaults.prose_grammar),
         }
     }
 }
@@ -680,6 +693,7 @@ mod tests {
             manuscript_width: 72.,
             recents: vec!["/home/me/harbour/story.ink".to_owned()],
             reopen_last: true,
+            prose_grammar: brink_gpui_model::prose::Grammar::Off,
         };
         s.layout.panes.insert("write.files".to_owned(), 312.);
         s.keymap
@@ -934,6 +948,30 @@ mod tests {
         assert!(
             AppSettings::from_json(&json!({})).follow_in_editor,
             "following is on by default, as the web studio has it"
+        );
+    }
+
+    #[test]
+    fn an_unknown_grammar_checker_reads_as_the_default() {
+        use brink_gpui_model::prose::Grammar;
+        assert_eq!(
+            AppSettings::from_json(&json!({})).prose_grammar,
+            Grammar::Harper
+        );
+        assert_eq!(
+            AppSettings::from_json(&json!({ "prose_grammar": "off" })).prose_grammar,
+            Grammar::Off
+        );
+        assert_eq!(
+            AppSettings::from_json(&json!({ "prose_grammar": "languagetool" })).prose_grammar,
+            Grammar::Harper,
+            "a checker this build lacks is the default, not an error"
+        );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            AppSettings::from_json(&json!({ "prose_grammar": "macos" })).prose_grammar,
+            Grammar::MacOs,
+            "macOS's own grammar is a choice on macOS"
         );
     }
 

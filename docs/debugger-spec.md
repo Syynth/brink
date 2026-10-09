@@ -650,6 +650,14 @@ stable across a park — exactly the same discipline any call/return already
 requires, not a new discipline this document has to invent, just one it is
 naming so D8/D9 don't miss it at a park boundary specifically.
 
+### 2.7 Line sites — where each `EmitLine` was written (#3670, section version 3)
+
+Separate from the statement entries, and not a change to §2.1's ruled granularity: each container's table also carries `line_sites`, one row per `EmitLine` instruction — `(bytecode_offset, file_idx, range_start, range_len)` — giving the exact source range of *that use* of the line. Codegen records it at the one place an `EmitLine` is emitted, from the location `add_line` already receives for the use.
+
+Why it exists: the runtime gives a played line (and a choice) a `source` — the union of where its fragments were written. The line table cannot answer that, because deduplication (`docs/intl-spec.md`) shares one entry across every repeat of a text and keeps the first use's location; a repeated speaker cue dragged its line's span back to the cue's first appearance. The statement entries cannot answer it either: they are per statement, and a choice set's second display text is not its first choice's statement. The runtime looks a fragment's emitting instruction up here (exact match), and falls back to the line table when there is no row.
+
+Wire: appended to each container after its locals — a count, then rows delta-coded by offset like the entries. Section version 3; a reader still accepts version 2, which has no rows. `brink-opt` relocates the rows with the entries (an `EmitLine` fused into `EmitLineNl` keeps its row). `.inkt`: `(site offset file_idx start len)` rows after a container's entries.
+
 ## 3. The symbol/scope model for variable inspection
 
 Scoped per the issue's ask: "per-container temp slot to name, and whether

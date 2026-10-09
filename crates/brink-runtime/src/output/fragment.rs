@@ -214,14 +214,9 @@ impl OutputBuffer {
             OutputPart::LineRef {
                 container_idx,
                 line_idx,
+                site,
                 ..
-            } => {
-                let scope_idx = program.scope_table_idx(*container_idx) as usize;
-                line_tables
-                    .get(scope_idx)
-                    .and_then(|t| t.get(*line_idx as usize))
-                    .and_then(|entry| entry.source_location.clone())
-            }
+            } => super::line_ref_source(program, line_tables, *container_idx, *line_idx, *site),
             _ => None,
         })
     }

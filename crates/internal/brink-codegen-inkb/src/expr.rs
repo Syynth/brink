@@ -683,7 +683,9 @@ impl ContainerEmitter<'_> {
                     // one-line thread-through here. Tracked as follow-up
                     // scope rather than folded into this fix.
                     let idx = self.add_line(text, None);
-                    self.emit(Opcode::EmitLine(idx, 0));
+                    // No location to keep (see above): the line resolves
+                    // through the line table, as it always has.
+                    self.emit_line_op(idx, 0, None);
                 }
                 lir::StringPart::Interpolation(expr) => {
                     self.emit_expr(expr, false);

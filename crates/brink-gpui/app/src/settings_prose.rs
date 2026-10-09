@@ -10,9 +10,12 @@
 //! `enable` is separate from whether a checker is registered at all: an
 //! embedder decides whether the engine is available, and this decides
 //! whether a project that HAS it wants its prose checked. Those are
-//! different decisions by different people. (The native studio has no
-//! prose checker yet — the settings are the project's and are written the
-//! same, so a project opened in both studios reads the same.)
+//! different decisions by different people. The settings are the
+//! project's and are written the same in both studios, so a project opened
+//! in either reads the same. Which checker does the work on this machine —
+//! macOS's or Harper's, and the grammar while typing — is not the
+//! project's: that is Settings ▸ Spelling & Grammar, in App scope
+//! (`docs/gpui-prose-checker-spec.md` §6.1).
 //!
 //! The dictionary lives in `brink.toml` (ruled 2026-08-28: a character's
 //! name is a fact about the manuscript, shared by collaborators, surviving
@@ -274,6 +277,15 @@ impl Render for ProseSection {
                     }),
                 cx,
             ))
+            .child(
+                div()
+                    .pb_1()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .child(
+                        "Which checkers do the work on this computer, and the grammar checked while you type, are App settings: Spelling & Grammar.",
+                    ),
+            )
             .child(setting_row(
                 "Dialect",
                 "Which English the checker judges by. Set this before anything else — under the wrong dialect an author who writes \u{201c}colour\u{201d} sees their whole manuscript underlined.",
