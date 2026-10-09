@@ -32,6 +32,7 @@ mod program;
 mod project;
 mod quick_open;
 mod rename;
+mod saves;
 mod search;
 mod settings_config;
 mod settings_conventions;
@@ -3584,6 +3585,68 @@ mod modes_driven {
             h.advance(std::time::Duration::from_millis(50));
         }
         assert_eq!(away(&mut h), None, "the pill brought it back");
+    }
+
+    /// Save state end to end (W14, decision log 2026-10-09): a save lands
+    /// in the project's `.brink/saves/`; Load restores the story so far and
+    /// resumes, attached — saving again writes back, no new slot; Fork
+    /// starts unattached, so its save is a new slot; Delete removes one.
+    #[test]
+    fn save_state_saves_loads_writes_back_forks_and_deletes() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let root = h.read(|cx| studio.read(cx).project.read(cx).root().to_path_buf());
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        assert!(player_until(&mut h, &player, |p| p.save_ids() == ["save-1"]));
+        assert!(
+            root.join(".brink/saves/save-1.json").is_file(),
+            "in the project"
+        );
+
+        // Load it: the story so far comes back, and play resumes.
+        h.update(|cx| player.update(cx, |p, cx| p.stop(cx)));
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.load_save(crate::saves::Store::Project, "save-1", false, cx)
+            });
+        });
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()
+            && p.has_line("The fog sits")));
+        // Attached: saving again writes back.
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        h.advance(std::time::Duration::from_millis(100));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        assert_eq!(
+            h.read(|cx| player.read(cx).save_ids()),
+            ["save-1"],
+            "written back"
+        );
+
+        // Fork: unattached, so its save is a new slot.
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.load_save(crate::saves::Store::Project, "save-1", true, cx)
+            });
+        });
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        assert!(player_until(&mut h, &player, |p| p.save_ids() == ["save-1", "save-2"]));
+
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.delete_save(crate::saves::Store::Project, "save-2", cx)
+            });
+        });
+        assert_eq!(
+            h.read(|cx| player.read(cx).save_ids()),
+            ["save-1"],
+            "deleted"
+        );
     }
 
     /// `>|` runs straight to the next stop — here, the first choice.

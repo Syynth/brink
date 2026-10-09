@@ -99,6 +99,11 @@ pub struct Player {
     /// manuscript's bracket (decision log 2026-10-09), and whether it is a
     /// choice.
     hovered: Option<(Location, bool)>,
+    /// The save slot a Load attached this session to: Save state writes
+    /// back there (W14). `None` — a fresh run or a fork — saves anew.
+    attached: Option<(crate::saves::Store, String)>,
+    /// Both stores' slots as last read, for the idle Player's list.
+    saves: Vec<(crate::saves::Store, crate::saves::SlotMeta)>,
     /// Every choice offered and passed by this session (taken later or
     /// not — `trail` subtracts the taken ones).
     passed: Vec<Location>,
@@ -190,6 +195,7 @@ impl Player {
         // the panel, not wait for the next line.
         cx.observe_global::<brink_gpui_shell::settings::AppSettings>(|_, cx| cx.notify())
             .detach();
+        let saves = all_saves(project.read(cx).root());
         Self {
             project,
             entries: Vec::new(),
@@ -197,6 +203,8 @@ impl Player {
             choices_at: None,
             hovered: None,
             passed: Vec::new(),
+            attached: None,
+            saves,
             choices: Vec::new(),
             list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
@@ -295,6 +303,18 @@ impl Player {
 
     /// Compile and start — from the entry, or from a knot/stitch path.
     pub fn start(&mut self, at: Option<String>, cx: &mut Context<Self>) {
+        self.begin();
+        // A fresh run is attached to no save: the next save makes a new one.
+        self.attached = None;
+        if let Some(path) = &at {
+            self.push(Entry::Notice(format!("— from {path} —").into()));
+        }
+        self.start_at = at.clone();
+        self.send(PlayCommand::Start { at }, cx);
+    }
+
+    /// A clean session: what Start and a Load both begin from.
+    fn begin(&mut self) {
         self.generation += 1;
         self.entries.clear();
         self.arrivals.clear();
@@ -309,11 +329,127 @@ impl Player {
         self.next_at = None;
         // Play and Restart are the way back to following, as the web's are.
         self.follow_paused = false;
-        if let Some(path) = &at {
-            self.push(Entry::Notice(format!("— from {path} —").into()));
+    }
+
+    /// Read both stores' slots afresh (the idle Player's list).
+    pub(crate) fn refresh_saves(&mut self, cx: &mut Context<Self>) {
+        self.saves = all_saves(self.project.read(cx).root());
+        cx.notify();
+    }
+
+    /// The default store for a new save: the app setting.
+    fn new_save_store(cx: &App) -> crate::saves::Store {
+        if brink_gpui_shell::settings::AppSettings::get(cx).saves_on_this_computer {
+            crate::saves::Store::Local
+        } else {
+            crate::saves::Store::Project
         }
-        self.start_at = at.clone();
-        self.send(PlayCommand::Start { at }, cx);
+    }
+
+    /// Save state (W14): checkpoint the running story — back into the slot
+    /// a Load attached this session to, else a new slot in the default
+    /// store.
+    pub(crate) fn save_state(&mut self, cx: &mut Context<Self>) {
+        if !self.running || self.busy {
+            return;
+        }
+        let root = self.project.read(cx).root().to_path_buf();
+        let target = self
+            .attached
+            .clone()
+            .map_or((Self::new_save_store(cx), None), |(store, id)| {
+                (store, Some(id))
+            });
+        let generation = self.generation;
+        let task = self.project.read(cx).play(PlayCommand::Save, cx);
+        cx.spawn(async move |this, cx| {
+            let saved = task.await.ok().and_then(|o| o.saved);
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let (store, id) = target;
+                let written = saved
+                    .ok_or_else(|| "nothing to save".to_owned())
+                    .and_then(|saved| {
+                        let dir = crate::saves::dir(store, &root)
+                            .ok_or_else(|| "no place to keep saves".to_owned())?;
+                        crate::saves::write(&dir, id.as_deref(), &saved).map_err(|e| e.to_string())
+                    });
+                match written {
+                    Ok(meta) => {
+                        this.push(Entry::Notice(
+                            format!("— saved: {} ({}) —", meta.name, store.label()).into(),
+                        ));
+                        this.attached = Some((store, meta.id));
+                    }
+                    Err(e) => this.push(Entry::Error {
+                        text: format!("could not save: {e}").into(),
+                        at: None,
+                    }),
+                }
+                this.refresh_saves(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Load a save — attached, so Save state writes back to it — or fork
+    /// one: start from a copy, unattached, the checkpoint untouched.
+    pub(crate) fn load_save(
+        &mut self,
+        store: crate::saves::Store,
+        id: &str,
+        fork: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.project.read(cx).root().to_path_buf();
+        let Some(loaded) = crate::saves::dir(store, &root).and_then(|d| crate::saves::read(&d, id))
+        else {
+            self.push(Entry::Notice("— that save no longer exists —".into()));
+            self.refresh_saves(cx);
+            return;
+        };
+        self.begin();
+        self.attached = (!fork).then(|| (store, id.to_owned()));
+        self.push(Entry::Notice(
+            format!(
+                "— {} {} —",
+                if fork { "forked from" } else { "loaded" },
+                loaded.meta.name
+            )
+            .into(),
+        ));
+        self.start_at = loaded.meta.knot_path.clone();
+        self.send(
+            PlayCommand::Load {
+                state: loaded.state,
+                transcript: loaded.transcript,
+                knot: loaded.meta.knot_path,
+            },
+            cx,
+        );
+    }
+
+    /// Delete a save.
+    pub(crate) fn delete_save(
+        &mut self,
+        store: crate::saves::Store,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.project.read(cx).root().to_path_buf();
+        if let Some(dir) = crate::saves::dir(store, &root) {
+            let _ = crate::saves::remove(&dir, id);
+        }
+        if self
+            .attached
+            .as_ref()
+            .is_some_and(|(s, i)| *s == store && i == id)
+        {
+            self.attached = None;
+        }
+        self.refresh_saves(cx);
     }
 
     /// Draw for Write mode (no Step) or Script.
@@ -392,6 +528,14 @@ impl Player {
     pub(crate) fn now_gap(&self) -> Option<(f32, f32)> {
         let row = self.list.bounds_for_item(self.active_row()? + 1)?;
         Some((f32::from(row.top()), self.now_y))
+    }
+
+    /// The save slots as last read, by id.
+    #[cfg(test)]
+    pub(crate) fn save_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.saves.iter().map(|(_, m)| m.id.clone()).collect();
+        ids.sort();
+        ids
     }
 
     /// What the header's status says.
@@ -1298,7 +1442,7 @@ impl Player {
     fn icon_button(
         id: &'static str,
         icon: BrinkIcon,
-        tooltip: &'static str,
+        tooltip: impl Into<SharedString>,
         on: Option<Hsla>,
         enabled: bool,
         cx: &App,
@@ -1322,7 +1466,10 @@ impl Player {
                 el.cursor_pointer().hover(move |s| s.bg(hover))
             })
             .when(!enabled, |el| el.opacity(0.3))
-            .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+            .tooltip({
+                let tooltip: SharedString = tooltip.into();
+                move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+            })
             .child(brink_gpui_shell::icons::icon(
                 icon,
                 px(16.),
@@ -1426,6 +1573,16 @@ impl Player {
         // laid out, which reads as wide.
         let width = f32::from(self.list.viewport_bounds().size.width);
         let narrow = width > 0. && width < NARROW_HEADER;
+        let can_save = self.running && !self.busy;
+        let save_tip: SharedString = match self.attached.as_ref().and_then(|(store, id)| {
+            self.saves
+                .iter()
+                .find(|(s, m)| s == store && &m.id == id)
+                .map(|(_, m)| m.name.clone())
+        }) {
+            Some(name) => format!("Save state — writes back to {name}").into(),
+            None => "Save state — a new save".into(),
+        };
         let follow_on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
         let (follow_icon, follow_lit, follow_tip) = match (follow_on, self.follow_paused) {
             (true, true) => (
@@ -1503,14 +1660,17 @@ impl Player {
                     )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tags(cx))),
                 )
-                .child(Self::icon_button(
-                    "player-save",
-                    BrinkIcon::PlayerSave,
-                    "Save state (coming)",
-                    None,
-                    false,
-                    cx,
-                ))
+                .child(
+                    Self::icon_button(
+                        "player-save",
+                        BrinkIcon::PlayerSave,
+                        save_tip.clone(),
+                        None,
+                        can_save,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_state(cx))),
+                )
                 .child(
                     Self::icon_button(
                         "player-more",
@@ -1525,6 +1685,7 @@ impl Player {
                     ),
                 )
             })
+            .child(self.render_saves_menu(cx))
             .when(narrow, |el| el.child(self.render_more_menu(cx)))
             .when(self.write_mode, |el| {
                 el.child(
@@ -1548,6 +1709,117 @@ impl Player {
         cx.notify();
     }
 
+    /// The header's saves menu (decision log 2026-10-09): both stores'
+    /// slots, read when it opens — Load (and save back to it) or Fork
+    /// (start from a copy). Deleting lives on the idle Player's list.
+    fn render_saves_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_component::button::{Button, ButtonVariants as _};
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        use gpui_component::{IconName, Sizable as _};
+        let me = cx.entity().downgrade();
+        let root = self.project.read(cx).root().to_path_buf();
+        Button::new("player-saves")
+            .ghost()
+            .small()
+            .icon(IconName::FolderOpen)
+            .tooltip("Saves")
+            .dropdown_menu(move |menu, _, _| {
+                let slots = all_saves(&root);
+                if slots.is_empty() {
+                    return menu.item(PopupMenuItem::new("No saves yet").disabled(true));
+                }
+                let pick = |fork: bool| {
+                    let me = me.clone();
+                    move |store: crate::saves::Store, id: String| {
+                        let me = me.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            let _ = me.update(cx, |this, cx| this.load_save(store, &id, fork, cx));
+                        }
+                    }
+                };
+                let (load, fork) = (pick(false), pick(true));
+                let mut menu = menu.label("Load — and save back to it");
+                for (store, meta) in slots.iter().take(SAVES_IN_MENU) {
+                    menu = menu.item(
+                        PopupMenuItem::new(slot_label(*store, meta))
+                            .on_click(load(*store, meta.id.clone())),
+                    );
+                }
+                menu = menu.separator().label("Fork — start from a copy");
+                for (store, meta) in slots.iter().take(SAVES_IN_MENU) {
+                    menu = menu.item(
+                        PopupMenuItem::new(slot_label(*store, meta))
+                            .on_click(fork(*store, meta.id.clone())),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
+    /// The idle Player's saves: each with Load, Fork and delete.
+    fn render_idle_saves(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, border, hover) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.border,
+            theme.muted.opacity(0.5),
+        );
+        let action = |id: (&'static str, usize), label: &'static str| {
+            div()
+                .id(id)
+                .px_2()
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(border)
+                .text_xs()
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(label)
+        };
+        v_flex()
+            .pl(px(TEXT_X))
+            .pr_4()
+            .pt_4()
+            .gap(px(6.))
+            .child(div().text_xs().text_color(muted).child("Saves"))
+            .children(self.saves.iter().enumerate().map(|(n, (store, meta))| {
+                let (store, id) = (*store, meta.id.clone());
+                let (id_load, id_fork, id_delete) = (id.clone(), id.clone(), id);
+                h_flex()
+                    .gap(px(8.))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(fg)
+                            .child(slot_label(store, meta)),
+                    )
+                    .child(action(("save-load", n), "Load").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.load_save(store, &id_load, false, cx)
+                        },
+                    )))
+                    .child(action(("save-fork", n), "Fork").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.load_save(store, &id_fork, true, cx)
+                        },
+                    )))
+                    .child(action(("save-delete", n), "Delete").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| this.delete_save(store, &id_delete, cx),
+                    )))
+            }))
+            .into_any_element()
+    }
+
     /// The narrow header's ⋯: what folded out of the bar, then settings.
     fn render_more_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use gpui_component::button::{Button, ButtonVariants as _};
@@ -1555,6 +1827,7 @@ impl Player {
         use gpui_component::{IconName, Sizable as _};
         let me = cx.entity().downgrade();
         let tags = self.show_tags;
+        let can_save = self.running && !self.busy;
         Button::new("player-more")
             .ghost()
             .small()
@@ -1573,12 +1846,22 @@ impl Player {
                         let _ = me.update(cx, |_, cx| cx.emit(PlayerEvent::OpenSettings));
                     }
                 };
+                let save = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |this, cx| this.save_state(cx));
+                    }
+                };
                 menu.item(
                     PopupMenuItem::new("Show tags")
                         .checked(tags)
                         .on_click(toggle_tags),
                 )
-                .item(PopupMenuItem::new("Save state (coming)").disabled(true))
+                .item(
+                    PopupMenuItem::new("Save state")
+                        .disabled(!can_save)
+                        .on_click(save),
+                )
                 .separator()
                 .item(PopupMenuItem::new("Player settings").on_click(settings))
             })
@@ -1940,6 +2223,7 @@ impl Render for Player {
         let started = !self.entries.is_empty();
         let prose_size = brink_gpui_shell::settings::AppSettings::get(cx).player_size();
         let header = self.render_header(cx);
+        let idle_saves = self.render_idle_saves(cx);
         let cards = self.render_cards(cx);
         let strip = self.render_strip(cx);
 
@@ -1953,16 +2237,20 @@ impl Render for Player {
             .child(header)
             .when(!started, |el| {
                 el.child(
-                    div()
+                    v_flex()
                         .flex_1()
-                        .p_4()
-                        .pl(px(TEXT_X))
-                        .text_xs()
-                        .text_color(muted)
                         .child(
-                            "Nothing is running. ▶ plays the story from its entry; \
-                             \"Play from here\" on a knot starts there.",
-                        ),
+                            div()
+                                .p_4()
+                                .pl(px(TEXT_X))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(
+                                    "Nothing is running. ▶ plays the story from its entry; \
+                                     \"Play from here\" on a knot starts there.",
+                                ),
+                        )
+                        .when(!self.saves.is_empty(), |el| el.child(idle_saves)),
                 )
             })
             .when(started, |el| {
@@ -2007,6 +2295,35 @@ fn cards_in(n: usize) -> std::time::Duration {
 /// How many frames may correct a line onto NOW before giving up — a few
 /// is plenty; the bound keeps a list that cannot settle from looping.
 const NOW_TRIES: u8 = 4;
+
+/// How many saves each section of the header's saves menu lists.
+const SAVES_IN_MENU: usize = 8;
+
+/// Both stores' slots for the project at `root`, newest first within each.
+fn all_saves(root: &std::path::Path) -> Vec<(crate::saves::Store, crate::saves::SlotMeta)> {
+    [crate::saves::Store::Project, crate::saves::Store::Local]
+        .into_iter()
+        .flat_map(|store| {
+            crate::saves::dir(store, root)
+                .map(|dir| crate::saves::list(&dir))
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |meta| (store, meta))
+        })
+        .collect()
+}
+
+/// A slot as a list shows it: its name, where it is, the turn, and which
+/// store holds it.
+fn slot_label(store: crate::saves::Store, meta: &crate::saves::SlotMeta) -> String {
+    let at = meta.knot_path.as_deref().unwrap_or("story");
+    format!(
+        "{} · {at} · turn {} · {}",
+        meta.name,
+        meta.turn,
+        store.label()
+    )
+}
 
 /// The hover group of a transcript row, for its go-to-source button.
 const ROW_GROUP: &str = "player-row";

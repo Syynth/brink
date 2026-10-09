@@ -76,6 +76,17 @@ impl Render for PlayerSection {
                 ),
                 cx,
             ))
+            .child(setting_row(
+                "Keep new saves on this computer",
+                "Save state writes to the project's .brink/saves/ folder, shared through the repo; on, new saves stay in this computer's app data. Both are always listed.",
+                Switch::new("saves-on-this-computer")
+                    .checked(settings.saves_on_this_computer)
+                    .on_click(|on, _, cx| {
+                        let on = *on;
+                        settings::update(cx, |s| s.saves_on_this_computer = on);
+                    }),
+                cx,
+            ))
             .child(setting_group("Reading", cx))
             .child(setting_row(
                 "Player font size",
