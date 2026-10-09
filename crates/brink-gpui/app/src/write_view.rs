@@ -56,7 +56,9 @@ impl Pane {
         match self {
             Pane::Files => "write.files",
             Pane::Structure => "write.structure",
-            Pane::Player => "write.player",
+            // A share of the room beside the sidebar, not pixels: the
+            // Player and the manuscript split it (half each by default).
+            Pane::Player => "write.player_share",
         }
     }
 
@@ -65,14 +67,14 @@ impl Pane {
             // Files is a Binder, whose header carries more tools than a
             // plain list's would.
             Pane::Files | Pane::Structure => 240.,
-            Pane::Player => 400.,
+            Pane::Player => 0.5,
         }
     }
 
     fn range(self) -> (f32, f32) {
         match self {
             Pane::Files | Pane::Structure => (160., 480.),
-            Pane::Player => (280., 720.),
+            Pane::Player => (0.3, 0.7),
         }
     }
 
@@ -156,7 +158,10 @@ pub(crate) struct WriteView {
     /// Each pane's width: dragged, saved, or its default.
     files_width: f32,
     structure_width: f32,
-    player_width: f32,
+    /// The Player's share of the room beside the sidebar.
+    player_share: f32,
+    /// That room's width as last laid out (0 before the first frame).
+    room: std::rc::Rc<std::cell::Cell<f32>>,
     /// Each file's outline, as last answered. Cleared on every analysis:
     /// an edit moves offsets, and a stale outline would put the caret in
     /// the wrong stitch.
@@ -203,6 +208,14 @@ impl WriteView {
                 cx.notify();
             }
         });
+        let on_player = cx.subscribe(
+            &player,
+            |this, _, event: &crate::player::PlayerEvent, cx| {
+                if matches!(event, crate::player::PlayerEvent::Close) {
+                    this.close_player(cx);
+                }
+            },
+        );
         Self {
             project,
             manuscript,
@@ -217,12 +230,13 @@ impl WriteView {
             sidebar_from: 0.,
             files_width: saved_width(Pane::Files, cx),
             structure_width: saved_width(Pane::Structure, cx),
-            player_width: saved_width(Pane::Player, cx),
+            player_share: saved_width(Pane::Player, cx),
+            room: std::rc::Rc::default(),
             symbols: BTreeMap::new(),
             pending: BTreeSet::new(),
             words: 0,
             me: cx.weak_entity(),
-            _subscriptions: vec![on_caret, on_project],
+            _subscriptions: vec![on_caret, on_project, on_player],
         }
     }
 
@@ -363,7 +377,7 @@ impl WriteView {
         match pane {
             Pane::Files => self.files_width,
             Pane::Structure => self.structure_width,
-            Pane::Player => self.player_width,
+            Pane::Player => self.player_share,
         }
     }
 
@@ -373,14 +387,19 @@ impl WriteView {
         let next = pane.clamp(match pane {
             Pane::Files => x,
             Pane::Structure => x - self.files_width,
-            Pane::Player => width - x,
+            Pane::Player => {
+                let room = (width - f32::from(self.sidebar_target())).max(1.);
+                (width - x) / room
+            }
         });
         let slot = match pane {
             Pane::Files => &mut self.files_width,
             Pane::Structure => &mut self.structure_width,
-            Pane::Player => &mut self.player_width,
+            Pane::Player => &mut self.player_share,
         };
-        if (*slot - next).abs() > 0.5 {
+        // Half a pixel, or a thousandth of the Player's share.
+        let step = if pane == Pane::Player { 0.001 } else { 0.5 };
+        if (*slot - next).abs() > step {
             *slot = next;
             cx.notify();
         }
@@ -993,15 +1012,23 @@ impl WriteView {
 }
 
 impl Render for WriteView {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let sidebar = (self.sidebar != Sidebar::Closed).then(|| self.render_sidebar(cx));
         let chip = (self.sidebar == Sidebar::Closed).then(|| self.render_chip(cx));
         let theme = cx.theme();
-        let (border, surface, muted) = (theme.border, theme.background, theme.muted_foreground);
-        let player_width = self.player_width;
+        let (border, surface) = (theme.border, theme.background);
+        // The Player's width: its share of the room beside the sidebar, as
+        // the last frame measured it (the window's, less the sidebar,
+        // before there is one).
+        let room = match self.room.get() {
+            r if r > 0. => r,
+            _ => f32::from(window.viewport_size().width - self.sidebar_target()),
+        };
+        let width = (self.player_share * room).round();
+        let measured = self.room.clone();
         let player_grip = self.player_open.then(|| self.grip(Pane::Player, true, cx));
         let panel = self.player_open.then(|| {
-            v_flex()
+            div()
                 .relative()
                 .h_full()
                 .flex_none()
@@ -1010,43 +1037,23 @@ impl Render for WriteView {
                 .border_color(border)
                 .bg(surface)
                 .child(
-                    h_flex()
-                        .w(px(player_width))
-                        .h(px(HEADER_HEIGHT))
-                        .flex_none()
-                        .px_2()
-                        .items_center()
-                        .justify_between()
-                        .border_b_1()
-                        .border_color(border)
-                        .child(div().text_xs().text_color(muted).child("Player"))
-                        .child(
-                            Button::new("write-player-close")
-                                .ghost()
-                                .xsmall()
-                                .icon(IconName::Close)
-                                .tooltip("Close the Player")
-                                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                    this.close_player(cx);
-                                })),
-                        ),
-                )
-                .child(
+                    // Held at its full width while the panel slides, and
+                    // clipped meanwhile, so nothing re-wraps mid-slide.
                     div()
-                        .w(px(player_width))
-                        .flex_1()
-                        .min_h_0()
+                        .absolute()
+                        .left_0()
+                        .top_0()
+                        .bottom_0()
+                        .w(px(width))
                         .child(self.player.clone()),
                 )
                 .children(player_grip)
                 // The slide: the panel's width grows from nothing, so the
-                // manuscript beside it is pushed rather than covered. The
-                // contents stay at full width and are clipped meanwhile, so
-                // nothing re-wraps mid-slide.
+                // manuscript beside it is pushed rather than covered.
                 .with_animation(
                     SharedString::from(format!("write-player-{}", self.openings)),
                     Animation::new(SLIDE).with_easing(gpui::ease_out_quint()),
-                    move |panel, delta| panel.w(px(player_width * delta)),
+                    move |panel, delta| panel.w(px(width * delta)),
                 )
         });
         h_flex()
@@ -1065,18 +1072,39 @@ impl Render for WriteView {
             .on_drop(cx.listener(|this, _: &PaneDrag, _, cx| this.save_panes(cx)))
             .children(sidebar)
             .child(
-                div()
+                h_flex()
+                    .relative()
                     .flex_1()
                     .min_w_0()
                     .h_full()
-                    // The chip sits over the manuscript's bottom-right
-                    // corner, so it stays beside the text when the Player
-                    // is out.
-                    .relative()
-                    .child(self.manuscript.clone())
-                    .children(chip),
+                    .child(
+                        gpui::canvas(
+                            move |bounds, window, _| {
+                                let w = f32::from(bounds.size.width);
+                                if (measured.get() - w).abs() > 0.5 {
+                                    measured.set(w);
+                                    window.refresh();
+                                }
+                            },
+                            |_, (), _, _| {},
+                        )
+                        .absolute()
+                        .size_full(),
+                    )
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            // The chip sits over the manuscript's bottom-right
+                            // corner, so it stays beside the text when the
+                            // Player is out.
+                            .relative()
+                            .child(self.manuscript.clone())
+                            .children(chip),
+                    )
+                    .children(panel),
             )
-            .children(panel)
     }
 }
 

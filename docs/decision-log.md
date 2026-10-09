@@ -5859,3 +5859,73 @@
 - **SCOPE:** minor/local
 - **WHAT:** The ⌘K go-to uses direction B from the design canvas. Each row has two lines: the name with matched characters highlighted, and below it a monospace breadcrumb (`file › knot › stitch :line`). The kind's icon is centred vertically across both lines, and a named kind chip sits at the right. The icons are the Binder's own (file droplet, knot diamond, stitch hook), tinted by the theme's per-kind colours. Labels get a new icon: a hollow dash, a wide short rounded rectangle in the same stroke style.
 - **WHY:** The breadcrumb shows a result's full address at a glance, which tells same-named labels in different knots apart. An icon centred on the whole row reads as the row's marker, not just the name's. Reusing the Binder's icons keeps one visual vocabulary for story structure. The dash echoes the gather `-` that a label hangs off.
+
+## Write-mode player revamp: Stage, rethought for playing beside the manuscript
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The native studio's player in Write mode gets a revamp. It starts from the web studio's ruled Stage design (speaker blocks, spine rail, choice cards, peek) and adapts it to play beside the manuscript instead of in a tab. The leading idea for placement is a 50/50 split: as the story plays, the manuscript follows the playing line closely, so the author can make real-time edits as they play through. Other placements are explored on a design canvas before anything is built.
+- **WHY:** In Write mode the author is writing, not only testing. A player that keeps the manuscript on the line being played turns a playthrough into an editing pass: read it as the player sees it, and fix it in place without hunting for the source. Stage is already the ruled look for reading a story, so the revamp builds on it instead of starting over.
+
+## Write-mode player: Play vs Fast-forward, line-level breakpoints, play-aware editor
+- **SUPERSEDED IN PART:** the single Fast-forward is replaced by Autoplay (`>>`) and Skip (`>|`). See "Write-mode transport: a symmetric strip with rewind" (2026-10-09).
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The Write-mode player is the side-by-side direction (A): manuscript and player at 50/50, both panes keeping the current line's top on one shared NOW line. Its transport has two modes.
+  - **Play:** the story advances one line each time the author continues (Continue, space).
+  - **Fast-forward:** the story keeps continuing on its own, faster than reading pace but visibly, until it reaches a breakpoint, a choice point, or DONE. Its speed is an app setting. While it runs, its control is **Pause** (two bars), which returns to Play on the line reached. It never uses the square, which is **Stop** and ends the story; the two sit side by side and must not share a symbol.
+
+  Breakpoints in Write mode are line-level only and matter to Fast-forward. Script mode keeps script stepping (Step, Step Instruction). The Write-mode editor knows the story is playing, and highlights each line by its state: played, active, about to play, not taken, breakpoint, held at a breakpoint.
+- **WHY:** Write mode is for writing while reading the story as a player would, so its controls are a reader's: read on, or skip ahead to the part being worked on. Instruction stepping belongs to Script mode, where the compiled program is what is being examined. Line states let the author see where the playthrough has been and where it is going without leaving the text.
+
+## A breakpoint on a choice line holds when that choice is taken
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** minor/local
+- **WHAT:** A breakpoint set on a choice line (`* [Climb faster] -> lamp_room`) holds the story just before that choice's own output plays: after the reader picks it, or after ink takes it on its own as a fallback (`* -> somewhere`). It does not hold when the choice point is offered, because Fast-forward already stops at every choice point.
+- **WHY:** The dot then means the same on every line: hold just before this line's content plays. It also gives the only way to catch a fallback choice, which ink takes without showing a card or stopping.
+
+## Write-mode player toolbar: session header on top, transport strip at the bottom
+- **SUPERSEDED IN PART:** the strip's buttons are now the symmetric set in "Write-mode transport: a symmetric strip with rewind" (2026-10-09). The header/strip split stands.
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The Write-mode player's controls are split by purpose.
+  - **Header (top):** the session. It holds the status (clicking it returns to the current line), Follow (three states: on, off, paused while editing), Show tags, Save state, and ⋯ for settings, including Fast-forward speed.
+  - **Strip (bottom):** the transport, centred. Restart · Stop · a big round Continue · Fast-forward, with a quiet hint at its right edge saying what space does right now.
+  - **While Fast-forward runs:** the big button is Pause.
+  - **At a choice:** the strip rests and the cards sit above it.
+  - **When the pane is narrow:** the header's toggles fold into ⋯ (Follow stays), and the strip never folds.
+
+  Every control the web toolbar has keeps a place, except the step buttons, which belong to Script mode.
+- **WHY:** The web player's toolbar packed everything into one row that folded unpredictably. Follow-in-editor vanished entirely when narrow, and "⋯" could open empty. Splitting by purpose puts the transport where a reader's eye already is, at the bottom with the newest line. Session state, which is checked occasionally, sits out of the way at the top, and every control has a defined place to fold into.
+
+## Write-mode transport: a symmetric strip with rewind
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The Write-mode player's transport strip reads, centred: `|<` back to the last choice · `<<` back one line · ▶ Continue · `>>` Autoplay · `>|` Skip to the next stop.
+  - **▶ Continue** plays one line (space).
+  - **`>>` Autoplay** keeps continuing on its own at the reading pace set in Settings.
+  - **`>|` Skip** goes straight to the next stop.
+  - **Stops:** Autoplay and Skip both stop at a breakpoint, a choice point, or DONE.
+  - **Pause:** while autoplaying, the big button is ❚❚ Pause, never the ■, which is Stop and ends the story.
+  - **Rewind:** `<<` rewinds continuously, one line at a time at the same pace Autoplay moves forward; ❚❚ Pause stops it, as it does Autoplay. `|<` jumps to just before the last choice, which is offered again with the previous pick marked. Lines rewound past are shown as undone (struck through in the player, a dashed rail in the manuscript) until the story moves on. Rewind is built as a follow-up, after the rest of the Write-mode player.
+  - **Placement:** Restart and Stop sit at the strip's edge. At a choice only the rewind buttons are live.
+
+  This replaces the single Fast-forward button and its speed setting; the Settings value is Autoplay's reading pace.
+- **WHY:** Two forward buttons say what each does without a speed cycle to learn: one autoplays at a reading pace, the other jumps to where something happens. Rewind balances the strip and makes revisiting a choice cheap, so trying the other branch is one press instead of a restart. The runtime already snapshots story state (`Story::speculate`, `StorySnapshot`), so rewinding is a restore, not a replay.
+
+## The native player advances a line at a time, never a whole turn
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The native studio's player delivers one line per Continue (or per Autoplay tick), in Script and Write alike. It never plays everything up to the next choice in one go (`continue_maximally`). Skip (`>|`) also goes line by line, only faster: every line still arrives as its own step, so the transcript, the line states and the follow see each one.
+- **WHY:** Playing a whole turn at once hides exactly what the Write-mode player exists to show: which line is playing, where it came from in the manuscript, and what comes next. A line at a time is what keeps the manuscript level with playback and lets breakpoints hold before a line rather than somewhere inside a burst.

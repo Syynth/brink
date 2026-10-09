@@ -26,6 +26,7 @@ mod landing;
 mod navigation;
 mod output_log;
 mod player;
+mod player_stage;
 mod problems;
 mod program;
 mod project;
@@ -884,13 +885,33 @@ impl Studio {
                     }
                     // `Log` is the Output window's business.
                     PlayerEvent::Log { .. } => {}
+                    // Write mode's pane listens for its own close.
+                    PlayerEvent::Close => {}
+                    PlayerEvent::OpenSettings => {
+                        this.workspace.update(cx, |workspace, cx| {
+                            workspace.open_settings(Some("player"), window, cx);
+                        });
+                    }
                 }
             },
         );
         // The status bar carries the story state, and the Player changes it
         // without an event of its own — so observe the entity.
-        let on_player_state = cx.observe(&player, |this: &mut Self, _, cx| {
+        let on_player_state = cx.observe(&player, |this: &mut Self, player, cx| {
             this.refresh_status(cx);
+            // The manuscript marks where the story has been.
+            let trail = player.read(cx).trail();
+            this.manuscript
+                .update(cx, |manuscript, cx| manuscript.set_trail(trail, cx));
+        });
+        // The Player's strip drops Step and Step Instruction in Write mode
+        // (line breakpoints only, ruled 2026-10-09), so it tracks the view.
+        let on_view = cx.observe(&workspace, {
+            let player = player.clone();
+            move |_: &mut Self, workspace, cx| {
+                let writing = workspace.read(cx).editor_view(cx) == EditorView::Write;
+                player.update(cx, |player, cx| player.set_write_mode(writing, cx));
+            }
         });
         let on_compiled = cx.subscribe_in(
             &compiled,
@@ -1113,6 +1134,7 @@ impl Studio {
                 on_binder,
                 on_player,
                 on_player_state,
+                on_view,
                 on_program,
                 on_compiled,
                 on_graph,
@@ -1269,7 +1291,7 @@ impl Studio {
         let view = self.workspace.read(cx).editor_root().read(cx).view();
         if view == EditorView::Write {
             self.manuscript
-                .update(cx, |manuscript, cx| manuscript.reveal_span(path, span, cx));
+                .update(cx, |manuscript, cx| manuscript.follow_span(path, span, cx));
         } else {
             self.code.update(cx, |code, cx| {
                 code.reveal_if_open(path, span, window, cx);
@@ -3108,6 +3130,51 @@ mod modes_driven {
         eprintln!("player screenshot: {}", shot.display());
     }
 
+    /// A story with speakers, action, a tag and a choice, in the at-cue
+    /// dialect — what the Player's Stage surface is for.
+    const STAGE_STORY: &str = "-> harbour\n\n=== harbour ===\nThe fog sits low on the water. #scene:harbour\n@MARA:<>\nYou came back.\nI didn't think you would.\n@JONAH:<>\n(quietly)<>\nI said I would.\nThe boats knock against the pier.\n* [Ask about the lamp] -> lamp\n+ [Say nothing] -> harbour\n\n=== lamp ===\n@MARA:<>\nIt hasn't been lit in years.\n@JONAH:<>\nWho's meant to keep it lit?\n* [Climb the tower] -> DONE\n* [Go home] -> DONE\n";
+
+    fn stage_project() -> std::path::PathBuf {
+        let dir = scratch_dir("stage");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"tower.ink\"\n\n[dialogue]\npreset = \"at-cue\"\n",
+        )
+        .expect("writing the config");
+        std::fs::write(dir.join("tower.ink"), STAGE_STORY).expect("writing the story");
+        dir
+    }
+
+    /// The Stage pictures: the same session in Write (beside the
+    /// manuscript, no Step) and Script (a centre tab, with Step), past
+    /// one choice so the echo shows, for checking by eye.
+    #[test]
+    fn the_stage_player_pictures() {
+        let mut h = Harness::new();
+        let window = h.open(&stage_project());
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        let state = |h: &mut Harness| h.read(|cx| player.read(cx).state());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        let waiting = |h: &mut Harness| {
+            h.settle_until(std::time::Duration::from_secs(10), |h| {
+                state(h) == crate::player::SessionState::AwaitingChoice
+            })
+        };
+        assert!(waiting(&mut h), "the story never reached its first choice");
+        h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
+        assert!(waiting(&mut h), "nor its second");
+        let shot = scratch_dir("shot").join("stage-write.png");
+        h.screenshot(window, &shot);
+        eprintln!("stage screenshot: {}", shot.display());
+        h.dispatch(window, ModeScript);
+        h.dispatch(window, super::Play);
+        let shot = scratch_dir("shot").join("stage-script.png");
+        h.screenshot(window, &shot);
+        eprintln!("stage screenshot: {}", shot.display());
+    }
+
     /// A small ink story with every row kind the sidebar draws.
     const OUTLINE_STORY: &str = "VAR gold = 5\nCONST NAME = \"Ada\"\n\n-> start\n\n=== start ===\nThe lamp gutters.\n* [Run] -> start.second\n\n= second\nYou run.\n-> DONE\n\n=== market ===\nStalls everywhere.\n-> DONE\n\n=== function twice(x) ===\n~ return x * 2\n";
 
@@ -3352,7 +3419,10 @@ mod modes_driven {
             )
         });
         assert_eq!(files, 300.);
-        assert_eq!(player, 280., "a drag past the Player's minimum stops there");
+        assert!(
+            (player - 0.3).abs() < f32::EPSILON,
+            "a drag past the Player's minimum share stops there: {player}"
+        );
         assert_eq!(strip, Some(gpui::px(300.)), "the title bar's strip follows");
 
         h.update(|cx| write.update(cx, |w, cx| w.save_panes(cx)));
