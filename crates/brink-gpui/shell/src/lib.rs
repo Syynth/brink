@@ -18,6 +18,7 @@ pub mod settings_editor;
 pub mod settings_keymap;
 pub mod settings_modal;
 pub mod settings_player;
+pub mod settings_spelling;
 mod skin;
 pub mod theme;
 pub mod tool_window;

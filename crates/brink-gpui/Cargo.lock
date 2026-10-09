@@ -970,6 +970,7 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "async-channel",
+ "block2 0.6.2",
  "brink-analyzer",
  "brink-db",
  "brink-driver",
@@ -985,6 +986,9 @@ dependencies = [
  "brink-syntax",
  "brink-syntax-native",
  "gpui-pre",
+ "objc2 0.6.4",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
  "rowan",
  "serde",
  "serde_json",

@@ -46,6 +46,7 @@ use crate::settings_modal::{
     MODAL_HEIGHT, MODAL_WIDTH, Scope, Section, SectionMeta, SettingsEvent, SettingsModal,
 };
 use crate::settings_player::PlayerSection;
+use crate::settings_spelling::SpellingSection;
 use crate::skin::StudioSkin;
 use crate::theme::{self, SelectTheme};
 use crate::tool_window::{Badge, TabSlot, ToolWindow, ToolWindowSpec, select_tab};
@@ -395,6 +396,25 @@ impl Workspace {
                 &["play", "player", "follow", "transcript", "font", "size"],
             ),
             player,
+        ));
+        let spelling = cx.new(SpellingSection::new);
+        this.add_settings_section(Section::new(
+            SectionMeta::new(
+                "spelling",
+                Scope::App,
+                "Spelling & Grammar",
+                &[
+                    "spelling",
+                    "spellcheck",
+                    "grammar",
+                    "harper",
+                    "apple",
+                    "intelligence",
+                    "prose",
+                    "typo",
+                ],
+            ),
+            spelling,
         ));
         let keymap = cx.new(|cx| KeymapSection::new(me, window, cx));
         this.add_settings_section(Section::new(

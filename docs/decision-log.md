@@ -5946,6 +5946,19 @@
 - **WHAT:** A line's (and a choice's) `source` is the union of its fragments' *emit sites*. Codegen records, in the `DebugInfo` section, each `EmitLine`'s own source location (the location `add_line` already receives for that use) keyed by bytecode offset; the runtime resolves a fragment through that table, falling back to the line table's entry. Line-table deduplication and the line table's `source_location` (the first occurrence's, for intl/xliff context) are unchanged. (#3670, option 2 — revised from option 1.)
 - **WHY:** Dedup shares one entry across every repeat of a text, so resolving through the entry dragged a line's span back to the text's first use — every repeated speaker cue banded the whole scene since its first appearance. Option 1 (resolve the emit site through `DebugInfo`'s statement entries) was tried first and was too coarse: a choice set resolved its second choice's text to the first choice's statement. Codegen already holds each use's exact location at the call that dedups it; keeping it is the only exact answer for both lines and choices.
 
+## Native studio prose checking on macOS: OS spelling, Harper grammar while typing, Apple Intelligence grammar on request
+- **WHEN:** 2026-10-08
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** On macOS the native (gpui) studio splits prose checking three ways:
+  - **Spelling** comes from the operating system's checker (`NSSpellChecker`). The project words go to it as a per-check ignore list, which matches **case-insensitively**. That is accepted, which amends "casing stays literal" for this checker.
+  - **Grammar while typing** comes from Harper by default, with its spelling findings left out. A setting picks the grammar used while typing: Harper, macOS's own quick grammar, or none.
+  - **Apple Intelligence grammar** (macOS 27's on-device model) runs only when the author asks: "Check Grammar" in the editor's context menu, on a selection. It never runs in the background. Where Apple Intelligence is unavailable, the menu item is not offered and nothing else changes.
+
+  On other platforms Harper still does everything. The web studio keeps Harper. Everything else in the prose rulings is unchanged: prose only, project words from symbols plus `[prose] dictionary` in `brink.toml`, and `[prose] dialect`. This narrows "Prose checking uses Harper" for macOS builds of the native studio. Design: `docs/gpui-prose-checker-spec.md`.
+- **WHY:** The rationale comes from the investigation the maintainer chose from (2026-10-08); the maintainer stated no reasons beyond picking these options. The OS spell checker honours words the author has taught macOS, and keeps project words out of the user's own dictionary. Case-insensitive matching is the OS's behaviour, and accepting it avoids a second filter. A probe of 53 grammar errors and 21 fiction passages found Apple's model the strongest grammar checker (45/53 caught, with no false flags on fiction), but it costs 2–5 s per new sentence in on-device compute. Running it only on request keeps that cost the author's choice. Without it, macOS's quick grammar is weak (10/53, against Harper's 30/53), so Harper stays the grammar while typing, and the setting lets an author drop Harper's false flags on dialogue (`goin'`, `...`, `OK`).
+
 ## Host manifest from brink.toml: `[host] manifest`, collected into the Environment, one loader for every producer
 - **WHEN:** 2026-10-09
 - **PROJECT:** brink
