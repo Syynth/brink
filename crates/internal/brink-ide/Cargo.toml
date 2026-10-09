@@ -27,6 +27,11 @@ thiserror.workspace = true
 # `dialect_infer`: the teach-by-example inference compiles its hypothesis
 # patterns once (the same `regex` the dialect resolver already runs on).
 regex.workspace = true
+# The host-manifest loader every producer shares (#1784, #3671):
+# `apply_project_config` loads `[host] manifest` through it, so the studios
+# and the CLI mean the same thing by a manifest. brink-web links this crate
+# already (#1306), so it adds nothing to the wasm.
+brink-environment = { workspace = true }
 
 [dev-dependencies]
 # `test-util` (issue #2168): `extract.rs`'s tests compile inline ink source
