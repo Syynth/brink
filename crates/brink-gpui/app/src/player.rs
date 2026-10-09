@@ -9,18 +9,21 @@
 
 use std::ops::Range;
 
-use brink_gpui_model::play::{Fault, PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep};
+use brink_gpui_model::play::{
+    Fault, PlayChoice, PlayCommand, PlayError, PlayOutcome, PlayStep, StopKind,
+};
 use brink_gpui_model::query::Location;
+use brink_gpui_shell::icons::BrinkIcon;
 use brink_gpui_shell::tool_window::{TabSlot, select_tab};
 use gpui::prelude::*;
 use gpui::{
-    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, IntoElement,
-    ListAlignment, ListState, Render, SharedString, Subscription, WeakEntity, Window, div, list,
-    px,
+    App, ClickEvent, Context, Entity, EventEmitter, FocusHandle, Focusable, FontWeight, Hsla,
+    IntoElement, ListAlignment, ListState, Render, SharedString, Subscription, WeakEntity, Window,
+    div, list, px,
 };
-use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::dock::{BasePanel, Panel, PanelEvent, PanelId, TabGroup};
-use gpui_component::{ActiveTheme as _, Disableable as _, Sizable as _, h_flex, v_flex};
+use gpui_component::tooltip::Tooltip;
+use gpui_component::{ActiveTheme as _, h_flex, v_flex};
 
 use crate::project::{Project, ProjectEvent};
 
@@ -45,6 +48,12 @@ pub enum PlayerEvent {
         path: String,
         line: u32,
     },
+    /// The header's ⋯: open Settings at the Player section — where the
+    /// Autoplay pace and the transcript's look live.
+    OpenSettings,
+    /// Write mode's close: the Player is a pane there, and its header is
+    /// the pane's.
+    Close,
     /// Something worth keeping outside the transcript — a compile failure
     /// or a runtime error. Restart clears the transcript; the Output log
     /// (`crate::output_log`) keeps the record.
@@ -99,6 +108,32 @@ pub struct Player {
     follow_paused: bool,
     /// Bumped on every start so a reply from before it is dropped.
     generation: u64,
+    /// The header's Show tags toggle.
+    show_tags: bool,
+    /// Where the last debug stop held the story, `(file, line)`.
+    held_at: Option<(String, u32)>,
+    /// The NOW line, in window coordinates (Write mode): a story line's
+    /// top sits here, level with its source in the manuscript.
+    now_y: f32,
+    /// The spacer under the transcript, so its last row can reach NOW.
+    tail: f32,
+    /// A row was scrolled to the top to be backed off to NOW once laid out.
+    to_now: bool,
+    /// `>>`: playing on by itself at the Settings pace, until a stop.
+    autoplay: bool,
+    /// The wait before autoplay's next line; dropping it cancels it.
+    autoplay_timer: Option<gpui::Task<()>>,
+    /// Where the next line starts, as the last line's stop says: what ▶
+    /// plays next, for the manuscript.
+    next_at: Option<(String, u32)>,
+    /// Drawn for Write mode: the transport has no Step there (decision
+    /// log 2026-10-08, "line-level breakpoints").
+    write_mode: bool,
+    /// The project's dialogue dialect, compiled for reading the
+    /// transcript as Stage runs, and the reading of the rows as of the
+    /// last render.
+    reader: Option<crate::player_stage::Reader>,
+    looks: Vec<crate::player_stage::Look>,
     focus: FocusHandle,
     tab: TabSlot,
     _subscriptions: Vec<Subscription>,
@@ -129,7 +164,7 @@ impl Player {
             project,
             entries: Vec::new(),
             choices: Vec::new(),
-            list: ListState::new(0, ListAlignment::Top, px(600.)),
+            list: ListState::new(1, ListAlignment::Top, px(600.)),
             busy: false,
             running: false,
             start_at: None,
@@ -137,6 +172,17 @@ impl Player {
             paused: false,
             follow_paused: false,
             generation: 0,
+            show_tags: false,
+            held_at: None,
+            now_y: 0.,
+            tail: 0.,
+            to_now: false,
+            autoplay: false,
+            autoplay_timer: None,
+            next_at: None,
+            write_mode: false,
+            reader: None,
+            looks: Vec::new(),
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
             _subscriptions: vec![on_project],
@@ -215,9 +261,13 @@ impl Player {
         self.generation += 1;
         self.entries.clear();
         self.choices.clear();
-        self.list = ListState::new(0, ListAlignment::Top, px(600.));
+        // One item past the transcript: the tail that lets its last row
+        // reach the NOW line.
+        self.list = ListState::new(1, ListAlignment::Top, px(600.));
         self.running = true;
         self.stale = false;
+        self.halt_autoplay();
+        self.next_at = None;
         // Play and Restart are the way back to following, as the web's are.
         self.follow_paused = false;
         if let Some(path) = &at {
@@ -225,6 +275,187 @@ impl Player {
         }
         self.start_at = at.clone();
         self.send(PlayCommand::Start { at }, cx);
+    }
+
+    /// Draw for Write mode (no Step) or Script.
+    pub fn set_write_mode(&mut self, write: bool, cx: &mut Context<Self>) {
+        if self.write_mode != write {
+            self.write_mode = write;
+            cx.notify();
+        }
+    }
+
+    /// End the story: the transport's ■.
+    pub fn stop(&mut self, cx: &mut Context<Self>) {
+        if !self.running {
+            return;
+        }
+        self.generation += 1;
+        self.running = false;
+        self.paused = false;
+        self.held_at = None;
+        self.next_at = None;
+        self.halt_autoplay();
+        self.choices.clear();
+        self.busy = false;
+        self.push(Entry::Notice("— stopped —".into()));
+        let task = self.project.read(cx).play(PlayCommand::Stop, cx);
+        task.detach();
+        cx.notify();
+    }
+
+    /// The big round button (decision log 2026-10-09): start when nothing
+    /// runs; pause autoplay while it plays; otherwise play the next line —
+    /// a held one included.
+    pub(crate) fn primary(&mut self, cx: &mut Context<Self>) {
+        if !self.running {
+            let at = self.start_at.clone();
+            self.start(at, cx);
+        } else if self.autoplay {
+            self.halt_autoplay();
+            cx.notify();
+        } else if self.can_advance() {
+            self.send(PlayCommand::Next, cx);
+        }
+    }
+
+    /// How many story lines the transcript holds.
+    #[cfg(test)]
+    pub(crate) fn line_count(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|e| matches!(e, Entry::Line { .. }))
+            .count()
+    }
+
+    /// Whether a command is in flight.
+    #[cfg(test)]
+    pub(crate) fn is_busy(&self) -> bool {
+        self.busy
+    }
+
+    /// Whether any story line so far contains `needle`.
+    #[cfg(test)]
+    pub(crate) fn has_line(&self, needle: &str) -> bool {
+        self.entries
+            .iter()
+            .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
+    }
+
+    /// Whether `>>` is playing on.
+    #[cfg(test)]
+    pub(crate) fn is_autoplaying(&self) -> bool {
+        self.autoplay
+    }
+
+    /// The line a breakpoint holds the story before, if one does.
+    #[cfg(test)]
+    pub(crate) fn held(&self) -> Option<&(String, u32)> {
+        self.held_at.as_ref().filter(|_| self.paused)
+    }
+
+    /// Whether a line can be played now: running, nothing in flight, and
+    /// no choice waiting to be made.
+    fn can_advance(&self) -> bool {
+        self.running && !self.busy && self.choices.is_empty()
+    }
+
+    /// `>>`: play on by itself at the Settings pace, until a breakpoint, a
+    /// choice or the end; a second press (or ▶) pauses it.
+    pub(crate) fn toggle_autoplay(&mut self, cx: &mut Context<Self>) {
+        if self.autoplay {
+            self.halt_autoplay();
+        } else if self.can_advance() {
+            self.autoplay = true;
+            self.send(PlayCommand::Next, cx);
+        }
+        cx.notify();
+    }
+
+    fn halt_autoplay(&mut self) {
+        self.autoplay = false;
+        self.autoplay_timer = None;
+    }
+
+    /// Autoplay's next line, after the pace's wait.
+    fn schedule_autoplay(&mut self, cx: &mut Context<Self>) {
+        let wait = std::time::Duration::from_secs_f32(
+            brink_gpui_shell::settings::AppSettings::get(cx).autoplay_ms / 1000.,
+        );
+        let generation = self.generation;
+        self.autoplay_timer = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = this.update(cx, |this, cx| {
+                if this.autoplay && this.generation == generation && this.can_advance() {
+                    this.send(PlayCommand::Next, cx);
+                }
+            });
+        }));
+    }
+
+    /// `>|`: straight to the next stop — a breakpoint, a choice, the end.
+    pub(crate) fn skip(&mut self, cx: &mut Context<Self>) {
+        if self.can_advance() {
+            self.halt_autoplay();
+            self.send(PlayCommand::Continue, cx);
+        }
+    }
+
+    /// Follow: on → off; paused → on (resumed); off → on.
+    fn toggle_follow(&mut self, cx: &mut Context<Self>) {
+        let on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
+        if on && self.follow_paused {
+            self.follow_paused = false;
+        } else {
+            brink_gpui_shell::settings::update(cx, |s| s.follow_in_editor = !on);
+            self.follow_paused = false;
+        }
+        cx.notify();
+    }
+
+    /// Where the story is now: the newest line with a source.
+    fn current_source(&self) -> Option<&Location> {
+        self.entries.iter().rev().find_map(|e| match e {
+            Entry::Line { source, .. } => source.as_ref(),
+            _ => None,
+        })
+    }
+
+    /// Where the session has been, for the manuscript's gutter: each
+    /// played line's source, the active line's, and a held line.
+    #[must_use]
+    pub fn trail(&self) -> PlayTrail {
+        let active = self.active_row();
+        PlayTrail {
+            played: self
+                .entries
+                .iter()
+                .enumerate()
+                .filter(|(ix, _)| Some(*ix) != active)
+                .filter_map(|(_, e)| match e {
+                    Entry::Line {
+                        source: Some(loc), ..
+                    } => Some(loc.clone()),
+                    _ => None,
+                })
+                .collect(),
+            active: active.and_then(|ix| match self.entries.get(ix) {
+                Some(Entry::Line { source, .. }) => source.clone(),
+                _ => None,
+            }),
+            held: self.held_at.clone().filter(|_| self.paused),
+            next: self.next_at.clone().filter(|_| self.running),
+        }
+    }
+
+    /// The index of the newest story line — the active row.
+    fn active_row(&self) -> Option<usize> {
+        if !self.running {
+            return None;
+        }
+        self.entries
+            .iter()
+            .rposition(|e| matches!(e, Entry::Line { .. }))
     }
 
     /// Start again from where the last start began.
@@ -242,6 +473,12 @@ impl Player {
     /// only a choice while the Player has focus and is showing choices,
     /// and a global `1` would fight every text field in the studio.
     fn on_key(&mut self, event: &gpui::KeyDownEvent, _window: &mut Window, cx: &mut Context<Self>) {
+        if event.keystroke.key == "space" && !event.keystroke.modifiers.modified() {
+            if self.choices.is_empty() {
+                self.primary(cx);
+            }
+            return;
+        }
         if self.busy || self.choices.is_empty() {
             return;
         }
@@ -260,7 +497,7 @@ impl Player {
         self.choose(index, cx);
     }
 
-    fn choose(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(crate) fn choose(&mut self, index: usize, cx: &mut Context<Self>) {
         if self.busy {
             return;
         }
@@ -292,9 +529,25 @@ impl Player {
                 if this.generation == generation {
                     this.busy = false;
                     match outcome {
-                        Ok(outcome) => this.apply(outcome, cx),
+                        Ok(outcome) => {
+                            // Autoplay goes on only past an ordinary line.
+                            let line = outcome.error.is_none()
+                                && outcome
+                                    .stop
+                                    .as_ref()
+                                    .is_some_and(|stop| stop.kind == StopKind::Line);
+                            this.apply(outcome, cx);
+                            if this.autoplay {
+                                if line && this.can_advance() {
+                                    this.schedule_autoplay(cx);
+                                } else {
+                                    this.halt_autoplay();
+                                }
+                            }
+                        }
                         Err(e) => {
                             this.running = false;
+                            this.halt_autoplay();
                             let text = SharedString::from(format!("{e:#}"));
                             this.push(Entry::Error {
                                 text: text.clone(),
@@ -316,11 +569,17 @@ impl Player {
 
     fn apply(&mut self, outcome: PlayOutcome, cx: &mut Context<Self>) {
         // Every outcome says afresh whether the flow is held by the
-        // debugger: a stop that isn't the story's own end.
-        self.paused = outcome
-            .stop
-            .as_ref()
-            .is_some_and(|stop| stop.reason != "terminal");
+        // debugger — a breakpoint, a watch, a step — rather than resting
+        // after a line or at a place the story itself yields.
+        let kind = outcome.stop.as_ref().map(|stop| stop.kind);
+        self.paused = kind.is_some_and(StopKind::holds);
+        let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
+        self.held_at = if self.paused { at.clone() } else { None };
+        self.next_at = if kind == Some(StopKind::Line) {
+            at
+        } else {
+            None
+        };
         // A Start arms the marked lines against the program it just
         // compiled, and says which of them bound to nothing. The Project
         // owns the marks, so it is told: a mark that can never hit is
@@ -330,9 +589,10 @@ impl Player {
             self.project
                 .update(cx, |project, cx| project.set_unbound(unbound, cx));
         }
-        // Where a debug verb came to rest — the transcript says so, and
-        // the studio reveals it.
-        if let Some(stop) = &outcome.stop {
+        // Where the debugger holds the story — the transcript says so, and
+        // the studio reveals it. A line played, a choice point and the end
+        // are the story's own rhythm, and say nothing.
+        if let Some(stop) = outcome.stop.as_ref().filter(|stop| stop.kind.holds()) {
             let text: SharedString = match &stop.at {
                 Some((path, line)) => {
                     format!("— stopped at {path}:{line} ({})", stop.reason).into()
@@ -437,38 +697,145 @@ impl Player {
 
     fn push(&mut self, entry: Entry) {
         let ix = self.entries.len();
+        let line = matches!(entry, Entry::Line { .. });
         self.entries.push(entry);
         self.list.splice(ix..ix, 1);
-        self.list.scroll_to_reveal_item(ix);
+        // Beside the manuscript a story line's top sits on the NOW line,
+        // where the manuscript puts its source (decision log 2026-10-09);
+        // otherwise, and for chrome rows, just keep the row in view.
+        // The row goes to the top first; the rows above it are measured as
+        // that lays out, and only then can it be backed off to NOW (a turn
+        // pushes several rows before any of them has a height).
+        if self.write_mode && line {
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: ix,
+                offset_in_item: px(0.),
+            });
+            self.to_now = true;
+        } else {
+            self.list.scroll_to_reveal_item(ix);
+        }
     }
 
+    /// A speaker's colour: a theme colour picked by the name, so it is
+    /// the same speaker in the same colour for the whole session.
+    fn speaker_colour(speaker: &str, cx: &App) -> Hsla {
+        let t = brink_gpui_shell::theme::current(cx).tokens;
+        let slots = [
+            t.syn_number,
+            t.symbol_file,
+            t.success,
+            t.symbol_knot,
+            t.syn_label,
+            t.info,
+            t.warning,
+            t.symbol_stitch,
+        ];
+        brink_gpui_shell::theme::hsla(slots[crate::player_stage::colour_slot(speaker, slots.len())])
+    }
+
+    /// One transcript row on the Stage surface: everything hangs off the
+    /// spine; a speaker's run is a rule in their colour with the name
+    /// printed once; action is dimmed; the reader's pick is a ring on the
+    /// spine with its `*` / `+`.
     fn render_entry(&self, ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use crate::player_stage::Role;
         let theme = cx.theme();
-        let (muted, danger, primary) = (theme.muted_foreground, theme.danger, theme.primary);
+        let (fg, muted, danger, border, primary, hover) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.danger,
+            theme.border,
+            theme.primary,
+            theme.muted.opacity(0.4),
+        );
+        let knot =
+            brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.symbol_knot);
         let Some(entry) = self.entries.get(ix) else {
-            return div().into_any_element();
+            // The tail: room under the last row for it to reach NOW.
+            return div().h(px(self.tail)).into_any_element();
         };
+        let spine = div()
+            .absolute()
+            .left(px(SPINE_X))
+            .top_0()
+            .bottom_0()
+            .w(px(2.))
+            .bg(border.opacity(0.6));
+        let row = div().id(("play-row", ix)).relative().w_full().child(spine);
         match entry {
             Entry::Line { text, tags, source } => {
-                let row = h_flex()
-                    .id(("play-line", ix))
-                    .w_full()
-                    .items_baseline()
-                    .gap_2()
-                    .px_4()
-                    .py_1()
-                    // `min_w_0`: a flex item's minimum is its content by
-                    // default, so a long line refused to shrink and pushed
-                    // its own tags off the right edge instead of wrapping.
-                    .child(div().flex_1().min_w_0().child(text.clone()))
-                    .children(
-                        tags.iter()
-                            .map(|tag| div().text_xs().text_color(muted).child(format!("# {tag}"))),
-                    );
+                let (role, shown) = self.looks.get(ix).map_or_else(
+                    || (Role::Narration, text.to_string()),
+                    |look| (look.role.clone(), look.text.clone()),
+                );
+                let active = self.active_row() == Some(ix);
+                let mut body = v_flex().w_full().py(px(5.)).pr_4();
+                let mut row = row;
+                match &role {
+                    Role::Speech { speaker, cue } => {
+                        let colour = Self::speaker_colour(speaker, cx);
+                        row = row.child(
+                            div()
+                                .absolute()
+                                .left(px(SPINE_X - 1.))
+                                .top(px(if *cue { 10. } else { 0. }))
+                                .bottom_0()
+                                .w(px(4.))
+                                .when(*cue, |el| el.rounded_t(px(2.)))
+                                .bg(colour),
+                        );
+                        if *cue {
+                            body = body.child(
+                                div()
+                                    .pl(px(TEXT_X))
+                                    .pt(px(6.))
+                                    .text_size(px(11.))
+                                    .font_weight(FontWeight::SEMIBOLD)
+                                    .text_color(colour)
+                                    .child(speaker.to_uppercase()),
+                            );
+                        }
+                        if !shown.is_empty() {
+                            body = body.child(div().pl(px(SPEECH_X)).text_color(fg).child(shown));
+                        }
+                    }
+                    Role::Action => {
+                        body = body.child(div().pl(px(TEXT_X)).text_color(muted).child(shown));
+                    }
+                    Role::Narration | Role::Chrome => {
+                        body = body.child(div().pl(px(TEXT_X)).text_color(fg).child(shown));
+                    }
+                }
+                if self.show_tags && !tags.is_empty() {
+                    body = body.child(h_flex().pl(px(TEXT_X)).pt_1().gap_1().children(
+                        tags.iter().map(|tag| {
+                            div()
+                                .px_1()
+                                .rounded_sm()
+                                .border_1()
+                                .border_color(border)
+                                .text_xs()
+                                .text_color(muted)
+                                .child(format!("#{tag}"))
+                        }),
+                    ));
+                }
+                let row = row.child(body).when(active, |el| {
+                    el.bg(primary.opacity(0.14)).child(
+                        div()
+                            .absolute()
+                            .left_0()
+                            .top_0()
+                            .bottom_0()
+                            .w(px(3.))
+                            .bg(primary),
+                    )
+                });
                 match source.clone() {
                     Some(loc) => row
                         .cursor_pointer()
-                        .hover(|el| el.bg(theme.muted.opacity(0.4)))
+                        .when(!active, |el| el.hover(move |s| s.bg(hover)))
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.emit(PlayerEvent::Navigate {
                                 path: loc.path.clone(),
@@ -479,27 +846,45 @@ impl Player {
                     None => row.into_any_element(),
                 }
             }
-            Entry::Chosen { text, sticky } => div()
-                .px_4()
-                .py_1()
-                .text_color(primary)
-                .child(format!("{} {text}", if *sticky { "+" } else { "*" }))
+            Entry::Chosen { text, sticky } => row
+                .py(px(6.))
+                .child(
+                    Self::choice_mark(*sticky, 24., knot)
+                        .absolute()
+                        .left(px(SPINE_X - 11.))
+                        .top(px(5.))
+                        .bg(theme.background),
+                )
+                .child(
+                    div()
+                        .pl(px(TEXT_X))
+                        .py(px(2.))
+                        .text_color(knot)
+                        .child(text.clone()),
+                )
                 .into_any_element(),
-            Entry::Notice(text) => div()
-                .px_4()
-                .py_1()
-                .text_xs()
-                .text_color(muted)
-                .child(text.clone())
+            Entry::Notice(text) => row
+                .child(
+                    div()
+                        .pl(px(TEXT_X))
+                        .py_1()
+                        .text_xs()
+                        .text_color(muted)
+                        .child(text.clone()),
+                )
                 .into_any_element(),
             Entry::Error { text, at } => {
-                let row = div().px_4().py_1().text_xs().text_color(danger);
+                let body = div()
+                    .pl(px(TEXT_X))
+                    .py_1()
+                    .text_xs()
+                    .text_color(danger)
+                    .child(text.clone());
                 match at.clone() {
                     Some((path, line)) => row
-                        .id(("play-error", ix))
                         .cursor_pointer()
-                        .hover(|el| el.bg(theme.muted.opacity(0.4)))
-                        .child(text.clone())
+                        .hover(move |s| s.bg(hover))
+                        .child(body)
                         .on_click(cx.listener(move |_, _: &ClickEvent, _, cx| {
                             cx.emit(PlayerEvent::Stopped {
                                 path: path.clone(),
@@ -507,40 +892,470 @@ impl Player {
                             });
                         }))
                         .into_any_element(),
-                    None => row.child(text.clone()).into_any_element(),
+                    None => row.child(body).into_any_element(),
                 }
             }
         }
     }
 
-    fn render_prompt(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+    /// A choice's ring, with its `*` (once only) or `+` (sticky) drawn
+    /// centred in it — a font's asterisk sits up at cap height, which
+    /// left it floating in the ring's top.
+    fn choice_mark(sticky: bool, size: f32, colour: Hsla) -> gpui::Div {
+        div()
+            .size(px(size))
+            .flex_none()
+            .rounded_full()
+            .border_2()
+            .border_color(colour)
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(brink_gpui_shell::icons::icon(
+                if sticky {
+                    BrinkIcon::ChoiceSticky
+                } else {
+                    BrinkIcon::ChoiceOnce
+                },
+                px(size * 0.55),
+                colour,
+            ))
+    }
+
+    /// The live choices as cards above the transport strip, each with its
+    /// `*` / `+` and its number (the digit picks it).
+    fn render_cards(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         if self.choices.is_empty() {
             return None;
         }
         let theme = cx.theme();
+        let (fg, muted, border, card) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.border,
+            theme.secondary,
+        );
+        let knot =
+            brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.symbol_knot);
         let busy = self.busy;
         Some(
             v_flex()
                 .w_full()
-                .gap_1()
-                .px_3()
-                .py_2()
-                .border_t_1()
-                .border_color(theme.border)
+                .gap(px(8.))
+                .px_4()
+                .pt(px(8.))
+                .pb(px(10.))
                 .children(self.choices.iter().enumerate().map(|(n, choice)| {
                     let index = choice.index;
-                    Button::new(("play-choice", index))
-                        .outline()
-                        .small()
-                        .disabled(busy)
-                        .label(format!("{}. {}", n + 1, choice.text.trim()))
-                        .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                            this.choose(index, cx);
-                        }))
+                    h_flex()
+                        .id(("play-choice", index))
+                        .w_full()
+                        .h(px(40.))
+                        .px(px(12.))
+                        .gap(px(12.))
+                        .items_center()
+                        .rounded(px(10.))
+                        .border_1()
+                        .border_color(border)
+                        .bg(card)
+                        .text_color(fg)
+                        .when(!busy, |el| {
+                            el.cursor_pointer()
+                                .hover(move |s| s.border_color(knot))
+                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                    this.choose(index, cx);
+                                }))
+                        })
+                        .child(Self::choice_mark(choice.sticky, 22., knot))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(choice.text.trim().to_owned()),
+                        )
+                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()))
                 }))
                 .into_any_element(),
         )
     }
+
+    /// A header or strip button: an icon, a tooltip, lit when `on`.
+    fn icon_button(
+        id: &'static str,
+        icon: BrinkIcon,
+        tooltip: &'static str,
+        on: Option<Hsla>,
+        enabled: bool,
+        cx: &App,
+    ) -> gpui::Stateful<gpui::Div> {
+        let theme = cx.theme();
+        let (fg, hover) = (theme.muted_foreground, theme.muted.opacity(0.5));
+        div()
+            .id(id)
+            .size(px(30.))
+            .flex_none()
+            .rounded(px(7.))
+            .flex()
+            .items_center()
+            .justify_center()
+            .border_1()
+            .border_color(gpui::transparent_black())
+            .when_some(on, |el, c| {
+                el.bg(c.opacity(0.14)).border_color(c.opacity(0.4))
+            })
+            .when(enabled, |el| {
+                el.cursor_pointer().hover(move |s| s.bg(hover))
+            })
+            .when(!enabled, |el| el.opacity(0.3))
+            .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+            .child(brink_gpui_shell::icons::icon(
+                icon,
+                px(16.),
+                on.unwrap_or(fg),
+            ))
+    }
+
+    /// What the header says about the session, and in what colour.
+    fn status(&self, cx: &App) -> (SharedString, Hsla) {
+        let theme = cx.theme();
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let hsla = brink_gpui_shell::theme::hsla;
+        let place = |loc: &Location| {
+            let line = self
+                .project
+                .read(cx)
+                .loaded_source(&loc.path)
+                .and_then(|text| text.get(..loc.start as usize))
+                .map_or(0, |before| before.matches('\n').count() + 1);
+            format!("{} {line}", loc.path)
+        };
+        if self.stale {
+            return ("Sources changed — Restart".into(), theme.warning);
+        }
+        if self.busy {
+            return ("Working\u{2026}".into(), theme.muted_foreground);
+        }
+        if let Some((path, line)) = &self.held_at
+            && self.paused
+        {
+            return (format!("Held · {path} {line}").into(), hsla(tokens.warning));
+        }
+        if !self.choices.is_empty() {
+            return ("Choose".into(), hsla(tokens.symbol_knot));
+        }
+        if self.autoplay {
+            return ("Autoplaying".into(), hsla(tokens.info));
+        }
+        if self.running {
+            let at = self.current_source().map(place);
+            return (
+                at.map_or_else(|| "Playing".to_owned(), |at| format!("Playing · {at}"))
+                    .into(),
+                hsla(tokens.success),
+            );
+        }
+        if self.entries.is_empty() {
+            ("Ready".into(), theme.muted_foreground)
+        } else {
+            ("Ended".into(), theme.muted_foreground)
+        }
+    }
+
+    /// The session header (decision log 2026-10-09): the status — a click
+    /// returns to the current line — then Follow, Show tags, Save state,
+    /// and ⋯ for settings.
+    fn render_header(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let (bar, border, fg, primary) = (
+            theme.title_bar,
+            theme.border,
+            theme.foreground,
+            theme.primary,
+        );
+        let amber =
+            brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.warning);
+        let (label, colour) = self.status(cx);
+        let follow_on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
+        let (follow_icon, follow_lit, follow_tip) = match (follow_on, self.follow_paused) {
+            (true, true) => (
+                BrinkIcon::PlayerFollowPaused,
+                Some(amber),
+                "Following paused while you edit — click to resume",
+            ),
+            (true, false) => (
+                BrinkIcon::PlayerFollow,
+                Some(primary),
+                "Following the manuscript",
+            ),
+            (false, _) => (BrinkIcon::PlayerFollow, None, "Follow the manuscript"),
+        };
+        h_flex()
+            .h(px(36.))
+            .flex_none()
+            .pl(px(14.))
+            .pr(px(6.))
+            .gap(px(2.))
+            .items_center()
+            .bg(bar)
+            .border_b_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .id("player-status")
+                    .min_w_0()
+                    .gap(px(7.))
+                    .items_center()
+                    .text_xs()
+                    .text_color(fg)
+                    .cursor_pointer()
+                    .child(div().size(px(7.)).flex_none().rounded_full().bg(colour))
+                    .child(div().truncate().child(label))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        if let Some(loc) = this.current_source().cloned() {
+                            cx.emit(PlayerEvent::Follow {
+                                path: loc.path,
+                                span: loc.start as usize..loc.end as usize,
+                            });
+                        }
+                    })),
+            )
+            .child(div().flex_1())
+            .child(
+                Self::icon_button(
+                    "player-follow",
+                    follow_icon,
+                    follow_tip,
+                    follow_lit,
+                    true,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_follow(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-tags",
+                    BrinkIcon::PlayerTags,
+                    "Show tags",
+                    self.show_tags.then_some(primary),
+                    true,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                    this.show_tags = !this.show_tags;
+                    cx.notify();
+                })),
+            )
+            .child(Self::icon_button(
+                "player-save",
+                BrinkIcon::PlayerSave,
+                "Save state (coming)",
+                None,
+                false,
+                cx,
+            ))
+            .child(
+                Self::icon_button(
+                    "player-more",
+                    BrinkIcon::Dots,
+                    "Player settings",
+                    None,
+                    true,
+                    cx,
+                )
+                .on_click(
+                    cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::OpenSettings)),
+                ),
+            )
+            .when(self.write_mode, |el| {
+                el.child(
+                    Self::icon_button(
+                        "player-close",
+                        BrinkIcon::PlayerClose,
+                        "Close the Player",
+                        None,
+                        true,
+                        cx,
+                    )
+                    .on_click(cx.listener(|_, _: &ClickEvent, _, cx| cx.emit(PlayerEvent::Close))),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// The transport strip (decision log 2026-10-09): Restart and Stop at
+    /// its edge; centred `|<` · `<<` · ▶ · `>>` · `>|`; in Script mode,
+    /// Step and Step Instruction after them; and a hint saying what space
+    /// does now. Rewind is #3665; Autoplay, Skip and line-at-a-time
+    /// Continue come with the hook-up — drawn, not yet live.
+    fn render_strip(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let (bar, border, muted, primary, bg) = (
+            theme.title_bar,
+            theme.border,
+            theme.muted_foreground,
+            theme.primary,
+            theme.background,
+        );
+        let started = !self.entries.is_empty();
+        let can_primary = !self.running || self.autoplay || self.can_advance();
+        let advance = self.can_advance();
+        let hint: SharedString = if self.autoplay {
+            "space · pause".into()
+        } else if !self.choices.is_empty() {
+            format!("1\u{2013}{} · choose", self.choices.len()).into()
+        } else if !self.running {
+            "space · play".into()
+        } else if self.paused {
+            "space · play the held line".into()
+        } else {
+            "space · continue".into()
+        };
+        let (primary_icon, primary_tip) = if self.autoplay {
+            (BrinkIcon::TransportPause, "Pause (space)")
+        } else {
+            (BrinkIcon::TransportPlay, "Continue (space)")
+        };
+        let stepping = !self.write_mode && self.paused && !self.busy;
+        h_flex()
+            .relative()
+            .h(px(58.))
+            .flex_none()
+            .justify_center()
+            .items_center()
+            .gap(px(12.))
+            .bg(bar)
+            .border_t_1()
+            .border_color(border)
+            .child(
+                h_flex()
+                    .absolute()
+                    .left(px(10.))
+                    .gap(px(2.))
+                    .child(
+                        Self::icon_button(
+                            "player-restart",
+                            BrinkIcon::TransportRestart,
+                            "Restart",
+                            None,
+                            started,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.restart(cx))),
+                    )
+                    .child(
+                        Self::icon_button(
+                            "player-stop",
+                            BrinkIcon::TransportStop,
+                            "Stop — end the story",
+                            None,
+                            self.running,
+                            cx,
+                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx))),
+                    ),
+            )
+            .child(Self::icon_button(
+                "player-prev",
+                BrinkIcon::TransportPrev,
+                "Back to just before the last choice (coming)",
+                None,
+                false,
+                cx,
+            ))
+            .child(Self::icon_button(
+                "player-back",
+                BrinkIcon::TransportBack,
+                "Rewind (coming)",
+                None,
+                false,
+                cx,
+            ))
+            .child(
+                div()
+                    .id("player-primary")
+                    .size(px(44.))
+                    .flex_none()
+                    .rounded_full()
+                    .bg(primary)
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .when(!can_primary, |el| el.opacity(0.3))
+                    .when(can_primary, |el| el.cursor_pointer())
+                    .tooltip(move |window, cx| Tooltip::new(primary_tip).build(window, cx))
+                    .child(brink_gpui_shell::icons::icon(primary_icon, px(18.), bg))
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.primary(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-auto",
+                    BrinkIcon::TransportAuto,
+                    "Autoplay — on at the reading pace until a breakpoint, a choice or the end",
+                    self.autoplay.then_some(primary),
+                    self.autoplay || advance,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_autoplay(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-skip",
+                    BrinkIcon::TransportSkip,
+                    "Skip to the next breakpoint, choice or end",
+                    None,
+                    advance,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.skip(cx))),
+            )
+            .when(!self.write_mode, |el| {
+                el.child(
+                    Self::icon_button(
+                        "player-step",
+                        BrinkIcon::TransportStep,
+                        "Step (F10)",
+                        None,
+                        stepping,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.debug(PlayCommand::StepLine, cx);
+                    })),
+                )
+                .child(
+                    Self::icon_button(
+                        "player-step-instruction",
+                        BrinkIcon::TransportStepInstruction,
+                        "Step Instruction (F11)",
+                        None,
+                        stepping,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                        this.debug(PlayCommand::StepInstruction, cx);
+                    })),
+                )
+            })
+            .child(
+                div()
+                    .absolute()
+                    .right(px(14.))
+                    .text_xs()
+                    .text_color(muted)
+                    .child(hint),
+            )
+            .into_any_element()
+    }
+}
+
+/// Where a session has been (`Player::trail`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlayTrail {
+    pub played: Vec<Location>,
+    pub active: Option<Location>,
+    pub held: Option<(String, u32)>,
+    pub next: Option<(String, u32)>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`
@@ -631,71 +1446,90 @@ impl Panel for Player {
 }
 
 impl Render for Player {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let theme = cx.theme();
-        let (muted, warn, border) = (theme.muted_foreground, theme.warning, theme.border);
-        let started = !self.entries.is_empty();
-        let status: Option<(SharedString, gpui::Hsla)> = if self.stale {
-            Some(("sources changed — Restart to pick them up".into(), warn))
-        } else if self.busy {
-            Some(("running…".into(), muted))
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The NOW line, and the room the transcript's end needs to reach it
+        // (as the list last laid out).
+        self.now_y = now_line(window);
+        let viewport = self.list.viewport_bounds();
+        let tail = if self.write_mode {
+            (f32::from(viewport.bottom()) - self.now_y).max(0.)
         } else {
-            self.start_at
-                .as_ref()
-                .map(|at| (format!("from {at}").into(), muted))
+            0.
         };
-        let prompt = self.render_prompt(cx);
+        if (tail - self.tail).abs() > 0.5 {
+            self.tail = tail;
+            let n = self.entries.len();
+            self.list.remeasure_items(n..n + 1);
+        }
+        if std::mem::take(&mut self.to_now) {
+            cx.on_next_frame(window, |this, _, cx| {
+                let top = f32::from(this.list.viewport_bounds().origin.y);
+                if this.now_y > top {
+                    this.list.scroll_by(px(top - this.now_y));
+                    cx.notify();
+                }
+            });
+        }
+        // Read the transcript as Stage runs, through the project's dialect
+        // (rebuilt only when the dialect changes).
+        let dialect = self.project.read(cx).dialogue().0.cloned();
+        match (&dialect, &self.reader) {
+            (Some(d), Some(reader)) if reader.is_for(d) => {}
+            (Some(d), _) => self.reader = crate::player_stage::Reader::new(d),
+            (None, _) => self.reader = None,
+        }
+        let looks = {
+            let rows: Vec<Option<&str>> = self
+                .entries
+                .iter()
+                .map(|e| match e {
+                    Entry::Line { text, .. } => Some(text.as_ref()),
+                    _ => None,
+                })
+                .collect();
+            let echo: Vec<bool> = self
+                .entries
+                .iter()
+                .map(|e| matches!(e, Entry::Chosen { .. }))
+                .collect();
+            crate::player_stage::read(&rows, &echo, self.reader.as_ref())
+        };
+        self.looks = looks;
+
+        let theme = cx.theme();
+        let (muted, surface) = (theme.muted_foreground, theme.background);
+        let started = !self.entries.is_empty();
         let prose_size = brink_gpui_shell::settings::AppSettings::get(cx).player_size();
+        let header = self.render_header(cx);
+        let cards = self.render_cards(cx);
+        let strip = self.render_strip(cx);
 
         v_flex()
             .id("player")
             .track_focus(&self.focus)
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
+            .bg(surface)
             .text_sm()
-            .child(
-                h_flex()
-                    .w_full()
-                    .gap_2()
-                    .px_2()
-                    .py_1()
-                    .border_b_1()
-                    .border_color(border)
-                    .child(
-                        Button::new("play-restart")
-                            .ghost()
-                            .xsmall()
-                            .label("Restart")
-                            .disabled(!started)
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.restart(cx);
-                            })),
-                    )
-                    .child(
-                        Button::new("play-from-start")
-                            .ghost()
-                            .xsmall()
-                            .label("From start")
-                            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                                this.start(None, cx);
-                            })),
-                    )
-                    .when_some(status, |el, (text, color)| {
-                        el.child(div().text_xs().text_color(color).child(text))
-                    }),
-            )
+            .child(header)
             .when(!started, |el| {
-                el.child(div().p_4().text_xs().text_color(muted).child(
-                    "Nothing is running. Play runs the story from its entry; \
-                     \"Play from here\" on a knot in the Binder starts there.",
-                ))
+                el.child(
+                    div()
+                        .flex_1()
+                        .p_4()
+                        .pl(px(TEXT_X))
+                        .text_xs()
+                        .text_color(muted)
+                        .child(
+                            "Nothing is running. ▶ plays the story from its entry; \
+                             \"Play from here\" on a knot starts there.",
+                        ),
+                )
             })
             .when(started, |el| {
                 el.child(
                     // The transcript's own size — the reading surface, not
-                    // the chrome around it. Set on the list rather than the
-                    // panel so the header, the status and the choice
-                    // buttons stay at the studio's scale.
+                    // the chrome around it.
                     list(
                         self.list.clone(),
                         cx.processor(|this, ix, _window, cx| this.render_entry(ix, cx)),
@@ -705,9 +1539,25 @@ impl Render for Player {
                     .text_size(px(prose_size)),
                 )
             })
-            .children(prompt)
+            .children(cards)
+            .child(strip)
     }
 }
+
+/// Where the NOW line sits, as a share of the window's height: the Player
+/// and the manuscript both put the current line's top there.
+const NOW_FRACTION: f32 = 0.4;
+
+/// The NOW line in `window`'s coordinates.
+pub(crate) fn now_line(window: &Window) -> f32 {
+    f32::from(window.viewport_size().height) * NOW_FRACTION
+}
+
+/// Where the spine runs, where plain text starts, and where a speaker's
+/// lines start (indented under their name, ruled 2026-09-02).
+const SPINE_X: f32 = 35.;
+const TEXT_X: f32 = 60.;
+const SPEECH_X: f32 = 72.;
 
 #[cfg(test)]
 mod tests {

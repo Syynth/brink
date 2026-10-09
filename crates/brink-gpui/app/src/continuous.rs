@@ -59,6 +59,10 @@ type Section = (Entity<EditorState>, f32);
 /// the breakpoints change (`crate::gutter`).
 type Gutters = Rc<RefCell<HashMap<String, Rc<crate::gutter::Marks>>>>;
 
+/// Where the running story has been, as the Player last said — kept so a
+/// section mounted later picks it up too.
+type TrailCell = Rc<RefCell<crate::player::PlayTrail>>;
+
 /// Each mounted section's fold candidates, by path: the cell its
 /// highlighter reports them from, refreshed after each analysis.
 type Folds = Rc<RefCell<HashMap<String, crate::document::FoldCell>>>;
@@ -211,6 +215,13 @@ pub struct ContinuousView {
     pending_focus: Option<String>,
     /// Each section's breakpoint column.
     gutters: Gutters,
+    /// The pending reveal is the Player following: it lands its line on
+    /// the NOW line rather than near the top.
+    reveal_now: bool,
+    /// The NOW line, in window coordinates, as of the last frame.
+    now_y: f32,
+    /// The running story's trail, for the sections' gutters and bands.
+    trail: TrailCell,
     /// Each section's fold candidates.
     folds: Folds,
     /// Frames a reveal may wait for its section to lay out, so it can land
@@ -317,6 +328,9 @@ impl ContinuousView {
             pins: crate::sticky_lines::Pins::default(),
             pending_focus: None,
             gutters: Rc::default(),
+            reveal_now: false,
+            now_y: 0.,
+            trail: Rc::default(),
             folds: Rc::default(),
             reveal_retries: 0,
             _subscriptions: vec![watch],
@@ -451,6 +465,18 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// Reveal a span for the Player: as [`Self::reveal_span`], with the
+    /// line's top on the NOW line, level with the Player's current row.
+    pub fn follow_span(
+        &mut self,
+        path: &str,
+        span: std::ops::Range<usize>,
+        cx: &mut Context<Self>,
+    ) {
+        self.reveal_span(path, span, cx);
+        self.reveal_now = true;
+    }
+
     fn apply_pending_reveal(&mut self, cx: &mut Context<Self>) {
         let Some((path, span)) = self.pending_reveal.clone() else {
             return;
@@ -500,7 +526,12 @@ impl ContinuousView {
             return;
         };
         self.pending_reveal = None;
-        let reserve = (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height;
+        let reserve = match self.last_view.get() {
+            Some(view) if std::mem::take(&mut self.reveal_now) => {
+                self.now_y - f32::from(view.origin.y)
+            }
+            _ => (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height,
+        };
         let offset = (SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
@@ -702,6 +733,34 @@ impl ContinuousView {
             }
             if let Some(cell) = self.folds.borrow().get(&path).cloned() {
                 crate::document::request_folds(&self.project, &path, &editor, &cell, cx);
+            }
+        }
+    }
+
+    /// Take the running story's trail, and redraw each mounted section
+    /// whose part of it changed.
+    pub(crate) fn set_trail(&mut self, trail: crate::player::PlayTrail, cx: &mut Context<Self>) {
+        if *self.trail.borrow() == trail {
+            return;
+        }
+        *self.trail.borrow_mut() = trail;
+        let editors: Vec<(String, Entity<EditorState>)> = self
+            .editors
+            .borrow()
+            .iter()
+            .map(|(path, (editor, _))| (path.clone(), editor.clone()))
+            .collect();
+        for (path, editor) in editors {
+            let Some(marks) = self.gutters.borrow().get(&path).cloned() else {
+                continue;
+            };
+            let lines = crate::gutter::trail_in(
+                &self.trail.borrow(),
+                &path,
+                editor.read(cx).value().as_ref(),
+            );
+            if marks.set_trail(lines) {
+                editor.update(cx, |_, cx| cx.notify());
             }
         }
     }
@@ -1004,6 +1063,7 @@ impl ContinuousView {
         read: &ReadCell,
         prose: &ProseCache,
         gutters: &Gutters,
+        trail: &TrailCell,
         folds: &Folds,
         path: &str,
         is_last: bool,
@@ -1066,6 +1126,7 @@ impl ContinuousView {
             crate::navigation::install(&mut state, project, key.clone(), origin, navigate);
             // The breakpoint column, as a tab's editor has it.
             let marks = crate::gutter::install(&mut state, weak.clone(), key.clone(), cx);
+            marks.set_trail(crate::gutter::trail_in(&trail.borrow(), &key, &source));
             gutters.borrow_mut().insert(key.to_string(), marks);
 
             state.set_value(source, window, cx);
@@ -1226,6 +1287,7 @@ impl gpui::Focusable for ContinuousView {
 
 impl Render for ContinuousView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        self.now_y = crate::player::now_line(window);
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -1248,6 +1310,7 @@ impl Render for ContinuousView {
         let read = self.read.clone();
         let prose = self.prose.clone();
         let gutters = self.gutters.clone();
+        let trail = self.trail.clone();
         let folds = self.folds.clone();
         // The Read view's face: the UI's proportional font, at the editor's
         // own size — so a row is the same height either way and only the
@@ -1342,6 +1405,7 @@ impl Render for ContinuousView {
                                 &read,
                                 &prose,
                                 &gutters,
+                                &trail,
                                 &folds,
                                 &path,
                                 index + 1 == count,
