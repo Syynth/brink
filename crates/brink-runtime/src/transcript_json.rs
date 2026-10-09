@@ -1,4 +1,5 @@
 //! Structural-transcript JSON — the studio-side mirror of the runtime's
+//! (shared by the web and native studios, so a save is one format)
 //! `.brkt` content model (RULED 2026-08-30, `docs/decision-log.md`
 //! "Studio saves carry the structural transcript and re-render it" +
 //! "Studio-side saves and transcripts serialize as JSON, not binary").
@@ -16,13 +17,17 @@
 //! not part of the persisted model — same rule as `.brkt`'s `is_persisted`
 //! — and are skipped on export / absent from the schema on import.
 
+use alloc::string::String;
+use alloc::vec::Vec;
+
 use brink_format::{LineFlags, Value};
-use brink_runtime::{Fragment, Fragments, OutputPart};
 use serde::{Deserialize, Serialize};
+
+use crate::{Fragment, Fragments, OutputPart};
 
 /// The JSON envelope a save slot (or a reload hand-off) stores.
 #[derive(Serialize, Deserialize)]
-pub(crate) struct TranscriptJson {
+pub struct TranscriptJson {
     /// Schema version — 1.
     pub version: u32,
     /// The exporting program's CRC-32 source checksum. Purely advisory on
@@ -39,7 +44,7 @@ pub(crate) struct TranscriptJson {
 /// JSON reads as what it is.
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "part", rename_all = "snake_case")]
-pub(crate) enum PartJson {
+pub enum PartJson {
     Text {
         text: String,
     },
@@ -63,7 +68,7 @@ pub(crate) enum PartJson {
 }
 
 #[derive(Serialize, Deserialize)]
-pub(crate) struct FragmentJson {
+pub struct FragmentJson {
     pub parts: Vec<PartJson>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -123,7 +128,7 @@ fn part_from_json(part: PartJson) -> OutputPart {
 }
 
 /// Build the JSON envelope from a live story's transcript + fragments.
-pub(crate) fn export_transcript_json(
+pub fn export_transcript_json(
     parts: &[OutputPart],
     fragments: &Fragments,
     checksum: u32,
@@ -150,7 +155,7 @@ pub(crate) fn export_transcript_json(
 /// would panic in `scope_table_idx`, so it is filtered here. (A stale
 /// in-range index re-renders best-effort — the same index-keyed contract
 /// locale hot-swap lives with.)
-pub(crate) fn decode_transcript_json(
+pub fn decode_transcript_json(
     t: TranscriptJson,
     container_count: u32,
 ) -> (Vec<OutputPart>, Fragments) {

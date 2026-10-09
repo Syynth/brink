@@ -794,6 +794,9 @@ pub struct BrinkHighlighter {
     cue_lines: Vec<CueLine>,
     cue_style: CueStyle,
     band: (gpui::Hsla, gpui::Hsla),
+    /// The theme's text colour — what an unstyled run is painted in, and
+    /// so what a passed-by choice's prose fades from.
+    ink: gpui::Hsla,
     /// Writing mode's Read view, for a manuscript section; `None` for every
     /// other host, which never reads.
     read: Option<ReadCell>,
@@ -814,6 +817,10 @@ pub(crate) struct ReadView {
     pub on: std::cell::Cell<bool>,
     /// Each file's prose, byte ranges, from the last analysis.
     pub prose: std::cell::RefCell<std::collections::BTreeMap<String, Vec<Range<usize>>>>,
+    /// While a story plays: each file's choice lines the reader passed by
+    /// (offered, not taken), whole lines as byte ranges — faded like the
+    /// canvas's "not taken" (decision log 2026-10-09).
+    pub not_taken: std::cell::RefCell<std::collections::BTreeMap<String, Vec<Range<usize>>>>,
 }
 
 pub(crate) type ReadCell = Rc<ReadView>;
@@ -821,6 +828,10 @@ pub(crate) type ReadCell = Rc<ReadView>;
 /// How much of the muted colour the Read view's markup keeps: very faint
 /// (W8), but there when looked for — a divert still has to be findable.
 pub(crate) const READ_FADE: f32 = 0.45;
+
+/// How much of a passed-by choice line's colour survives (the canvas's
+/// `.skip { opacity: .38 }`).
+pub(crate) const NOT_TAKEN_KEEP: f32 = 0.38;
 
 /// What the Read view fades to — the markup's colour, and the line
 /// numbers'.
@@ -1121,6 +1132,31 @@ pub(crate) fn overlay_muted(
         .collect()
 }
 
+/// Fade every run on these lines — its own colour, or the text colour for
+/// a run with none (prose carries no token), so the whole line recedes,
+/// not just its markup.
+pub(crate) fn overlay_faded(
+    runs: Vec<(Range<usize>, gpui::HighlightStyle)>,
+    lines: &[Range<usize>],
+    (ink, bg): (gpui::Hsla, gpui::Hsla),
+    keep: f32,
+) -> Vec<(Range<usize>, gpui::HighlightStyle)> {
+    if lines.is_empty() {
+        return runs;
+    }
+    runs.into_iter()
+        .map(|(range, mut style)| {
+            let on = lines
+                .iter()
+                .any(|line| line.start <= range.start && range.end <= line.end);
+            if on {
+                style.color = Some(fade(style.color.unwrap_or(ink), bg, keep));
+            }
+            (range, style)
+        })
+        .collect()
+}
+
 /// Lay the band over already-styled runs: inside a TODO line every run
 /// takes the ink colour on the band background, and the keyword goes bold.
 /// Runs are split at the band's and the keyword's edges; nothing outside
@@ -1254,6 +1290,7 @@ impl BrinkHighlighter {
                 bg: gpui::Hsla::default(),
             },
             band: (gpui::Hsla::default(), gpui::Hsla::default()),
+            ink: gpui::Hsla::default(),
             read: None,
             faint: gpui::Hsla::default(),
         }
@@ -1291,6 +1328,7 @@ impl InputHighlighter for BrinkHighlighter {
         self.muted_lines = muted_lines(&source);
         self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        self.ink = brink_gpui_shell::theme::hsla(tokens.fg);
         self.cue_style = CueStyle {
             cue: brink_gpui_shell::theme::hsla(tokens.cue.unwrap_or(tokens.accent)),
             cue_weight: gpui::FontWeight(f32::from(tokens.cue_weight)),
@@ -1364,6 +1402,19 @@ impl InputHighlighter for BrinkHighlighter {
         // Muting first, the band second: a TODO line is never muted, and
         // the band must win on every word it covers.
         let out = overlay_muted(out, &self.muted_lines, self.cue_style.bg, MUTED_FADE);
+        // A choice the reader passed by, while the story plays.
+        let out = match self.read.as_ref() {
+            Some(read) => {
+                let passed = read.not_taken.borrow();
+                match passed.get(self.path.as_ref()) {
+                    Some(lines) => {
+                        overlay_faded(out, lines, (self.ink, self.cue_style.bg), NOT_TAKEN_KEEP)
+                    }
+                    None => out,
+                }
+            }
+            None => out,
+        };
         // Read before the dialect: a cue is how a line of prose is
         // presented, and the band and the marks must still win.
         let out = match self.read.as_ref().filter(|read| read.on.get()) {

@@ -32,6 +32,7 @@ mod program;
 mod project;
 mod quick_open;
 mod rename;
+mod saves;
 mod search;
 mod settings_config;
 mod settings_conventions;
@@ -566,8 +567,10 @@ impl Studio {
             );
             workspace.register_command("Play", "Play", Play, Some("cmd-r"), cx);
             workspace.register_command("Play", "Restart", PlayRestart, Some("cmd-shift-r"), cx);
-            // Bindable, with no default key yet (R4).
-            workspace.register_command("Play", "Show/Hide Player", TogglePlayer, None, cx);
+            // ⌘P: bring the Player out — running the story when nothing has
+            // run — and put it away again (decision log 2026-10-09). Free
+            // since go-to moved to ⌘K.
+            workspace.register_command("Play", "Show/Hide Player", TogglePlayer, Some("cmd-p"), cx);
             // Bindable, with no default key yet (R4).
             workspace.register_command("View", "Read View", ToggleReadView, None, cx);
             workspace.register_command("View", "Writing Sidebar", ToggleWritingSidebar, None, cx);
@@ -894,6 +897,18 @@ impl Studio {
                     PlayerEvent::Log { .. } => {}
                     // Write mode's pane listens for its own close.
                     PlayerEvent::Close => {}
+                    // A hover's peek, in the manuscript only: Code view's
+                    // tabs have no NOW to come back to.
+                    PlayerEvent::Peek { path, span, choice } => {
+                        if this.workspace.read(cx).editor_view(cx) == EditorView::Write {
+                            this.manuscript
+                                .update(cx, |m, cx| m.peek_span(path, span.clone(), *choice, cx));
+                        }
+                    }
+                    PlayerEvent::PeekEnd { now } => {
+                        let now = now.clone();
+                        this.manuscript.update(cx, |m, cx| m.end_peek(now, cx));
+                    }
                     PlayerEvent::OpenSettings => {
                         this.workspace.update(cx, |workspace, cx| {
                             workspace.open_settings(Some("player"), window, cx);
@@ -2478,8 +2493,19 @@ impl Studio {
             .update(cx, |project, cx| project.clear_breakpoints(cx));
     }
 
+    /// F5: with a story running, on to the next stop (`>|`); with none,
+    /// start one — a debugger's F5 starts the program it has nothing to
+    /// continue (decision log 2026-10-09).
     fn debug_continue(&mut self, _: &DebugContinue, window: &mut Window, cx: &mut Context<Self>) {
-        self.debug(PlayCommand::Continue, window, cx);
+        let state = self.player.read(cx).state();
+        if matches!(
+            state,
+            crate::player::SessionState::Idle | crate::player::SessionState::Over
+        ) {
+            self.play(&Play, window, cx);
+        } else {
+            self.debug(PlayCommand::Continue, window, cx);
+        }
     }
 
     fn debug_step_line(&mut self, _: &DebugStepLine, window: &mut Window, cx: &mut Context<Self>) {
@@ -3349,16 +3375,20 @@ mod modes_driven {
     #[test]
     fn the_current_line_sits_on_now() {
         let mut h = Harness::new();
-        let (_, player) = stage_started(&mut h);
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
         for press in 0..4 {
             if press > 0 {
                 h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
                 assert!(player_until(&mut h, &player, |p| !p.is_busy()));
             }
-            // Let the correction frames run.
-            for _ in 0..6 {
-                h.advance(std::time::Duration::from_millis(20));
-            }
+            // Let the slide run — it is timed in real time.
+            let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                h.read(|cx| player.read(cx).now_gap())
+                    .is_some_and(|(top, now)| (top - now).abs() <= 2.)
+            });
             let (top, now) = h
                 .read(|cx| player.read(cx).now_gap())
                 .expect("the current row is laid out");
@@ -3366,15 +3396,26 @@ mod modes_driven {
                 (top - now).abs() <= 2.,
                 "line {press}: its top is at {top}, NOW at {now}"
             );
+            // Level with it in the manuscript — from the first line, which
+            // needs room above the first file to come down to NOW.
+            let source = h
+                .read(|cx| manuscript.read(cx).active_line_top(cx))
+                .expect("its source is laid out");
+            assert!(
+                (source - now).abs() <= 2.,
+                "line {press}: its source's top is at {source}, NOW at {now}"
+            );
         }
         // The choice cards take room from the transcript; the line before
         // them still sits on NOW.
         h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
         assert!(player_until(&mut h, &player, |p| p.state()
             == crate::player::SessionState::AwaitingChoice));
-        for _ in 0..6 {
-            h.advance(std::time::Duration::from_millis(20));
-        }
+        let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| player.read(cx).now_gap())
+                .is_some_and(|(top, now)| (top - now).abs() <= 2.)
+        });
         let (top, now) = h
             .read(|cx| player.read(cx).now_gap())
             .expect("the current row is laid out");
@@ -3408,9 +3449,12 @@ mod modes_driven {
         // Where the row is now — measured again before each click, since a
         // frame of NOW correction or the arrival's rise can still move it.
         let row_at = |h: &mut Harness| {
-            for _ in 0..4 {
-                h.advance(std::time::Duration::from_millis(50));
-            }
+            // Settled on NOW: nothing still sliding under the pointer.
+            let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                h.read(|cx| player.read(cx).now_gap())
+                    .is_some_and(|(top, now)| (top - now).abs() <= 1.)
+            });
             h.read(|cx| player.read(cx).active_row_bounds())
                 .expect("the first line is laid out")
         };
@@ -3494,6 +3538,481 @@ mod modes_driven {
         assert!(choice, "a choice is bracketed as one");
     }
 
+    /// Taking a choice marks it in the manuscript — the played rail and a
+    /// `chosen` label — and dims the options passed by (the canvas's
+    /// Choices and Across frames).
+    #[test]
+    fn a_taken_choice_is_marked_and_the_rest_are_dimmed() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.advance(std::time::Duration::from_millis(600));
+
+        let trail = h.read(|cx| player.read(cx).trail());
+        let line = |offset: u32| STAGE_STORY[..offset as usize].matches('\n').count() + 1;
+        let chosen: Vec<usize> = trail.chosen.iter().map(|l| line(l.start)).collect();
+        let passed: Vec<usize> = trail.not_taken.iter().map(|l| line(l.start)).collect();
+        assert_eq!(chosen, [12], "`* [Ask about the lamp]` was taken");
+        assert_eq!(passed, [13], "`+ [Say nothing]` was passed by");
+        assert!(
+            trail.played.iter().any(|l| line(l.start) == 12),
+            "a taken choice is played: it gets the rail"
+        );
+        let shot = scratch_dir("shot").join("choice-marks.png");
+        h.screenshot(window, &shot);
+        eprintln!("choice marks screenshot: {}", shot.display());
+    }
+
+    /// The canvas's Away frame: scroll the manuscript away from the line
+    /// the story is on and a NOW pill says which way it is; pressing it
+    /// goes back.
+    #[test]
+    fn scrolled_away_the_now_pill_brings_you_back() {
+        let dir = scratch_dir("away");
+        let mut story = String::from("-> tale\n=== tale ===\nThe first line.\n");
+        for n in 0..120 {
+            story.push_str(&format!("Line {n} of a long walk.\n"));
+        }
+        story.push_str("-> END\n");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"tale.ink\"\n")
+            .expect("writing the config");
+        std::fs::write(dir.join("tale.ink"), story).expect("writing the story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (player, manuscript, write) = h.read(|cx| {
+            let s = studio.read(cx);
+            (s.player.clone(), s.manuscript.clone(), s.write.clone())
+        });
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.line_count() == 1 && !p.is_busy()));
+        h.advance(std::time::Duration::from_millis(600));
+        let away = |h: &mut Harness| h.read(|cx| manuscript.read(cx).now_is_below(cx));
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(synced, "the playing line starts on NOW: {:?}", away(&mut h));
+
+        // Even a nudge puts the manuscript out of step with the story.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(30., cx)));
+        h.redraw(window);
+        assert_eq!(away(&mut h), Some(false), "a nudge down: NOW is above");
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(3000., cx)));
+        h.advance(std::time::Duration::from_millis(100));
+        assert_eq!(
+            away(&mut h),
+            Some(false),
+            "scrolled down past it: it is above"
+        );
+        let shot = scratch_dir("shot").join("now-pill.png");
+        h.screenshot(window, &shot);
+        eprintln!("now pill screenshot: {}", shot.display());
+
+        h.update(|cx| {
+            manuscript.update(cx, |_, cx| {
+                cx.emit(crate::continuous::ManuscriptEvent::BackToNow)
+            });
+        });
+        let _ = write;
+        let back = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(back, "the pill brought it back: {:?}", away(&mut h));
+    }
+
+    /// Save state end to end (W14, decision log 2026-10-09): a save lands
+    /// in the project's `.brink/saves/`; Load restores the story so far and
+    /// resumes, attached — saving again writes back, no new slot; Fork
+    /// starts unattached, so its save is a new slot; Delete removes one.
+    #[test]
+    fn save_state_saves_loads_writes_back_forks_and_deletes() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let root = h.read(|cx| studio.read(cx).project.read(cx).root().to_path_buf());
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        assert!(player_until(&mut h, &player, |p| p.save_ids() == ["save-1"]));
+        assert!(
+            root.join(".brink/saves/save-1.json").is_file(),
+            "in the project"
+        );
+
+        // Load it: the story so far comes back, and play resumes.
+        h.update(|cx| player.update(cx, |p, cx| p.stop(cx)));
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.load_save(crate::saves::Store::Project, "save-1", false, cx)
+            });
+        });
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()
+            && p.has_line("The fog sits")));
+        // Attached: saving again writes back.
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        h.advance(std::time::Duration::from_millis(100));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        assert_eq!(
+            h.read(|cx| player.read(cx).save_ids()),
+            ["save-1"],
+            "written back"
+        );
+
+        // Fork: unattached, so its save is a new slot.
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.load_save(crate::saves::Store::Project, "save-1", true, cx)
+            });
+        });
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.save_state(cx)));
+        assert!(player_until(&mut h, &player, |p| p.save_ids() == ["save-1", "save-2"]));
+
+        h.update(|cx| {
+            player.update(cx, |p, cx| {
+                p.delete_save(crate::saves::Store::Project, "save-2", cx)
+            });
+        });
+        assert_eq!(
+            h.read(|cx| player.read(cx).save_ids()),
+            ["save-1"],
+            "deleted"
+        );
+    }
+
+    /// Rewind (#3665): `<<` steps one line back per press, marking it
+    /// undone until the story moves on; `|<` goes back to just before the
+    /// last choice — the cards again, the echo gone.
+    #[test]
+    fn rewind_steps_back_and_returns_to_the_choice() {
+        let mut h = Harness::new();
+        h.update(|cx| {
+            brink_gpui_shell::settings::update(cx, |s| {
+                s.autoplay_ms = brink_gpui_shell::settings::MIN_AUTOPLAY_MS;
+            });
+        });
+        let (_, player) = stage_started(&mut h);
+        for _ in 0..3 {
+            h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        }
+        let lines = |h: &mut Harness| h.read(|cx| player.read(cx).line_count());
+        let before = lines(&mut h);
+        assert!(before >= 3, "{before} lines");
+
+        // << goes back one line per press — no timer.
+        for _ in 0..2 {
+            h.update(|cx| player.update(cx, |p, cx| p.back_one_line(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        }
+        assert_eq!(lines(&mut h), before - 2, "two presses, two lines back");
+        h.advance(std::time::Duration::from_millis(1000));
+        assert_eq!(lines(&mut h), before - 2, "and nothing more on its own");
+        assert!(
+            !h.read(|cx| player.read(cx).trail().undone).is_empty(),
+            "the lines rewound past are marked undone"
+        );
+        // Playing on settles them.
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        assert!(
+            h.read(|cx| player.read(cx).trail().undone).is_empty(),
+            "moved on"
+        );
+
+        // Take a choice, then |< back to it.
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.update(|cx| player.update(cx, |p, cx| p.choose(0, cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.back_to_choice(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let trail = h.read(|cx| player.read(cx).trail());
+        assert!(
+            trail.chosen.is_empty(),
+            "the choice is untaken again: {:?}",
+            trail.chosen
+        );
+        assert!(trail.not_taken.is_empty(), "and nothing is dimmed");
+    }
+
+    /// A new line arrives without a jump: it lays out under the one
+    /// before and the transcript slides up until it meets NOW — never
+    /// snapped to the top and back, never past NOW, settling on it. Sampled
+    /// a frame at a time (the slide runs on real time).
+    #[test]
+    fn a_new_line_slides_up_to_now_without_jumping() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        for _ in 0..2 {
+            h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+            assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+            h.advance(std::time::Duration::from_millis(800));
+        }
+        let now = h
+            .read(|cx| player.read(cx).now_gap())
+            .map(|(_, now)| now)
+            .expect("laid out");
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        let mut tops = Vec::new();
+        for _ in 0..30 {
+            h.redraw(window);
+            if let Some((top, _)) = h.read(|cx| player.read(cx).now_gap()) {
+                tops.push(top);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(12));
+        }
+        assert!(
+            tops.iter().all(|&t| t >= now - 1.),
+            "never above NOW (no snap to the top): {tops:?}"
+        );
+        assert!(
+            tops.windows(2).all(|w| w[1] <= w[0] + 0.5),
+            "only ever moving up onto it: {tops:?}"
+        );
+        assert!(
+            tops.last().is_some_and(|t| (t - now).abs() <= 2.),
+            "settling on NOW: {tops:?}"
+        );
+    }
+
+    /// F5 with nothing running starts the story — a debugger's F5 starts
+    /// what it has nothing to continue.
+    #[test]
+    fn f5_starts_an_idle_story() {
+        let mut h = Harness::new();
+        let window = h.open(&stage_project());
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::DebugContinue);
+        assert!(
+            player_until(&mut h, &player, |p| p.line_count() >= 1),
+            "F5 started it"
+        );
+    }
+
+    /// At a choice point NOW is where the choices are offered; hovering a
+    /// Player row brings its source to NOW without moving the caret, and
+    /// the pointer leaving the Player goes back (decision log 2026-10-09).
+    #[test]
+    fn choices_sit_on_now_and_hovers_peek_and_come_back() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let now = h.read(|cx| crate::player::now_line_for_test(cx, window));
+        let offset_of = |needle: &str| {
+            u32::try_from(STAGE_STORY.find(needle).expect("in the story")).expect("small")
+        };
+        let top_of = |h: &mut Harness, needle: &str| {
+            h.read(|cx| {
+                manuscript
+                    .read(cx)
+                    .offset_top("tower.ink", offset_of(needle), cx)
+            })
+        };
+        let settled = |h: &mut Harness, needle: &str| {
+            h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                top_of(h, needle).is_some_and(|t| (t - now).abs() <= 2.)
+            })
+        };
+        assert!(
+            settled(&mut h, "* [Ask about the lamp]"),
+            "the choices sit on NOW: {:?} vs {now}",
+            top_of(&mut h, "* [Ask about the lamp]")
+        );
+        let caret = h.read(|cx| manuscript.read(cx).caret_in("tower.ink", cx));
+
+        // Hover the first row: its source comes to NOW; the caret stays.
+        let first = h
+            .read(|cx| player.read(cx).row_bounds(0))
+            .expect("the first row");
+        h.hover(
+            window,
+            f32::from(first.center().x),
+            f32::from(first.center().y),
+        );
+        assert!(
+            settled(&mut h, "The fog sits"),
+            "the hovered line peeks at NOW"
+        );
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).caret_in("tower.ink", cx)),
+            caret,
+            "a peek never moves the caret"
+        );
+
+        // Off the Player: back to the choices.
+        h.hover(window, 10., 600.);
+        assert!(settled(&mut h, "* [Ask about the lamp]"), "back at NOW");
+    }
+
+    /// Closing Write mode's Player stops following — the manuscript is the
+    /// author's while it is away, and there is no NOW — and opening it
+    /// again resumes at NOW (decision log 2026-10-09).
+    #[test]
+    fn closing_the_player_stops_following_and_opening_resumes() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(!player_open(&mut h, window));
+        assert!(
+            h.read(|cx| player.read(cx).is_follow_paused()),
+            "following stopped"
+        );
+        assert!(
+            h.read(|cx| player.read(cx).trail().now.is_none()),
+            "no NOW while away"
+        );
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(200., cx)));
+        h.redraw(window);
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)),
+            None,
+            "no pill: scrolling is just writing"
+        );
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(player_open(&mut h, window));
+        assert!(
+            !h.read(|cx| player.read(cx).is_follow_paused()),
+            "following again"
+        );
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(synced, "and back at NOW");
+    }
+
+    /// A choice point whose choices lie far apart (long bodies between
+    /// them) still puts the first choice on NOW — following used to select
+    /// the whole span and chase the caret to its far end — and hovering a
+    /// choice card centres that choice and its body (decision log
+    /// 2026-10-09).
+    #[test]
+    fn spread_out_choices_stay_on_now_and_a_hovered_choice_centres_its_block() {
+        let dir = scratch_dir("spread");
+        let mut story = String::from(
+            "-> pick\n=== pick ===\nWhich way?\n+ [Left]\n    You go left.\n    It is cold.\n    -> pick\n",
+        );
+        story.push_str("+ [Right]\n");
+        for n in 0..80 {
+            story.push_str(&format!("    Step {n} to the right.\n"));
+        }
+        story.push_str("    -> END\n");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"way.ink\"\n").expect("config");
+        std::fs::write(dir.join("way.ink"), &story).expect("story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let (player, manuscript) = h.read(|cx| {
+            (
+                studio.read(cx).player.clone(),
+                studio.read(cx).manuscript.clone(),
+            )
+        });
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice
+            || p.line_count() > 0));
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(
+            synced,
+            "the choices sit on NOW, the caret not chasing their far end"
+        );
+        let left = u32::try_from(story.find("+ [Left]").expect("left")).expect("small");
+        let caret = h.read(|cx| manuscript.read(cx).caret_in("way.ink", cx));
+        assert!(
+            caret.is_some_and(|c| (left as usize..left as usize + "+ [Left]".len()).contains(&c)),
+            "the caret is on the first choice's line: {caret:?}"
+        );
+
+        // The choice point asked for the file's outline; let it arrive.
+        assert!(h.settle_until(std::time::Duration::from_secs(5), |h| {
+            h.read(|cx| manuscript.read(cx).has_outline_for_test("way.ink"))
+        }));
+        // Hover the first card: `+ [Left]` and its body, centred.
+        let (w, hh) = h.read(|cx| {
+            let win = cx
+                .windows()
+                .into_iter()
+                .find(|x| x.window_id() == window.window_id())
+                .expect("the window");
+            win.update(cx, |_, w, _| {
+                let s = w.viewport_size();
+                (f32::from(s.width), f32::from(s.height))
+            })
+            .expect("open")
+        });
+        let first_card = hh - 58. - 10. - 40. - 8. - 20.;
+        h.hover(window, w * 0.75, first_card);
+        let body = u32::try_from(story.find("It is cold.").expect("body")).expect("small");
+        let centred = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            let (top, bottom, view) = h.read(|cx| {
+                let m = manuscript.read(cx);
+                (
+                    m.offset_top("way.ink", left, cx),
+                    m.offset_top("way.ink", body, cx),
+                    m.view_bounds_for_test(),
+                )
+            });
+            match (top, bottom, view) {
+                (Some(top), Some(bottom), Some((vt, vb))) => {
+                    let above = top - vt;
+                    let below = vb - bottom;
+                    top > vt && bottom < vb && (above - below).abs() < 120.
+                }
+                _ => false,
+            }
+        });
+        let dbg = h.read(|cx| {
+            let m = manuscript.read(cx);
+            (
+                m.offset_top("way.ink", left, cx),
+                m.offset_top("way.ink", body, cx),
+                m.view_bounds_for_test(),
+                m.has_outline_for_test("way.ink"),
+                player.read(cx).trail().hover,
+            )
+        });
+        assert!(
+            centred,
+            "the hovered choice and its body sit in the middle: {dbg:?}"
+        );
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {
@@ -3555,6 +4074,16 @@ mod modes_driven {
         // The marks reach the worker on their own; give them a frame.
         h.settle();
         h.update(|cx| player.update(cx, |p, cx| p.toggle_autoplay(cx)));
+        // The status names where it will stop, looked ahead on a copy.
+        let said = h.settle_until(std::time::Duration::from_secs(5), |h| {
+            h.read(|cx| player.read(cx).status_label(cx))
+                .contains("stops at ● tower.ink 11")
+        });
+        assert!(
+            said,
+            "status: {}",
+            h.read(|cx| player.read(cx).status_label(cx))
+        );
         assert!(
             autoplay_until(&mut h, &player, |p| p.held().is_some()),
             "the breakpoint holds the story"

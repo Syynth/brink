@@ -5999,3 +5999,67 @@
 - **SCOPE:** minor/local
 - **WHAT:** The canvas's glue bracket (a rounded bracket on the right of a run of source lines) is repurposed: hovering any row in the Player transcript draws it in the manuscript beside exactly the source lines that row came from, for as long as the hover lasts. Story lines and their echoes use the accent colour; a choice — a card waiting to be picked, or the echo of one picked — uses the choice colour. The provenance chip on the hovered Player row stays, for now.
 - **WHY:** Maintainer: "i like that visual element, but i actually want it shown in the editor on the hover of any line in the player transcript, not just for glued lines" — the bracket answers "where did this come from" without moving anything, while the chip still takes you there; a different colour for choices separates what played from what you could pick.
+
+## Native Save state: project saves in `.brink/saves/`, loaded from the header and the idle Player
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** moderate
+- **WHAT:** The native player's Save state follows the web's W14 model (two stores, Load attaches so Save writes back, Fork starts unattached, a save carries its structural transcript, the payload is the runtime's durable `SaveState` plus the knot to resume at). The PROJECT store is `<project>/.brink/saves/`, one JSON file per slot; the LOCAL store is per-computer app data. Saves are reachable both from a Saves menu in the Player header while playing and from a list on the idle Player.
+- **WHY:** A hidden project folder keeps saves shareable through the repo without showing among the story files, and the desktop app can adopt the same path later; the maintainer wanted saves to load both mid-play and from a stopped Player.
+
+## Rewind keeps a snapshot of the story at every line
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** moderate
+- **WHAT:** The Player's rewind (#3665: `|<` back to just before the last choice, `<<` back a line at a time at autoplay pace, rewound lines keep a dashed "undone" rail until the story moves on) restores from a capped history of story copies the worker keeps — one before every line it plays and one before each choice taken. The oldest copies drop off past the cap.
+- **WHY:** Chosen over replaying from the start (unbounded history, but slow to rewind a long story and dependent on everything replaying identically) and over choice-only snapshots (exact `|<`, but `<<` would replay forward): a copy per line makes both gestures exact and instant, at a memory cost the cap bounds.
+
+## `<<` rewinds one line per press, not on a timer
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player
+- **SCOPE:** minor/local
+- **WHAT:** The Player's `<<` steps back exactly one line each time it is pressed. It no longer rewinds continuously at the autoplay pace (revising the "Write-mode transport: a symmetric strip with rewind" ruling, whose `<<` rewound "continuously at Autoplay's pace, and Pause stops it"). `|<` (back to just before the last choice) is unchanged.
+- **WHY:** Maintainer, after trying it: "the 'rewind autoplay' feature is dumb, now that i've tried it lol, it should just rewind one line when you click it."
+
+## ⌘P shows the Player and starts the story; F5 starts an idle story
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / keymap
+- **SCOPE:** minor/local
+- **WHAT:** ⌘P is Show/Hide Player — out, running the story when nothing has run, and away again on a second press (free since go-to moved to ⌘K). F5, the debugger's Continue, starts the story when nothing is running instead of reporting that nothing is.
+- **WHY:** Maintainer wanted a keyboard way to start the Player in Write mode ("⌘P probably, or maybe F5?"); F5 already reached the Player but "just sucks" with nothing running — a debugger's F5 starts the program it has nothing to continue.
+
+## At a choice point NOW is the choices; following, a hover peeks and the view comes back
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** (1) When the story stops at a choice point, the manuscript's NOW is where the choices are offered (the first choice's line to the last's), not the line played before them. (2) While the manuscript is at NOW — following, not scrolled away or paused — hovering a Player row or choice scrolls the manuscript so that row's source sits on NOW, without moving the caret; when the pointer leaves the Player, the manuscript returns to NOW. Scrolled away or paused, a hover only draws the source bracket.
+- **WHY:** Maintainer: "when at a choice point, the 'now' position shouldn't be the last thing, but instead like where the choices are offered … when you're on the 'current position' … the editor should also scroll to follow mouse-overs on the rows and choices, and when you leave the player, resume at the 'now' position."
+
+## The NOW pill appears at any drift from NOW, without "above/below"
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** The manuscript's NOW pill shows as soon as the manuscript is scrolled even a little off NOW (the line the story is on, or the choices at a choice point) — not only once that line has left the screen. The label drops "above"/"below"; the arrow alone says which way. A hover's peek and a reveal in flight don't count as drift, and hovering only peeks while in sync.
+- **WHY:** Maintainer: "remove the 'above/below' label and instead just have it appear as soon as you scroll even a little, because following is desynced at that point."
+
+## Closing the Player pauses following; reopening resumes at NOW
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** Putting Write mode's Player away pauses following for the session (the Follow setting is untouched): the manuscript stops moving, the NOW pill goes, and autoplay stops. Bringing the Player back resumes following and returns the manuscript to NOW, as Play and Restart do.
+- **WHY:** Maintainer: "if i close the player, disable following" — with the Player away the manuscript is the author's to write in.
+
+## A hovered choice shows with its body, centred; else the choice at the top
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** Hovering a choice in the Player (a card or a choice echo), while the manuscript is following, scrolls the manuscript to the choice together with its body (the outline's choice block): centred in the view when it fits, otherwise with the choice line at the top, so the choice itself always stays visible. Following "where it leads" past a divert is a later refinement.
+- **WHY:** Maintainer: "a kind of heuristic for showing the choice + 'where it leads' but if that is too big, the choice itself needs to stay visible, it should basically center the set of lines that are the choice + it's body, but if the viewport isn't big enough, it should put the choice at the top of the viewport."

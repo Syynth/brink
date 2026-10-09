@@ -193,6 +193,9 @@ impl WriteView {
                 }
                 ManuscriptEvent::File { path, action } => this.file_action(path, *action, cx),
                 ManuscriptEvent::Outline(event) => cx.emit(WriteEvent::Outline(event.clone())),
+                ManuscriptEvent::BackToNow => {
+                    this.player.update(cx, |player, cx| player.back_to_now(cx));
+                }
             },
         );
         let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
@@ -250,15 +253,20 @@ impl WriteView {
         if !self.player_open {
             self.player_open = true;
             self.openings += 1;
+            self.player
+                .update(cx, |player, cx| player.set_shown(true, cx));
             cx.notify();
         }
     }
 
     /// Put the Player away. The session keeps running; Play or the toggle
-    /// brings it back where it was.
+    /// brings it back where it was. Following stops meanwhile (decision log
+    /// 2026-10-09): with the Player away, the manuscript is the author's.
     pub(crate) fn close_player(&mut self, cx: &mut Context<Self>) {
         if self.player_open {
             self.player_open = false;
+            self.player
+                .update(cx, |player, cx| player.set_shown(false, cx));
             cx.notify();
         }
     }

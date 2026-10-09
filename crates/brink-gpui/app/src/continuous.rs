@@ -46,7 +46,8 @@ use gpui_component::{
     v_flex,
 };
 
-use brink_gpui_model::query::{QueryKind, QueryResult, Scope};
+use brink_gpui_model::query::{QueryKind, QueryResult, Scope, ScopeKind};
+use gpui::StatefulInteractiveElement as _;
 
 use crate::document::{ReadCell, ReadView, manuscript_highlighter_factory};
 use crate::project::{Project, ProjectEvent};
@@ -103,6 +104,9 @@ const SEPARATOR_HEIGHT: f32 = 92.0;
 const BRACKET_WIDTH: f32 = 8.;
 const BRACKET_INSET: f32 = 12.;
 const BRACKET_PAD: f32 = 3.;
+
+/// How far off the NOW line counts as out of step with the story.
+const NOW_SYNC: f32 = 2.;
 const SEPARATOR_SPACE_ABOVE: f32 = 36.0;
 
 /// Frames a caret move may take to be brought on screen (`reveal_caret`).
@@ -179,6 +183,12 @@ pub struct ContinuousView {
     /// mounted yet; the list mounts it on the way there, and the next
     /// render applies the selection.
     pending_reveal: Option<(String, std::ops::Range<usize>)>,
+    /// Whether the pending reveal also puts the caret there. A Player
+    /// hover's peek only scrolls (decision log 2026-10-09).
+    reveal_select: bool,
+    /// A Player hover is showing its source: the view left NOW for it, and
+    /// goes back when the pointer leaves the Player.
+    peeking: bool,
     /// The Read view (W8): whether it is on, and the prose it keeps — shared
     /// with every section's highlighter.
     read: ReadCell,
@@ -224,11 +234,18 @@ pub struct ContinuousView {
     /// The pending reveal is the Player following: it lands its line on
     /// the NOW line rather than near the top.
     reveal_now: bool,
+    /// The pending reveal is a block to show whole — a hovered choice and
+    /// its body (decision log 2026-10-09): centred when it fits, else from
+    /// its first line at the top. Its end offset.
+    reveal_block: Option<usize>,
     /// The NOW line, in window coordinates, as of the last frame.
     now_y: f32,
     /// Room after the last file while a story plays, so a line near the
     /// story's end can still come up to NOW (0 when nothing plays).
     now_tail: f32,
+    /// And before the first, so a line near the story's start can come
+    /// down to it — the Player's head spacer, mirrored.
+    now_head: f32,
     /// The running story's trail, for the sections' gutters and bands.
     trail: TrailCell,
     /// Each section's fold candidates.
@@ -249,6 +266,9 @@ pub enum ManuscriptEvent {
     /// A file operation from the same menu — the Binder's, run by the
     /// studio the same way.
     Outline(crate::binder::BinderEvent),
+    /// The NOW pill was pressed: back to the line the story is on, and
+    /// follow it again.
+    BackToNow,
 }
 
 impl gpui::EventEmitter<ManuscriptEvent> for ContinuousView {}
@@ -322,6 +342,8 @@ impl ContinuousView {
             measured_line_height: None,
             stale_line_height: None,
             pending_reveal: None,
+            reveal_select: true,
+            peeking: false,
             read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
             focus: cx.focus_handle(),
@@ -338,8 +360,10 @@ impl ContinuousView {
             pending_focus: None,
             gutters: Rc::default(),
             reveal_now: false,
+            reveal_block: None,
             now_y: 0.,
             now_tail: 0.,
+            now_head: 0.,
             trail: Rc::default(),
             folds: Rc::default(),
             reveal_retries: 0,
@@ -471,6 +495,7 @@ impl ContinuousView {
         // `ListState::splice` zeroes the scroll offset inside the spliced
         // item — a scroll applied before that pass was thrown away by it.
         self.pending_reveal = Some((path.to_owned(), span));
+        self.reveal_select = true;
         self.reveal_retries = REVEAL_TRIES;
         cx.notify();
     }
@@ -483,8 +508,14 @@ impl ContinuousView {
         span: std::ops::Range<usize>,
         cx: &mut Context<Self>,
     ) {
-        self.reveal_span(path, span, cx);
+        // The caret goes to where the followed span starts. Selecting the
+        // whole span put it at the span's END, and keeping the caret in view
+        // then scrolled there — for a choice point's span (first choice to
+        // last, bodies between) a long way from the choices.
+        self.reveal_span(path, span.start..span.start, cx);
         self.reveal_now = true;
+        // Its outline, so a hover there can show a choice whole.
+        self.request_outline(path, cx);
     }
 
     fn apply_pending_reveal(&mut self, cx: &mut Context<Self>) {
@@ -536,25 +567,108 @@ impl ContinuousView {
             return;
         };
         self.pending_reveal = None;
+        let pinned = (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height;
+        let block = self.reveal_block.take();
         let reserve = match self.last_view.get() {
+            // A block (a hovered choice and its body): centred in the view
+            // when it fits below the pinned rows; else its first line at the
+            // top, so the choice itself always stays in sight.
+            Some(view) if block.is_some() => {
+                self.reveal_now = false;
+                let end = block.unwrap_or(span.start);
+                let state = editor.read(cx);
+                let last = text
+                    .get(..end.min(text.len()))
+                    .map_or(0, |before| before.matches('\n').count());
+                let lines = text.matches('\n').count() + 1;
+                let end_row = if last + 1 < lines {
+                    state.display_row_of_buffer_line(last + 1)
+                } else {
+                    state.display_row_count()
+                };
+                let first = text
+                    .get(..span.start)
+                    .map_or(0, |before| before.matches('\n').count());
+                let rows = end_row
+                    .saturating_sub(state.display_row_of_buffer_line(first))
+                    .max(1);
+                let height = rows as f32 * line_height;
+                let room = f32::from(view.size.height) - pinned;
+                if height <= room {
+                    pinned + (room - height) / 2.
+                } else {
+                    pinned
+                }
+            }
             Some(view) if std::mem::take(&mut self.reveal_now) => {
                 self.now_y - f32::from(view.origin.y)
             }
-            _ => (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height,
+            _ => pinned,
         };
-        let offset = (SEPARATOR_HEIGHT + y - reserve).max(0.0);
+        let offset = (self.lead(index) + SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: px(offset),
         });
-        editor.update(cx, |state, cx| {
-            state.set_selected_range(span, cx);
-            cx.notify();
-        });
-        // The caret is where the reveal put it, focused or not: the sidebar
-        // and the title bar's knot › stitch follow from here.
-        self.follow_caret(path, editor, cx);
+        if std::mem::replace(&mut self.reveal_select, true) {
+            editor.update(cx, |state, cx| {
+                state.set_selected_range(span, cx);
+                cx.notify();
+            });
+            // The caret is where the reveal put it, focused or not: the
+            // sidebar and the title bar's knot › stitch follow from here.
+            self.follow_caret(path, editor, cx);
+        }
         cx.notify();
+    }
+
+    /// A Player hover's peek (decision log 2026-10-09): while the view is at
+    /// NOW — following, not scrolled away — show the hovered line's source
+    /// on the NOW line, without moving the caret. Once peeking, further
+    /// hovers follow the pointer; [`Self::end_peek`] goes back.
+    pub fn peek_span(
+        &mut self,
+        path: &str,
+        span: std::ops::Range<usize>,
+        choice: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.peeking {
+            if self.now_is_below(cx).is_some() {
+                return;
+            }
+            self.peeking = true;
+        }
+        self.follow_span(path, span.clone(), cx);
+        self.reveal_select = false;
+        // A choice shows with its body (decision log 2026-10-09): the
+        // outline's choice block holding its line.
+        if choice {
+            self.reveal_block = self.outlines.get(path).and_then(|scopes| {
+                scopes
+                    .iter()
+                    .filter(|s| s.kind == ScopeKind::Choice)
+                    .filter(|s| (s.start as usize) <= span.start && span.start < s.end as usize)
+                    .max_by_key(|s| s.start)
+                    .map(|s| s.end as usize)
+            });
+        }
+    }
+
+    /// The pointer left the Player: back to NOW (`now`), if a peek had
+    /// taken the view away.
+    pub fn end_peek(
+        &mut self,
+        now: Option<(String, std::ops::Range<usize>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if !std::mem::take(&mut self.peeking) {
+            return;
+        }
+        if let Some((path, span)) = now {
+            self.follow_span(&path, span, cx);
+            self.reveal_select = false;
+        }
     }
 
     /// How many rows will pin above `offset` once it is near the top of
@@ -773,8 +887,312 @@ impl ContinuousView {
                 editor.update(cx, |_, cx| cx.notify());
             }
         }
-        // The hover bracket is drawn here, over the sections.
+        // Passed-by choices fade through the sections' highlighters, which
+        // read them from the Read cell they already share.
+        {
+            let trail = self.trail.borrow();
+            let mut passed: std::collections::BTreeMap<String, Vec<std::ops::Range<usize>>> =
+                std::collections::BTreeMap::new();
+            for loc in &trail.not_taken {
+                let Some(text) = self.project.read(cx).loaded_source(&loc.path) else {
+                    continue;
+                };
+                let start = text
+                    .get(..(loc.start as usize).min(text.len()))
+                    .and_then(|before| before.rfind('\n'))
+                    .map_or(0, |at| at + 1);
+                let end = text
+                    .get(loc.start as usize..)
+                    .and_then(|after| after.find('\n'))
+                    .map_or(text.len(), |at| loc.start as usize + at);
+                passed.entry(loc.path.clone()).or_default().push(start..end);
+            }
+            *self.read.not_taken.borrow_mut() = passed;
+        }
+        for (editor, _) in self.editors.borrow().values() {
+            editor.update(cx, |_, cx| cx.notify());
+        }
+        // The hover bracket and the `chosen` labels are drawn here, over
+        // the sections.
         cx.notify();
+    }
+
+    /// What sits above a section's separator inside its list item: the
+    /// head room, for the first file while a story plays; nothing else.
+    fn lead(&self, index: usize) -> f32 {
+        if index == 0 { self.now_head } else { 0. }
+    }
+
+    /// Whether the manuscript has drifted off NOW — the line the story is
+    /// on, or the choices it is offering — and which way it lies:
+    /// `Some(true)` below the NOW line, `Some(false)` above, `None` in
+    /// sync (or nothing playing). Any scroll at all desyncs it (decision
+    /// log 2026-10-09); a hover's peek or a reveal in flight does not
+    /// count.
+    pub(crate) fn now_is_below(&self, cx: &App) -> Option<bool> {
+        if self.peeking || self.pending_reveal.is_some() {
+            return None;
+        }
+        let loc = self.trail.borrow().now.clone()?;
+        let index = self.files.iter().position(|f| *f == loc.path)?;
+        match self.list.bounds_for_item(index) {
+            Some(item) => {
+                let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+                let state = editor.read(cx);
+                let line_height = f32::from(state.line_height()?);
+                let text = state.value();
+                let line = text
+                    .get(..(loc.start as usize).min(text.len()))
+                    .map_or(0, |before| before.matches('\n').count());
+                let top = f32::from(item.top())
+                    + self.lead(index)
+                    + SEPARATOR_HEIGHT
+                    + state.display_row_of_buffer_line(line) as f32 * line_height;
+                let off = top - self.now_y;
+                (off.abs() > NOW_SYNC).then_some(off > 0.)
+            }
+            None => Some(index > self.list.logical_scroll_top().item_ix),
+        }
+    }
+
+    /// The top of the line the story is on, in window coordinates, where
+    /// its section is laid out.
+    #[cfg(test)]
+    pub(crate) fn active_line_top(&self, cx: &App) -> Option<f32> {
+        let loc = self.trail.borrow().active.clone()?;
+        self.offset_top(&loc.path, loc.start, cx)
+    }
+
+    /// The top of the line holding `offset` in `path`, in window
+    /// coordinates, where its section is laid out.
+    #[cfg(test)]
+    pub(crate) fn offset_top(&self, path: &str, offset: u32, cx: &App) -> Option<f32> {
+        let loc = brink_gpui_model::query::Location {
+            path: path.to_owned(),
+            start: offset,
+            end: offset,
+        };
+        let index = self.files.iter().position(|f| *f == loc.path)?;
+        let item = self.list.bounds_for_item(index)?;
+        let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+        let state = editor.read(cx);
+        let line_height = f32::from(state.line_height()?);
+        let text = state.value();
+        let line = text
+            .get(..(loc.start as usize).min(text.len()))
+            .map_or(0, |before| before.matches('\n').count());
+        Some(
+            f32::from(item.top())
+                + self.lead(index)
+                + SEPARATOR_HEIGHT
+                + state.display_row_of_buffer_line(line) as f32 * line_height,
+        )
+    }
+
+    /// Whether `path`'s outline (its scopes) has arrived.
+    #[cfg(test)]
+    pub(crate) fn has_outline_for_test(&self, path: &str) -> bool {
+        self.outlines.contains_key(path)
+    }
+
+    /// This view's top and bottom, in window coordinates, as last laid out.
+    #[cfg(test)]
+    pub(crate) fn view_bounds_for_test(&self) -> Option<(f32, f32)> {
+        self.last_view
+            .get()
+            .map(|v| (f32::from(v.top()), f32::from(v.bottom())))
+    }
+
+    /// Where the caret is in `path`'s section.
+    #[cfg(test)]
+    pub(crate) fn caret_in(&self, path: &str, cx: &App) -> Option<usize> {
+        let (editor, _) = self.editors.borrow().get(path).cloned()?;
+        Some(editor.read(cx).cursor())
+    }
+
+    /// Scroll the manuscript by `by` pixels — the test's stand-in for the
+    /// author scrolling away.
+    #[cfg(test)]
+    pub(crate) fn scroll_by(&mut self, by: f32, cx: &mut Context<Self>) {
+        self.list.scroll_by(px(by));
+        cx.notify();
+    }
+
+    /// The canvas's "next" line state: a dashed outline round the line ▶
+    /// plays next — a promise, not a fact, so drawn and not filled. Across
+    /// the text column, over the line's rows (wrapped ones counted). In
+    /// this view's own coordinates.
+    fn next_outline(&self, column: Option<gpui::Pixels>, cx: &App) -> Option<gpui::AnyElement> {
+        let (path, line1) = self.trail.borrow().next.clone()?;
+        let index = self.files.iter().position(|f| *f == path)?;
+        let (editor, _) = self.editors.borrow().get(&path).cloned()?;
+        let state = editor.read(cx);
+        let line_height = f32::from(state.line_height()?);
+        let line = (line1 as usize).checked_sub(1)?;
+        let lines = state.value().matches('\n').count() + 1;
+        let top_row = state.display_row_of_buffer_line(line);
+        let end_row = if line + 1 < lines {
+            state.display_row_of_buffer_line(line + 1)
+        } else {
+            state.display_row_count()
+        };
+        let item = self.list.bounds_for_item(index)?;
+        let view = self.last_view.get()?;
+        let top = f32::from(item.top() - view.top())
+            + self.lead(index)
+            + SEPARATOR_HEIGHT
+            + top_row as f32 * line_height;
+        let height = end_row.saturating_sub(top_row).max(1) as f32 * line_height;
+        let width = f32::from(view.size.width);
+        let (left, right) = match column {
+            Some(c) if f32::from(c) < width => {
+                ((width - f32::from(c)) / 2., (width + f32::from(c)) / 2.)
+            }
+            _ => (0., width),
+        };
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let colour = brink_gpui_shell::theme::hsla(tokens.accent).opacity(0.55);
+        Some(
+            div()
+                .absolute()
+                .left(px(left + 2.))
+                .top(px(top + 1.))
+                .w(px((right - left - 4.).max(0.)))
+                .h(px((height - 2.).max(2.)))
+                .border_1()
+                .border_dashed()
+                .rounded(px(3.))
+                .border_color(colour)
+                .into_any_element(),
+        )
+    }
+
+    /// The canvas's Away frame, from the first pixel of drift: once the
+    /// manuscript is off NOW, following is out of step, so a pill at the
+    /// bottom names where NOW is — the arrow says which way — and takes you
+    /// back (`BackToNow`).
+    fn now_pill(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
+        let below = self.now_is_below(cx)?;
+        let loc = self.trail.borrow().now.clone()?;
+        // Where it is: the file, and the knot or stitch around the line.
+        let name = self.outlines.get(&loc.path).and_then(|scopes| {
+            let around = scopes
+                .iter()
+                .filter(|s| matches!(s.kind, ScopeKind::Knot | ScopeKind::Stitch))
+                .filter(|s| s.start <= loc.start && loc.start < s.end)
+                .max_by_key(|s| s.start)?;
+            let source = self.project.read(cx).loaded_source(&loc.path)?;
+            let header = source.get(around.start as usize..)?.lines().next()?;
+            let name = header.trim().trim_matches('=').trim();
+            Some(name.split_whitespace().next().unwrap_or(name).to_owned())
+        });
+        let file = loc.path.rsplit('/').next().unwrap_or(&loc.path).to_owned();
+        let label = match name {
+            Some(name) => format!("{file} · {name}"),
+            None => file,
+        };
+        let theme = cx.theme();
+        let (accent, fg, card, on_accent) = (
+            theme.primary,
+            theme.foreground,
+            theme.secondary,
+            theme.background,
+        );
+        Some(
+            h_flex()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(px(22.))
+                .justify_center()
+                .child(
+                    h_flex()
+                        .id("manuscript-now")
+                        .h(px(34.))
+                        .px(px(14.))
+                        .gap(px(10.))
+                        .items_center()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(accent)
+                        .bg(card)
+                        .shadow_lg()
+                        .text_sm()
+                        .text_color(fg)
+                        .cursor_pointer()
+                        .child(
+                            div()
+                                .h(px(18.))
+                                .px(px(6.))
+                                .rounded_full()
+                                .bg(accent)
+                                .text_color(on_accent)
+                                .text_size(px(10.))
+                                .font_weight(gpui::FontWeight::BOLD)
+                                .flex()
+                                .items_center()
+                                .child("NOW"),
+                        )
+                        .child(label)
+                        .child(
+                            gpui_component::Icon::new(if below {
+                                gpui_component::IconName::ArrowDown
+                            } else {
+                                gpui_component::IconName::ArrowUp
+                            })
+                            .size(px(14.))
+                            .text_color(accent),
+                        )
+                        .on_click(cx.listener(|_, _: &gpui::ClickEvent, _, cx| {
+                            cx.emit(ManuscriptEvent::BackToNow);
+                        })),
+                )
+                .into_any_element(),
+        )
+    }
+
+    /// A small `chosen` label just after each taken choice's line (the
+    /// canvas's Choices and Across frames), where its section is laid out.
+    /// In this view's own coordinates.
+    fn chosen_labels(&self, cx: &App) -> Vec<gpui::AnyElement> {
+        let Some(view) = self.last_view.get() else {
+            return Vec::new();
+        };
+        let tokens = brink_gpui_shell::theme::current(cx).tokens;
+        let colour = brink_gpui_shell::theme::hsla(tokens.symbol_knot);
+        let trail = self.trail.borrow();
+        let mut seen = std::collections::BTreeSet::new();
+        trail
+            .chosen
+            .iter()
+            .filter(|loc| seen.insert((loc.path.clone(), loc.start)))
+            .filter_map(|loc| {
+                let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+                let state = editor.read(cx);
+                let text = state.value();
+                let end = text
+                    .get(loc.start as usize..)
+                    .and_then(|after| after.find('\n'))
+                    .map_or(text.len(), |at| loc.start as usize + at);
+                let at = state.range_to_bounds(&(end..end))?;
+                if at.bottom() < view.top() || at.top() > view.bottom() {
+                    return None;
+                }
+                Some(
+                    div()
+                        .absolute()
+                        .left(at.left() - view.left() + px(12.))
+                        .top(at.top() - view.top())
+                        .h(at.size.height)
+                        .flex()
+                        .items_center()
+                        .text_size(px(11.))
+                        .text_color(colour)
+                        .child("chosen")
+                        .into_any_element(),
+                )
+            })
+            .collect()
     }
 
     /// The bracket beside the source lines of the Player row under the
@@ -804,8 +1222,10 @@ impl ContinuousView {
         };
         let item = self.list.bounds_for_item(index)?;
         let view = self.last_view.get()?;
-        let top =
-            f32::from(item.top() - view.top()) + SEPARATOR_HEIGHT + top_row as f32 * line_height;
+        let top = f32::from(item.top() - view.top())
+            + self.lead(index)
+            + SEPARATOR_HEIGHT
+            + top_row as f32 * line_height;
         let height = (end_row.saturating_sub(top_row)).max(1) as f32 * line_height;
         let width = f32::from(view.size.width);
         let right = match column {
@@ -887,7 +1307,7 @@ impl ContinuousView {
     )> {
         let top = self.list.logical_scroll_top();
         let path = self.files.get(top.item_ix)?.clone();
-        let into_text = top.offset_in_item - px(SEPARATOR_HEIGHT);
+        let into_text = top.offset_in_item - px(self.lead(top.item_ix) + SEPARATOR_HEIGHT);
         if into_text <= px(0.) {
             return None;
         }
@@ -1373,6 +1793,16 @@ impl Render for ContinuousView {
                 self.list.remeasure_items(n - 1..n);
             }
         }
+        let head = match self.last_view.get() {
+            Some(view) if playing => (self.now_y - f32::from(view.top())).max(0.),
+            _ => 0.,
+        };
+        if (head - self.now_head).abs() > 0.5 {
+            self.now_head = head;
+            if !self.files.is_empty() {
+                self.list.remeasure_items(0..1);
+            }
+        }
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -1388,6 +1818,7 @@ impl Render for ContinuousView {
         let files = self.files.clone();
         let count = files.len();
         let now_tail = self.now_tail;
+        let now_head = self.now_head;
         let project = self.project.clone();
         let me = self.me.clone();
         let editors = self.editors.clone();
@@ -1405,6 +1836,9 @@ impl Render for ContinuousView {
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
         let bracket = self.hover_bracket(column, cx);
+        let chosen = self.chosen_labels(cx);
+        let now_pill = self.now_pill(cx);
+        let next_outline = self.next_outline(column, cx);
         // The knot and stitch the top of the view is inside, pinned there.
         let pinned = {
             let (path, lines, pushes) = self
@@ -1517,6 +1951,9 @@ impl Render for ContinuousView {
                     };
                     v_flex()
                         .w_full()
+                        .when(index == 0 && now_head > 0., |el| {
+                            el.child(div().h(px(now_head)))
+                        })
                         .child(separator(&path, column, marks, &me, cx))
                         .child(
                             // The column: centred in the room there is,
@@ -1551,7 +1988,10 @@ impl Render for ContinuousView {
                 })
                 .flex_1(),
             )
+            .children(next_outline)
             .children(bracket)
+            .children(chosen)
+            .children(now_pill)
             // After layout: where the text starts, for the title bar's
             // crumb, and whether the caret is still on screen.
             .child({
@@ -1612,7 +2052,7 @@ impl Render for ContinuousView {
                                     &editors.borrow(),
                                     path,
                                     *offset,
-                                    line_height,
+                                    (line_height, now_head),
                                     covered,
                                     cx,
                                 )
@@ -1835,7 +2275,7 @@ fn keep_caret_on_screen(
     editors: &HashMap<String, Section>,
     path: &str,
     offset: usize,
-    line_height: f32,
+    (line_height, head): (f32, f32),
     covered: usize,
     cx: &App,
 ) -> bool {
@@ -1867,8 +2307,12 @@ fn keep_caret_on_screen(
         (Some(at), Some(line_top)) => f32::from(at.top() - line_top.top()).max(0.),
         _ => 0.,
     };
-    let in_item =
-        SEPARATOR_HEIGHT + state.display_row_of_buffer_line(line) as f32 * line_height + within;
+    // The first file carries the head room above its separator.
+    let lead = if index == 0 { head } else { 0. };
+    let in_item = lead
+        + SEPARATOR_HEIGHT
+        + state.display_row_of_buffer_line(line) as f32 * line_height
+        + within;
     let Some(item) = list.bounds_for_item(index) else {
         list.scroll_to(gpui::ListOffset {
             item_ix: index,

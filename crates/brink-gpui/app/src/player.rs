@@ -55,6 +55,19 @@ pub enum PlayerEvent {
     /// Write mode's close: the Player is a pane there, and its header is
     /// the pane's.
     Close,
+    /// The pointer is on a row or choice: show its source on the NOW line,
+    /// scrolling only (decision log 2026-10-09).
+    Peek {
+        path: String,
+        span: Range<usize>,
+        /// A choice: shown with its body, not just its line.
+        choice: bool,
+    },
+    /// The pointer left the Player: back to NOW — the line the story is
+    /// on, or the choices it is offering.
+    PeekEnd {
+        now: Option<(String, Range<usize>)>,
+    },
     /// Something worth keeping outside the transcript — a compile failure
     /// or a runtime error. Restart clears the transcript; the Output log
     /// (`crate::output_log`) keeps the record.
@@ -79,6 +92,9 @@ enum Entry {
         text: SharedString,
         sticky: bool,
         source: Option<Location>,
+        /// The rest of the offer, passed by — the manuscript dims them.
+        /// Kept on the echo, so a rewind past it takes them back too.
+        passed: Vec<Location>,
     },
     /// A turn boundary or a runtime warning.
     Notice(SharedString),
@@ -95,10 +111,23 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// Whether the Player is out (Write mode's pane, or Script's tab). Put
+    /// away, following pauses and the manuscript keeps no NOW.
+    shown: bool,
     /// The source under the pointer — a row or a choice card — for the
     /// manuscript's bracket (decision log 2026-10-09), and whether it is a
     /// choice.
     hovered: Option<(Location, bool)>,
+    /// The save slot a Load attached this session to: Save state writes
+    /// back there (W14). `None` — a fresh run or a fork — saves anew.
+    attached: Option<(crate::saves::Store, String)>,
+    /// Both stores' slots as last read, for the idle Player's list.
+    saves: Vec<(crate::saves::Store, crate::saves::SlotMeta)>,
+    /// Lines rewound past: the manuscript keeps a dashed rail on them
+    /// until the story moves on (#3665).
+    undone: Vec<Location>,
+    /// How many steps back the worker can rewind.
+    history: usize,
     /// When the current choices arrived, so their cards slide in once.
     choices_at: Option<std::time::Instant>,
     /// When each entry arrived, parallel to `entries`: a row animates in
@@ -139,9 +168,12 @@ pub struct Player {
     /// A story line to bring to NOW, and how many more frames may try: its
     /// real top is measured after each layout and the list scrolled by the
     /// difference, until it sits there.
-    to_now: Option<(usize, u8)>,
+    to_now: Option<NowMove>,
     /// `>>`: playing on by itself at the Settings pace, until a stop.
     autoplay: bool,
+    /// Where autoplay will stop, found by running a copy of the story
+    /// ahead when it starts (`PlayCommand::Lookahead`).
+    autoplay_stop: Option<brink_gpui_model::play::PlayStop>,
     /// The wait before autoplay's next line; dropping it cancels it.
     autoplay_timer: Option<gpui::Task<()>>,
     /// Where the next line starts, as the last line's stop says: what ▶
@@ -184,12 +216,18 @@ impl Player {
         // the panel, not wait for the next line.
         cx.observe_global::<brink_gpui_shell::settings::AppSettings>(|_, cx| cx.notify())
             .detach();
+        let saves = all_saves(project.read(cx).root());
         Self {
             project,
             entries: Vec::new(),
             arrivals: Vec::new(),
             choices_at: None,
             hovered: None,
+            shown: true,
+            undone: Vec::new(),
+            history: 0,
+            attached: None,
+            saves,
             choices: Vec::new(),
             list: ListState::new(2, ListAlignment::Top, px(600.)),
             busy: false,
@@ -207,6 +245,7 @@ impl Player {
             to_now: None,
             autoplay: false,
             autoplay_timer: None,
+            autoplay_stop: None,
             next_at: None,
             held_why: None,
             write_mode: false,
@@ -287,9 +326,23 @@ impl Player {
 
     /// Compile and start — from the entry, or from a knot/stitch path.
     pub fn start(&mut self, at: Option<String>, cx: &mut Context<Self>) {
+        self.begin();
+        // A fresh run is attached to no save: the next save makes a new one.
+        self.attached = None;
+        if let Some(path) = &at {
+            self.push(Entry::Notice(format!("— from {path} —").into()));
+        }
+        self.start_at = at.clone();
+        self.send(PlayCommand::Start { at }, cx);
+    }
+
+    /// A clean session: what Start and a Load both begin from.
+    fn begin(&mut self) {
         self.generation += 1;
         self.entries.clear();
         self.arrivals.clear();
+        self.undone.clear();
+        self.history = 0;
         self.choices.clear();
         // One item before the transcript and one past it — the head and the
         // tail, the room that lets its first and last rows reach NOW.
@@ -300,11 +353,127 @@ impl Player {
         self.next_at = None;
         // Play and Restart are the way back to following, as the web's are.
         self.follow_paused = false;
-        if let Some(path) = &at {
-            self.push(Entry::Notice(format!("— from {path} —").into()));
+    }
+
+    /// Read both stores' slots afresh (the idle Player's list).
+    pub(crate) fn refresh_saves(&mut self, cx: &mut Context<Self>) {
+        self.saves = all_saves(self.project.read(cx).root());
+        cx.notify();
+    }
+
+    /// The default store for a new save: the app setting.
+    fn new_save_store(cx: &App) -> crate::saves::Store {
+        if brink_gpui_shell::settings::AppSettings::get(cx).saves_on_this_computer {
+            crate::saves::Store::Local
+        } else {
+            crate::saves::Store::Project
         }
-        self.start_at = at.clone();
-        self.send(PlayCommand::Start { at }, cx);
+    }
+
+    /// Save state (W14): checkpoint the running story — back into the slot
+    /// a Load attached this session to, else a new slot in the default
+    /// store.
+    pub(crate) fn save_state(&mut self, cx: &mut Context<Self>) {
+        if !self.running || self.busy {
+            return;
+        }
+        let root = self.project.read(cx).root().to_path_buf();
+        let target = self
+            .attached
+            .clone()
+            .map_or((Self::new_save_store(cx), None), |(store, id)| {
+                (store, Some(id))
+            });
+        let generation = self.generation;
+        let task = self.project.read(cx).play(PlayCommand::Save, cx);
+        cx.spawn(async move |this, cx| {
+            let saved = task.await.ok().and_then(|o| o.saved);
+            let _ = this.update(cx, |this, cx| {
+                if this.generation != generation {
+                    return;
+                }
+                let (store, id) = target;
+                let written = saved
+                    .ok_or_else(|| "nothing to save".to_owned())
+                    .and_then(|saved| {
+                        let dir = crate::saves::dir(store, &root)
+                            .ok_or_else(|| "no place to keep saves".to_owned())?;
+                        crate::saves::write(&dir, id.as_deref(), &saved).map_err(|e| e.to_string())
+                    });
+                match written {
+                    Ok(meta) => {
+                        this.push(Entry::Notice(
+                            format!("— saved: {} ({}) —", meta.name, store.label()).into(),
+                        ));
+                        this.attached = Some((store, meta.id));
+                    }
+                    Err(e) => this.push(Entry::Error {
+                        text: format!("could not save: {e}").into(),
+                        at: None,
+                    }),
+                }
+                this.refresh_saves(cx);
+            });
+        })
+        .detach();
+    }
+
+    /// Load a save — attached, so Save state writes back to it — or fork
+    /// one: start from a copy, unattached, the checkpoint untouched.
+    pub(crate) fn load_save(
+        &mut self,
+        store: crate::saves::Store,
+        id: &str,
+        fork: bool,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.project.read(cx).root().to_path_buf();
+        let Some(loaded) = crate::saves::dir(store, &root).and_then(|d| crate::saves::read(&d, id))
+        else {
+            self.push(Entry::Notice("— that save no longer exists —".into()));
+            self.refresh_saves(cx);
+            return;
+        };
+        self.begin();
+        self.attached = (!fork).then(|| (store, id.to_owned()));
+        self.push(Entry::Notice(
+            format!(
+                "— {} {} —",
+                if fork { "forked from" } else { "loaded" },
+                loaded.meta.name
+            )
+            .into(),
+        ));
+        self.start_at = loaded.meta.knot_path.clone();
+        self.send(
+            PlayCommand::Load {
+                state: loaded.state,
+                transcript: loaded.transcript,
+                knot: loaded.meta.knot_path,
+            },
+            cx,
+        );
+    }
+
+    /// Delete a save.
+    pub(crate) fn delete_save(
+        &mut self,
+        store: crate::saves::Store,
+        id: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let root = self.project.read(cx).root().to_path_buf();
+        if let Some(dir) = crate::saves::dir(store, &root) {
+            let _ = crate::saves::remove(&dir, id);
+        }
+        if self
+            .attached
+            .as_ref()
+            .is_some_and(|(s, i)| *s == store && i == id)
+        {
+            self.attached = None;
+        }
+        self.refresh_saves(cx);
     }
 
     /// Draw for Write mode (no Step) or Script.
@@ -372,6 +541,12 @@ impl Player {
             .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
     }
 
+    /// Where entry `ix`'s row was laid out, in window coordinates.
+    #[cfg(test)]
+    pub(crate) fn row_bounds(&self, ix: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.list.bounds_for_item(ix + 1)
+    }
+
     /// Where the current row was laid out, in window coordinates.
     #[cfg(test)]
     pub(crate) fn active_row_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
@@ -383,6 +558,26 @@ impl Player {
     pub(crate) fn now_gap(&self) -> Option<(f32, f32)> {
         let row = self.list.bounds_for_item(self.active_row()? + 1)?;
         Some((f32::from(row.top()), self.now_y))
+    }
+
+    /// The save slots as last read, by id.
+    #[cfg(test)]
+    pub(crate) fn save_ids(&self) -> Vec<String> {
+        let mut ids: Vec<String> = self.saves.iter().map(|(_, m)| m.id.clone()).collect();
+        ids.sort();
+        ids
+    }
+
+    /// What the header's status says.
+    #[cfg(test)]
+    pub(crate) fn status_label(&self, cx: &App) -> String {
+        self.status(cx).0.to_string()
+    }
+
+    /// Whether following is paused.
+    #[cfg(test)]
+    pub(crate) fn is_follow_paused(&self) -> bool {
+        self.follow_paused
     }
 
     /// Whether `>>` is playing on.
@@ -410,14 +605,85 @@ impl Player {
             self.halt_autoplay();
         } else if self.can_advance() {
             self.autoplay = true;
+            self.look_ahead(cx);
             self.send(PlayCommand::Next, cx);
         }
         cx.notify();
     }
 
+    /// Ask where autoplay will stop, for the status line. Sent before the
+    /// first line it plays, so the worker answers from where it starts.
+    fn look_ahead(&mut self, cx: &mut Context<Self>) {
+        self.autoplay_stop = None;
+        let generation = self.generation;
+        let task = self.project.read(cx).play(PlayCommand::Lookahead, cx);
+        cx.spawn(async move |this, cx| {
+            let Ok(outcome) = task.await else {
+                return;
+            };
+            let _ = this.update(cx, |this, cx| {
+                if this.generation == generation && this.autoplay {
+                    this.autoplay_stop = outcome.stop;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// `|<`: back to just before the last choice — choose again.
+    pub(crate) fn back_to_choice(&mut self, cx: &mut Context<Self>) {
+        if self.history > 0 && !self.busy {
+            self.halt_autoplay();
+            self.send(PlayCommand::BackToChoice, cx);
+        }
+    }
+
+    /// `<<`: one line back per press (2026-10-09, revised: not a timed
+    /// rewind).
+    pub(crate) fn back_one_line(&mut self, cx: &mut Context<Self>) {
+        if self.history > 0 && !self.busy {
+            self.halt_autoplay();
+            self.send(PlayCommand::Back, cx);
+        }
+    }
+
+    /// Keep the transcript up to the `lines`-th story line, and set what
+    /// came after aside as undone.
+    fn rewind_to(&mut self, lines: usize) {
+        let cut = if lines == 0 {
+            self.entries
+                .iter()
+                .position(|e| matches!(e, Entry::Line { .. }))
+                .unwrap_or(self.entries.len())
+        } else {
+            self.entries
+                .iter()
+                .enumerate()
+                .filter(|(_, e)| matches!(e, Entry::Line { .. }))
+                .nth(lines - 1)
+                .map_or(self.entries.len(), |(ix, _)| ix + 1)
+        };
+        let old = self.entries.len();
+        if cut >= old {
+            return;
+        }
+        let removed: Vec<Entry> = self.entries.drain(cut..).collect();
+        self.arrivals.truncate(cut);
+        self.list.splice(cut + 1..old + 1, 0);
+        self.undone
+            .extend(removed.into_iter().filter_map(|e| match e {
+                Entry::Line {
+                    source: Some(loc), ..
+                } => Some(loc),
+                _ => None,
+            }));
+    }
+
     fn halt_autoplay(&mut self) {
         self.autoplay = false;
         self.autoplay_timer = None;
+        self.autoplay_stop = None;
     }
 
     /// Autoplay's next line, after the pace's wait.
@@ -444,6 +710,36 @@ impl Player {
         }
     }
 
+    /// Write mode put the Player away, or brought it back (decision log
+    /// 2026-10-09). Away, following pauses — the manuscript stops moving
+    /// under the author and the NOW pill goes — and autoplay stops; back,
+    /// following resumes at NOW, as Play and Restart resume it.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown == shown {
+            return;
+        }
+        self.shown = shown;
+        if shown {
+            self.back_to_now(cx);
+        } else {
+            self.follow_paused = true;
+            self.halt_autoplay();
+            cx.notify();
+        }
+    }
+
+    /// The manuscript's NOW pill: follow again, and go back to the line the
+    /// story is on.
+    pub fn back_to_now(&mut self, cx: &mut Context<Self>) {
+        self.follow_paused = false;
+        if let Some((path, span)) = self.now_target()
+            && brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
+        {
+            cx.emit(PlayerEvent::Follow { path, span });
+        }
+        cx.notify();
+    }
+
     /// Follow: on → off; paused → on (resumed); off → on.
     fn toggle_follow(&mut self, cx: &mut Context<Self>) {
         let on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
@@ -464,6 +760,29 @@ impl Player {
         })
     }
 
+    /// The choices on offer, as one span of their source: from the first
+    /// choice's line to the last's (in the first's file).
+    fn choices_span(&self) -> Option<(String, Range<usize>)> {
+        let first = self.choices.iter().find_map(|c| c.source.as_ref())?;
+        let end = self
+            .choices
+            .iter()
+            .filter_map(|c| c.source.as_ref())
+            .filter(|l| l.path == first.path)
+            .map(|l| l.end)
+            .max()
+            .unwrap_or(first.end);
+        Some((first.path.clone(), first.start as usize..end as usize))
+    }
+
+    /// Where NOW is: the choices on offer, or the line the story is on.
+    pub(crate) fn now_target(&self) -> Option<(String, Range<usize>)> {
+        self.choices_span().or_else(|| {
+            self.current_source()
+                .map(|loc| (loc.path.clone(), loc.start as usize..loc.end as usize))
+        })
+    }
+
     /// Where the session has been, for the manuscript's gutter: each
     /// played line's source, the active line's, and a held line.
     #[must_use]
@@ -476,7 +795,11 @@ impl Player {
                 .enumerate()
                 .filter(|(ix, _)| Some(*ix) != active)
                 .filter_map(|(_, e)| match e {
+                    // A taken choice is a played line too: it gets the rail.
                     Entry::Line {
+                        source: Some(loc), ..
+                    }
+                    | Entry::Chosen {
                         source: Some(loc), ..
                     } => Some(loc.clone()),
                     _ => None,
@@ -489,7 +812,43 @@ impl Player {
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
             hover: self.hovered.clone(),
+            now: self
+                .now_target()
+                .filter(|_| self.shown)
+                .map(|(path, span)| Location {
+                    path,
+                    start: u32::try_from(span.start).unwrap_or(u32::MAX),
+                    end: u32::try_from(span.end).unwrap_or(u32::MAX),
+                }),
+            chosen: self.chosen_sources(),
+            not_taken: {
+                let chosen = self.chosen_sources();
+                self.entries
+                    .iter()
+                    .filter_map(|e| match e {
+                        Entry::Chosen { passed, .. } => Some(passed),
+                        _ => None,
+                    })
+                    .flatten()
+                    .filter(|loc| !chosen.contains(loc))
+                    .cloned()
+                    .collect()
+            },
+            undone: self.undone.clone(),
         }
+    }
+
+    /// Where each choice the reader took was written.
+    fn chosen_sources(&self) -> Vec<Location> {
+        self.entries
+            .iter()
+            .filter_map(|e| match e {
+                Entry::Chosen {
+                    source: Some(loc), ..
+                } => Some(loc.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// The index of the newest story line — the active row.
@@ -548,11 +907,18 @@ impl Player {
         let Some(choice) = self.choices.iter().find(|c| c.index == index).cloned() else {
             return;
         };
+        let passed = self
+            .choices
+            .iter()
+            .filter(|c| c.index != index)
+            .filter_map(|c| c.source.clone())
+            .collect();
         self.choices.clear();
         self.push(Entry::Chosen {
             text: choice.text.into(),
             sticky: choice.sticky,
             source: choice.source.clone(),
+            passed,
         });
         self.send(PlayCommand::Choose(index), cx);
     }
@@ -616,6 +982,14 @@ impl Player {
         // Every outcome says afresh whether the flow is held by the
         // debugger — a breakpoint, a watch, a step — rather than resting
         // after a line or at a place the story itself yields.
+        if let Some(back) = outcome.rewound {
+            self.rewind_to(back.lines);
+            self.choices.clear();
+            self.running = true;
+        }
+        if outcome.rewound.is_some() || outcome.history > 0 || outcome.steps.is_empty() {
+            self.history = outcome.history;
+        }
         let kind = outcome.stop.as_ref().map(|stop| stop.kind);
         self.paused = kind.is_some_and(StopKind::holds);
         let at = outcome.stop.as_ref().and_then(|stop| stop.at.clone());
@@ -688,14 +1062,16 @@ impl Player {
                 }
             }
         }
-        if let Some(loc) = follow
+        // At a choice point NOW is where the choices are offered, not the
+        // line before them (decision log 2026-10-09).
+        let follow = self
+            .choices_span()
+            .or_else(|| follow.map(|loc| (loc.path, loc.start as usize..loc.end as usize)));
+        if let Some((path, span)) = follow
             && !self.follow_paused
             && brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
         {
-            cx.emit(PlayerEvent::Follow {
-                path: loc.path.clone(),
-                span: loc.start as usize..loc.end as usize,
-            });
+            cx.emit(PlayerEvent::Follow { path, span });
         }
         for warning in outcome.warnings {
             let text = SharedString::from(format!("warning: {warning}"));
@@ -756,6 +1132,10 @@ impl Player {
     fn push(&mut self, entry: Entry) {
         let ix = self.entries.len();
         let line = matches!(entry, Entry::Line { .. });
+        // The story moving on settles what was rewound past.
+        if line {
+            self.undone.clear();
+        }
         self.entries.push(entry);
         self.arrivals.push(std::time::Instant::now());
         // Item 0 is the head spacer, so entry `ix` is item `ix + 1`.
@@ -763,15 +1143,16 @@ impl Player {
         // Beside the manuscript a story line's top sits on the NOW line,
         // where the manuscript puts its source (decision log 2026-10-09);
         // otherwise, and for chrome rows, just keep the row in view. The
-        // row goes to the top first, then is brought to NOW by measuring
-        // where it really landed (`render`): an estimate from the rows
-        // above it was a row short whenever they had not been measured.
+        // row lays out where it falls — under the one before — and the
+        // transcript then slides up until it meets NOW (`render`), measured
+        // rather than estimated. (It used to snap the row to the top and
+        // then back down: two jumps, one of them seen.)
         if self.write_mode && line {
-            self.list.scroll_to(gpui::ListOffset {
-                item_ix: ix + 1,
-                offset_in_item: px(0.),
+            self.to_now = Some(NowMove {
+                ix,
+                slide: None,
+                tries: NOW_TRIES,
             });
-            self.to_now = Some((ix, NOW_TRIES));
         } else {
             self.list.scroll_to_reveal_item(ix + 1);
         }
@@ -847,9 +1228,9 @@ impl Player {
         let row = div().id(("play-row", ix)).relative().w_full().child(spine);
         match entry {
             Entry::Line { text, tags, source } => {
-                let (role, shown) = self.looks.get(ix).map_or_else(
-                    || (Role::Narration, text.to_string()),
-                    |look| (look.role.clone(), look.text.clone()),
+                let (role, shown, direction) = self.looks.get(ix).map_or_else(
+                    || (Role::Narration, text.to_string(), None),
+                    |look| (look.role.clone(), look.text.clone(), look.direction.clone()),
                 );
                 let active = self.active_row() == Some(ix);
                 let mut body = v_flex().w_full().py(px(5.)).pr_4();
@@ -879,7 +1260,12 @@ impl Player {
                             );
                         }
                         if !shown.is_empty() {
-                            body = body.child(div().pl(px(SPEECH_X)).text_color(fg).child(shown));
+                            body = body.child(
+                                div()
+                                    .pl(px(SPEECH_X))
+                                    .text_color(fg)
+                                    .child(Self::speech(direction, shown, muted)),
+                            );
                         }
                     }
                     Role::Action => {
@@ -921,6 +1307,7 @@ impl Player {
                 text,
                 sticky,
                 source,
+                ..
             } => {
                 let row = row
                     .py(px(6.))
@@ -998,6 +1385,31 @@ impl Player {
                 px(size * 0.55),
                 colour,
             ))
+    }
+
+    /// A speech line's text, with a direction opening it — `(quietly)` —
+    /// set apart: dimmed, italic, and a space before the words. One run of
+    /// text, so a long line still wraps as prose.
+    fn speech(direction: Option<String>, words: String, muted: Hsla) -> gpui::AnyElement {
+        let Some(direction) = direction.filter(|d| !d.is_empty()) else {
+            return words.into_any_element();
+        };
+        let set_apart = 0..direction.len();
+        let text = if words.is_empty() {
+            direction
+        } else {
+            format!("{direction} {words}")
+        };
+        gpui::StyledText::new(text)
+            .with_highlights([(
+                set_apart,
+                gpui::HighlightStyle {
+                    color: Some(muted),
+                    font_style: Some(gpui::FontStyle::Italic),
+                    ..Default::default()
+                },
+            )])
+            .into_any_element()
     }
 
     /// Link a row back to where it was written (#3436, ruled 2026-09-02):
@@ -1091,6 +1503,15 @@ impl Player {
         cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
                 this.hovered = Some((loc.clone(), choice));
+                if brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
+                    && !this.follow_paused
+                {
+                    cx.emit(PlayerEvent::Peek {
+                        path: loc.path.clone(),
+                        span: loc.start as usize..loc.end as usize,
+                        choice,
+                    });
+                }
             } else if this.hovered.as_ref().is_some_and(|(l, _)| *l == loc) {
                 this.hovered = None;
             } else {
@@ -1185,7 +1606,7 @@ impl Player {
     fn icon_button(
         id: &'static str,
         icon: BrinkIcon,
-        tooltip: &'static str,
+        tooltip: impl Into<SharedString>,
         on: Option<Hsla>,
         enabled: bool,
         cx: &App,
@@ -1209,7 +1630,10 @@ impl Player {
                 el.cursor_pointer().hover(move |s| s.bg(hover))
             })
             .when(!enabled, |el| el.opacity(0.3))
-            .tooltip(move |window, cx| Tooltip::new(tooltip).build(window, cx))
+            .tooltip({
+                let tooltip: SharedString = tooltip.into();
+                move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx)
+            })
             .child(brink_gpui_shell::icons::icon(
                 icon,
                 px(16.),
@@ -1258,7 +1682,24 @@ impl Player {
             return ("Choose".into(), hsla(tokens.symbol_knot), false);
         }
         if self.autoplay {
-            return (with_here("Autoplaying").into(), hsla(tokens.info), false);
+            // Where it will stop, as the lookahead found (the canvas's
+            // "stops at ● tower.ink 6"); where it is until that answers.
+            let label = match self.autoplay_stop.as_ref() {
+                Some(stop) => match (stop.kind, &stop.at) {
+                    (StopKind::Breakpoint, Some((path, line))) => {
+                        let name = path.rsplit('/').next().unwrap_or(path);
+                        format!("Autoplaying · stops at ● {name} {line}")
+                    }
+                    (StopKind::Watchpoint, _) => {
+                        format!("Autoplaying · stops at a {}", stop.reason)
+                    }
+                    (StopKind::Choices, _) => "Autoplaying · to the next choice".to_owned(),
+                    (StopKind::Terminal, _) => "Autoplaying · to the end".to_owned(),
+                    _ => with_here("Autoplaying"),
+                },
+                None => with_here("Autoplaying"),
+            };
+            return (label.into(), hsla(tokens.info), false);
         }
         if self.running {
             let following = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
@@ -1296,6 +1737,16 @@ impl Player {
         // laid out, which reads as wide.
         let width = f32::from(self.list.viewport_bounds().size.width);
         let narrow = width > 0. && width < NARROW_HEADER;
+        let can_save = self.running && !self.busy;
+        let save_tip: SharedString = match self.attached.as_ref().and_then(|(store, id)| {
+            self.saves
+                .iter()
+                .find(|(s, m)| s == store && &m.id == id)
+                .map(|(_, m)| m.name.clone())
+        }) {
+            Some(name) => format!("Save state — writes back to {name}").into(),
+            None => "Save state — a new save".into(),
+        };
         let follow_on = brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor;
         let (follow_icon, follow_lit, follow_tip) = match (follow_on, self.follow_paused) {
             (true, true) => (
@@ -1373,14 +1824,17 @@ impl Player {
                     )
                     .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_tags(cx))),
                 )
-                .child(Self::icon_button(
-                    "player-save",
-                    BrinkIcon::PlayerSave,
-                    "Save state (coming)",
-                    None,
-                    false,
-                    cx,
-                ))
+                .child(
+                    Self::icon_button(
+                        "player-save",
+                        BrinkIcon::PlayerSave,
+                        save_tip.clone(),
+                        None,
+                        can_save,
+                        cx,
+                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.save_state(cx))),
+                )
                 .child(
                     Self::icon_button(
                         "player-more",
@@ -1395,6 +1849,7 @@ impl Player {
                     ),
                 )
             })
+            .child(self.render_saves_menu(cx))
             .when(narrow, |el| el.child(self.render_more_menu(cx)))
             .when(self.write_mode, |el| {
                 el.child(
@@ -1418,6 +1873,117 @@ impl Player {
         cx.notify();
     }
 
+    /// The header's saves menu (decision log 2026-10-09): both stores'
+    /// slots, read when it opens — Load (and save back to it) or Fork
+    /// (start from a copy). Deleting lives on the idle Player's list.
+    fn render_saves_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        use gpui_component::button::{Button, ButtonVariants as _};
+        use gpui_component::menu::{DropdownMenu as _, PopupMenuItem};
+        use gpui_component::{IconName, Sizable as _};
+        let me = cx.entity().downgrade();
+        let root = self.project.read(cx).root().to_path_buf();
+        Button::new("player-saves")
+            .ghost()
+            .small()
+            .icon(IconName::FolderOpen)
+            .tooltip("Saves")
+            .dropdown_menu(move |menu, _, _| {
+                let slots = all_saves(&root);
+                if slots.is_empty() {
+                    return menu.item(PopupMenuItem::new("No saves yet").disabled(true));
+                }
+                let pick = |fork: bool| {
+                    let me = me.clone();
+                    move |store: crate::saves::Store, id: String| {
+                        let me = me.clone();
+                        move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                            let _ = me.update(cx, |this, cx| this.load_save(store, &id, fork, cx));
+                        }
+                    }
+                };
+                let (load, fork) = (pick(false), pick(true));
+                let mut menu = menu.label("Load — and save back to it");
+                for (store, meta) in slots.iter().take(SAVES_IN_MENU) {
+                    menu = menu.item(
+                        PopupMenuItem::new(slot_label(*store, meta))
+                            .on_click(load(*store, meta.id.clone())),
+                    );
+                }
+                menu = menu.separator().label("Fork — start from a copy");
+                for (store, meta) in slots.iter().take(SAVES_IN_MENU) {
+                    menu = menu.item(
+                        PopupMenuItem::new(slot_label(*store, meta))
+                            .on_click(fork(*store, meta.id.clone())),
+                    );
+                }
+                menu
+            })
+            .into_any_element()
+    }
+
+    /// The idle Player's saves: each with Load, Fork and delete.
+    fn render_idle_saves(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let theme = cx.theme();
+        let (fg, muted, border, hover) = (
+            theme.foreground,
+            theme.muted_foreground,
+            theme.border,
+            theme.muted.opacity(0.5),
+        );
+        let action = |id: (&'static str, usize), label: &'static str| {
+            div()
+                .id(id)
+                .px_2()
+                .h(px(22.))
+                .flex()
+                .items_center()
+                .rounded(px(5.))
+                .border_1()
+                .border_color(border)
+                .text_xs()
+                .text_color(fg)
+                .cursor_pointer()
+                .hover(move |s| s.bg(hover))
+                .child(label)
+        };
+        v_flex()
+            .pl(px(TEXT_X))
+            .pr_4()
+            .pt_4()
+            .gap(px(6.))
+            .child(div().text_xs().text_color(muted).child("Saves"))
+            .children(self.saves.iter().enumerate().map(|(n, (store, meta))| {
+                let (store, id) = (*store, meta.id.clone());
+                let (id_load, id_fork, id_delete) = (id.clone(), id.clone(), id);
+                h_flex()
+                    .gap(px(8.))
+                    .items_center()
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .text_sm()
+                            .text_color(fg)
+                            .child(slot_label(store, meta)),
+                    )
+                    .child(action(("save-load", n), "Load").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.load_save(store, &id_load, false, cx)
+                        },
+                    )))
+                    .child(action(("save-fork", n), "Fork").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| {
+                            this.load_save(store, &id_fork, true, cx)
+                        },
+                    )))
+                    .child(action(("save-delete", n), "Delete").on_click(cx.listener(
+                        move |this, _: &ClickEvent, _, cx| this.delete_save(store, &id_delete, cx),
+                    )))
+            }))
+            .into_any_element()
+    }
+
     /// The narrow header's ⋯: what folded out of the bar, then settings.
     fn render_more_menu(&self, cx: &mut Context<Self>) -> gpui::AnyElement {
         use gpui_component::button::{Button, ButtonVariants as _};
@@ -1425,6 +1991,7 @@ impl Player {
         use gpui_component::{IconName, Sizable as _};
         let me = cx.entity().downgrade();
         let tags = self.show_tags;
+        let can_save = self.running && !self.busy;
         Button::new("player-more")
             .ghost()
             .small()
@@ -1443,12 +2010,22 @@ impl Player {
                         let _ = me.update(cx, |_, cx| cx.emit(PlayerEvent::OpenSettings));
                     }
                 };
+                let save = {
+                    let me = me.clone();
+                    move |_: &ClickEvent, _: &mut Window, cx: &mut App| {
+                        let _ = me.update(cx, |this, cx| this.save_state(cx));
+                    }
+                };
                 menu.item(
                     PopupMenuItem::new("Show tags")
                         .checked(tags)
                         .on_click(toggle_tags),
                 )
-                .item(PopupMenuItem::new("Save state (coming)").disabled(true))
+                .item(
+                    PopupMenuItem::new("Save state")
+                        .disabled(!can_save)
+                        .on_click(save),
+                )
                 .separator()
                 .item(PopupMenuItem::new("Player settings").on_click(settings))
             })
@@ -1473,6 +2050,7 @@ impl Player {
         let width = f32::from(self.list.viewport_bounds().size.width);
         let roomy = width == 0. || width >= HINT_MIN_WIDTH;
         let can_primary = !self.running || self.autoplay || self.can_advance();
+        let can_back = self.history > 0 && !self.busy;
         let advance = self.can_advance();
         let hint: SharedString = if self.autoplay {
             "space · pause".into()
@@ -1529,22 +2107,28 @@ impl Player {
                         .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.stop(cx))),
                     ),
             )
-            .child(Self::icon_button(
-                "player-prev",
-                BrinkIcon::TransportPrev,
-                "Back to just before the last choice (coming)",
-                None,
-                false,
-                cx,
-            ))
-            .child(Self::icon_button(
-                "player-back",
-                BrinkIcon::TransportBack,
-                "Rewind (coming)",
-                None,
-                false,
-                cx,
-            ))
+            .child(
+                Self::icon_button(
+                    "player-prev",
+                    BrinkIcon::TransportPrev,
+                    "Back to just before the last choice",
+                    None,
+                    can_back,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.back_to_choice(cx))),
+            )
+            .child(
+                Self::icon_button(
+                    "player-back",
+                    BrinkIcon::TransportBack,
+                    "Back one line",
+                    None,
+                    can_back,
+                    cx,
+                )
+                .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.back_one_line(cx))),
+            )
             .child(
                 div()
                     .id("player-primary")
@@ -1636,6 +2220,13 @@ pub struct PlayTrail {
     /// The source of the transcript row (or choice card) under the
     /// pointer, and whether it is a choice — the manuscript brackets it.
     pub hover: Option<(Location, bool)>,
+    /// Where NOW is: the choices on offer, or the line the story is on.
+    pub now: Option<Location>,
+    /// The choices taken, and the ones offered beside them and passed by.
+    pub chosen: Vec<Location>,
+    pub not_taken: Vec<Location>,
+    /// Lines rewound past, until the story moves on.
+    pub undone: Vec<Location>,
 }
 
 /// The story session's state, for the status bar (`docs/studio-shell-spec.md`
@@ -1753,23 +2344,40 @@ impl Render for Player {
         // Bring the current line to NOW: measure where the last layout
         // really put it, scroll by the difference, and look again next
         // frame — until it is there, or the tries run out.
-        if let Some((ix, tries)) = self.to_now.take() {
-            let again = tries.checked_sub(1).map(|left| (ix, left));
-            match self.list.bounds_for_item(ix + 1) {
+        if let Some(mut slide) = self.to_now.take() {
+            match self.list.bounds_for_item(slide.ix + 1) {
                 Some(row) => {
+                    // Where it is now; where the slide wants it this frame.
                     let off = f32::from(row.top()) - self.now_y;
-                    if off.abs() > 1. {
-                        self.list.scroll_by(px(off));
-                        self.to_now = again;
+                    let (from, started) =
+                        *slide.slide.get_or_insert((off, std::time::Instant::now()));
+                    let t = (started.elapsed().as_secs_f32() / NOW_SLIDE.as_secs_f32()).min(1.);
+                    // Ease-out cubic: settles gently onto NOW rather than
+                    // covering most of the way in the first few frames.
+                    let want = from * (1. - t).powi(3);
+                    let by = off - want;
+                    if by.abs() > 0.25 {
+                        self.list.scroll_by(px(by));
+                    }
+                    if t < 1. || want.abs() > 1. {
+                        self.to_now = Some(slide);
                     }
                 }
-                // Scrolled above it: put it at the top and measure again.
+                // Not laid out yet: give it a frame or two; past that it is
+                // out of reach (scrolled well away), so go to it.
+                None if slide.tries > 0 => {
+                    slide.tries -= 1;
+                    self.to_now = Some(slide);
+                }
                 None => {
                     self.list.scroll_to(gpui::ListOffset {
-                        item_ix: ix + 1,
+                        item_ix: slide.ix + 1,
                         offset_in_item: px(0.),
                     });
-                    self.to_now = again;
+                    self.to_now = Some(NowMove {
+                        tries: NOW_TRIES,
+                        ..slide
+                    });
                 }
             }
             if self.to_now.is_some() {
@@ -1807,12 +2415,21 @@ impl Render for Player {
         let started = !self.entries.is_empty();
         let prose_size = brink_gpui_shell::settings::AppSettings::get(cx).player_size();
         let header = self.render_header(cx);
+        let idle_saves = self.render_idle_saves(cx);
         let cards = self.render_cards(cx);
         let strip = self.render_strip(cx);
 
         v_flex()
             .id("player")
             .track_focus(&self.focus)
+            // The pointer leaving the Player ends a hover's peek.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    cx.emit(PlayerEvent::PeekEnd {
+                        now: this.now_target(),
+                    });
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .bg(surface)
@@ -1820,16 +2437,20 @@ impl Render for Player {
             .child(header)
             .when(!started, |el| {
                 el.child(
-                    div()
+                    v_flex()
                         .flex_1()
-                        .p_4()
-                        .pl(px(TEXT_X))
-                        .text_xs()
-                        .text_color(muted)
                         .child(
-                            "Nothing is running. ▶ plays the story from its entry; \
-                             \"Play from here\" on a knot starts there.",
-                        ),
+                            div()
+                                .p_4()
+                                .pl(px(TEXT_X))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(
+                                    "Nothing is running. ▶ plays the story from its entry; \
+                                     \"Play from here\" on a knot starts there.",
+                                ),
+                        )
+                        .when(!self.saves.is_empty(), |el| el.child(idle_saves)),
                 )
             })
             .when(started, |el| {
@@ -1871,9 +2492,50 @@ fn cards_in(n: usize) -> std::time::Duration {
     CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
 }
 
-/// How many frames may correct a line onto NOW before giving up — a few
-/// is plenty; the bound keeps a list that cannot settle from looping.
+/// How many frames a new line may take to be laid out before the list is
+/// scrolled to it outright.
 const NOW_TRIES: u8 = 4;
+
+/// How long the transcript slides up to bring a new line to NOW.
+const NOW_SLIDE: std::time::Duration = std::time::Duration::from_millis(220);
+
+/// A story line on its way to NOW: which, and — once it is laid out —
+/// where the slide began and when.
+#[derive(Clone, Copy)]
+struct NowMove {
+    ix: usize,
+    slide: Option<(f32, std::time::Instant)>,
+    tries: u8,
+}
+
+/// How many saves each section of the header's saves menu lists.
+const SAVES_IN_MENU: usize = 8;
+
+/// Both stores' slots for the project at `root`, newest first within each.
+fn all_saves(root: &std::path::Path) -> Vec<(crate::saves::Store, crate::saves::SlotMeta)> {
+    [crate::saves::Store::Project, crate::saves::Store::Local]
+        .into_iter()
+        .flat_map(|store| {
+            crate::saves::dir(store, root)
+                .map(|dir| crate::saves::list(&dir))
+                .unwrap_or_default()
+                .into_iter()
+                .map(move |meta| (store, meta))
+        })
+        .collect()
+}
+
+/// A slot as a list shows it: its name, where it is, the turn, and which
+/// store holds it.
+fn slot_label(store: crate::saves::Store, meta: &crate::saves::SlotMeta) -> String {
+    let at = meta.knot_path.as_deref().unwrap_or("story");
+    format!(
+        "{} · {at} · turn {} · {}",
+        meta.name,
+        meta.turn,
+        store.label()
+    )
+}
 
 /// The hover group of a transcript row, for its go-to-source button.
 const ROW_GROUP: &str = "player-row";
@@ -1887,6 +2549,14 @@ const HINT_MIN_WIDTH: f32 = 560.;
 /// Where the NOW line sits, as a share of the window's height: the Player
 /// and the manuscript both put the current line's top there.
 const NOW_FRACTION: f32 = 0.4;
+
+/// The NOW line of the window `handle`, for a test.
+#[cfg(test)]
+pub(crate) fn now_line_for_test(cx: &mut App, handle: gpui::AnyWindowHandle) -> f32 {
+    handle
+        .update(cx, |_, window, _| now_line(window))
+        .unwrap_or(0.)
+}
 
 /// The NOW line in `window`'s coordinates.
 pub(crate) fn now_line(window: &Window) -> f32 {

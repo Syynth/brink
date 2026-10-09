@@ -119,6 +119,10 @@ pub struct AppSettings {
     /// the reading pace (decision log 2026-10-09). In the web's unit for
     /// its paced reveal, so the two studios agree on what a number means.
     pub autoplay_ms: f32,
+    /// Where a NEW save goes (W14): this computer's app data rather than
+    /// the project's `.brink/saves/`. Both are always listed; this picks
+    /// only the default target.
+    pub saves_on_this_computer: bool,
     /// Write mode's manuscript column width in characters, centred in the
     /// room beside the sidebar and the Player. `0` is full width. In
     /// characters so it follows the editor's font size.
@@ -329,6 +333,7 @@ impl Default for AppSettings {
             follow_in_editor: true,
             player_font_size: 0.,
             autoplay_ms: DEFAULT_AUTOPLAY_MS,
+            saves_on_this_computer: false,
             manuscript_width: DEFAULT_MANUSCRIPT_WIDTH,
             recents: Vec::new(),
             reopen_last: false,
@@ -390,6 +395,7 @@ impl AppSettings {
             "follow_in_editor": self.follow_in_editor,
             "player_font_size": self.player_font_size,
             "autoplay_ms": self.autoplay_ms,
+            "saves_on_this_computer": self.saves_on_this_computer,
             "manuscript_width": self.manuscript_width,
             "recents": self.recents.clone(),
             "reopen_last": self.reopen_last,
@@ -465,6 +471,10 @@ impl AppSettings {
                 .get("follow_in_editor")
                 .and_then(Value::as_bool)
                 .unwrap_or(defaults.follow_in_editor),
+            saves_on_this_computer: value
+                .get("saves_on_this_computer")
+                .and_then(Value::as_bool)
+                .unwrap_or(defaults.saves_on_this_computer),
             autoplay_ms: num("autoplay_ms").map_or(defaults.autoplay_ms, |ms| {
                 ms.clamp(MIN_AUTOPLAY_MS, MAX_AUTOPLAY_MS)
             }),
@@ -690,6 +700,7 @@ mod tests {
             follow_in_editor: false,
             player_font_size: 20.,
             autoplay_ms: 900.,
+            saves_on_this_computer: true,
             manuscript_width: 72.,
             recents: vec!["/home/me/harbour/story.ink".to_owned()],
             reopen_last: true,

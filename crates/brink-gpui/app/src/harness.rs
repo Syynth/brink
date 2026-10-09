@@ -370,6 +370,15 @@ impl Harness {
         self.app().run_until_parked();
     }
 
+    /// Draw `window` once, without capturing it — for sampling where
+    /// things are, frame by frame, at real speed.
+    pub fn redraw(&mut self, window: AnyWindowHandle) {
+        self.app()
+            .update_window(window, |_, window, _| window.refresh())
+            .ok();
+        self.app().run_until_parked();
+    }
+
     /// Move the clock on by `by`, then settle. The harness runs on
     /// simulated time: a `timer` — a slide's finish, a debounce — fires
     /// only when the test says that much time has passed.
