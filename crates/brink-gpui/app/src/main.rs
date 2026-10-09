@@ -778,11 +778,13 @@ impl Studio {
                 ProjectEvent::Opened { .. } => {
                     this.open_initial(window, cx);
                     this.refresh_status(cx);
-                    let title = this.project_name(cx);
-                    this.workspace
-                        .update(cx, |workspace, cx| workspace.set_story_title(title, cx));
+                    this.refresh_title(window, cx);
                 }
-                ProjectEvent::Analyzed => this.refresh_status(cx),
+                // An edit to `brink.toml` can rename the project.
+                ProjectEvent::Analyzed => {
+                    this.refresh_status(cx);
+                    this.refresh_title(window, cx);
+                }
                 // The file set moving changes the status bar's file count.
                 ProjectEvent::FilesChanged => this.refresh_status(cx),
                 // A change nobody in the studio made: said out loud, and
@@ -2277,12 +2279,20 @@ impl Studio {
     }
 
     /// What the unsaved-work prompts and Write mode's title bar call this
-    /// project: its folder's name.
+    /// project: its `[project] name`, or its folder's name.
     fn project_name(&self, cx: &App) -> String {
-        self.project.read(cx).root().file_name().map_or_else(
-            || "this project".to_owned(),
-            |n| n.to_string_lossy().into_owned(),
-        )
+        self.project.read(cx).display_name()
+    }
+
+    /// Name the project in the window's title and Write mode's title bar,
+    /// when the name moved.
+    fn refresh_title(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let title = self.project_name(cx);
+        if self.workspace.read(cx).story_title().as_ref() != title {
+            window.set_window_title(&title);
+            self.workspace
+                .update(cx, |workspace, cx| workspace.set_story_title(title, cx));
+        }
     }
 
     /// Put the unsaved-work prompt up if anything is dirty, answering the
@@ -2811,17 +2821,14 @@ impl Render for Studio {
     }
 }
 
-/// A recent's label: the folder's own name, with its parent for context —
-/// a list of `story`, `story`, `story` names nothing.
+/// A recent's label: the landing row's name (a config's `[project] name`,
+/// else its folder; a story file's own name), with the folder it sits in
+/// for context — a list of `story`, `story`, `story` names nothing.
 fn recent_label(path: &str) -> String {
-    let path = std::path::Path::new(path);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.to_string_lossy().into_owned());
-    match path.parent().and_then(std::path::Path::file_name) {
-        Some(parent) => format!("{name} ({})", parent.to_string_lossy()),
-        None => name,
+    let row = landing::recent_display(path, None);
+    match std::path::Path::new(&row.detail).file_name() {
+        Some(parent) => format!("{} ({})", row.name, parent.to_string_lossy()),
+        None => row.name,
     }
 }
 
@@ -2965,6 +2972,16 @@ mod tests {
         // which is why the parent is there at all.
         assert_eq!(recent_label("/a/one/story"), "story (one)");
         assert_eq!(recent_label("/a/two/story"), "story (two)");
+        // A config is labelled like its landing row: by its folder when it
+        // has no name (this one does not exist), never as `brink.toml`.
+        assert_eq!(
+            recent_label("/home/me/stories/harbour/brink.toml"),
+            "harbour (stories)"
+        );
+        assert_eq!(
+            recent_label("/home/me/drafts/prologue.ink"),
+            "prologue.ink (drafts)"
+        );
         assert_eq!(
             recent_label("/"),
             "/",
@@ -2988,6 +3005,56 @@ mod modes_driven {
     fn mode(h: &mut Harness, window: AnyWindowHandle) -> EditorView {
         let studio = h.studio(window).expect("open");
         h.read(|cx| studio.read(cx).workspace.read(cx).editor_view(cx))
+    }
+
+    /// `[project] name` titles the window, an edit to `brink.toml`
+    /// renames it live, and removing the key brings the folder back.
+    #[test]
+    fn the_title_bar_names_the_project_by_its_config() {
+        let dir = scratch_dir("named");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nname = \"Harbour Lights\"\nentry = \"main.ink\"\n",
+        )
+        .expect("writing the config");
+        std::fs::write(dir.join("main.ink"), "Hello.\n-> END\n").expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir.join("brink.toml"));
+        let studio = h.studio(window).expect("open");
+        let title = |h: &mut Harness| {
+            h.read(|cx| studio.read(cx).workspace.read(cx).story_title().to_string())
+        };
+        assert_eq!(title(&mut h), "Harbour Lights");
+
+        // The rename lands with the analysis the edit sets off, on the
+        // worker's own thread.
+        let renamed = |h: &mut Harness, text: &str, to: &str| {
+            h.update(|cx| {
+                let project = studio.read(cx).project.clone();
+                project.update(cx, |project, cx| {
+                    project.edit("brink.toml", text.to_owned(), None, cx);
+                });
+            });
+            h.settle_until(std::time::Duration::from_secs(10), |h| title(h) == to)
+        };
+        assert!(
+            renamed(
+                &mut h,
+                "[project]\nname = \"Lanterns\"\nentry = \"main.ink\"\n",
+                "Lanterns"
+            ),
+            "renamed live, but the title says {:?}",
+            title(&mut h)
+        );
+        let folder = dir
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .expect("a named folder");
+        assert!(
+            renamed(&mut h, "[project]\nentry = \"main.ink\"\n", &folder),
+            "no name: the folder, but the title says {:?}",
+            title(&mut h)
+        );
     }
 
     #[test]

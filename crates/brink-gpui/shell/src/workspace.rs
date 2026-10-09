@@ -715,8 +715,17 @@ impl Workspace {
 
     /// Name the story in Write mode's title bar.
     pub fn set_story_title(&mut self, title: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.story_title = title.into();
-        cx.notify();
+        let title = title.into();
+        if self.story_title != title {
+            self.story_title = title;
+            cx.notify();
+        }
+    }
+
+    /// The story's name, as Write mode's title bar shows it.
+    #[must_use]
+    pub fn story_title(&self) -> &SharedString {
+        &self.story_title
     }
 
     /// Say what the Writing sidebar is doing (`None`: closed).

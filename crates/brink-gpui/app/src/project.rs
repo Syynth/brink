@@ -163,6 +163,8 @@ pub struct Project {
     /// in the manuscript is as unsaved as one made in a Code view tab.
     saved: BTreeMap<String, String>,
     entry: Option<String>,
+    /// `[project] name`, from the config as last applied.
+    name: Option<String>,
     drafts: BTreeSet<String>,
     /// Per-glob attribution for `[project] drafts`, from the last analysis.
     draft_globs: Vec<DraftGlob>,
@@ -368,6 +370,7 @@ impl Project {
             sources: BTreeMap::new(),
             saved: BTreeMap::new(),
             entry: None,
+            name: None,
             drafts: BTreeSet::new(),
             draft_globs: Vec::new(),
             drafts_known: false,
@@ -435,6 +438,7 @@ impl Project {
                     self.saved = self.sources.clone();
                     self.files = opened.files;
                     self.entry = opened.entry;
+                    self.name = opened.name;
                     // Read beside the project, never through the session:
                     // `.json` is not a source, and this is presentation.
                     self.binder_order = std::fs::read_to_string(self.root.join(binder_order::PATH))
@@ -476,6 +480,7 @@ impl Project {
                 self.closure = analyzed.closure.into_iter().collect();
                 // The config can move the entry between analyses.
                 self.entry = analyzed.entry;
+                self.name = analyzed.name;
                 self.warnings = analyzed.config_warnings;
                 self.analyzed = true;
                 self.last_analyze_ms = analyzed.elapsed_ms;
@@ -1174,6 +1179,13 @@ impl Project {
         self.entry.as_deref()
     }
 
+    /// What the studio calls this project: its `brink.toml`'s `[project]
+    /// name`, or its folder's name (decision log 2026-10-09).
+    #[must_use]
+    pub fn display_name(&self) -> String {
+        display_name(self.name.as_deref(), &self.root)
+    }
+
     /// The project's `brink.toml`, root-relative, if it has one. Its text
     /// is [`Project::loaded_source`]; edits go through [`Project::edit`].
     #[must_use]
@@ -1535,6 +1547,21 @@ impl Project {
     }
 }
 
+/// A project's name for display: `name` (a `brink.toml`'s `[project]
+/// name`) when it says anything, otherwise the folder's own name. The
+/// title bar, the unsaved-work prompts and the landing's recents all call
+/// a project this, so they cannot disagree.
+#[must_use]
+pub fn display_name(name: Option<&str>, folder: &std::path::Path) -> String {
+    match name.map(str::trim) {
+        Some(name) if !name.is_empty() => name.to_owned(),
+        _ => folder.file_name().map_or_else(
+            || "this project".to_owned(),
+            |n| n.to_string_lossy().into_owned(),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1551,6 +1578,22 @@ mod tests {
         let run = source.find("Run").expect("choice") as u32;
         let spans = [(lamp, end), (run, run + 3), (500, 510)];
         assert_eq!(count_words(source, &spans), 4, "three words, then `Run`");
+    }
+
+    #[test]
+    fn a_projects_name_beats_its_folder_and_blank_falls_back() {
+        let folder = std::path::Path::new("/home/me/harbour");
+        assert_eq!(
+            display_name(Some("Harbour Lights"), folder),
+            "Harbour Lights"
+        );
+        assert_eq!(display_name(Some("  Lanterns "), folder), "Lanterns");
+        assert_eq!(display_name(Some("   "), folder), "harbour");
+        assert_eq!(display_name(None, folder), "harbour");
+        assert_eq!(
+            display_name(None, std::path::Path::new("/")),
+            "this project"
+        );
     }
 
     #[test]
