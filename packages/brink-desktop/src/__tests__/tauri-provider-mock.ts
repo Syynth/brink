@@ -42,6 +42,7 @@ export function tauriProviderMock({
     projectAnchorExists: vi.fn(() => Promise.resolve(true)),
     pickProjectFile: vi.fn(() => Promise.resolve(null)),
     discoverProjectConfig: vi.fn(() => Promise.resolve(null)),
+    configProjectName: vi.fn(() => Promise.resolve(null)),
     createProject: vi.fn(() => Promise.resolve("")),
     readAppSettings: vi.fn(() =>
       Promise.resolve({
