@@ -3626,6 +3626,58 @@ mod modes_driven {
         assert!(tab_on, "the tab re-checks: {:?}", codes_of(&mut h, false));
     }
 
+    /// macOS's own grammar replaces Harper's when it is picked: the doubled
+    /// word is still marked, by the OS's rule instead of Harper's.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn picking_macos_grammar_swaps_the_checker_not_the_finding() {
+        use brink_gpui_model::prose::Grammar;
+        let mut h = Harness::new();
+        let dir = scratch_dir("os-grammar");
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"story.ink\"\n")
+            .expect("config");
+        std::fs::write(
+            dir.join("story.ink"),
+            "-> start\n=== start ===\nHe opened the the door.\n-> DONE\n",
+        )
+        .expect("story");
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeScript);
+        let codes = |h: &mut Harness| {
+            h.read(|cx| {
+                studio
+                    .read(cx)
+                    .code
+                    .read(cx)
+                    .active_document()
+                    .map(|d| d.read(cx).editor().clone())
+                    .and_then(|e| {
+                        e.read(cx).diagnostics().map(|set| {
+                            set.iter()
+                                .filter_map(|d| d.code.as_ref().map(|c| c.to_string()))
+                                .filter(|c| c.starts_with("prose."))
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .unwrap_or_default()
+            })
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let harper = h.settle_until(wait, |h| codes(h).contains(&"prose.Repetition".to_owned()));
+        assert!(harper, "Harper's by default: {:?}", codes(&mut h));
+
+        h.app_window(window, |_, cx| {
+            brink_gpui_shell::settings::update(cx, |s| s.prose_grammar = Grammar::MacOs);
+        });
+        let swapped = h.settle_until(wait, |h| {
+            let codes = codes(h);
+            !codes.contains(&"prose.Repetition".to_owned())
+                && codes.iter().any(|c| c != "prose.Spelling")
+        });
+        assert!(swapped, "the OS's rule instead: {:?}", codes(&mut h));
+    }
+
     /// Write mode draws the same squiggles as Script: a bad reference is
     /// marked where it is, not only counted. (The manuscript's sections
     /// never received the analysis's diagnostics at all.)

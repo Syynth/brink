@@ -49,11 +49,20 @@ pub enum Grammar {
     /// Harper's rules.
     #[default]
     Harper,
+    /// macOS's quick grammar rules, plus whatever the system's grammar
+    /// model has already worked out for the same sentences.
+    #[cfg(target_os = "macos")]
+    MacOs,
     /// None: spelling only.
     Off,
 }
 
 impl Grammar {
+    /// The choices this build has. A settings file naming one it lacks
+    /// reads as the default ([`Grammar::parse`] does not know it).
+    #[cfg(target_os = "macos")]
+    pub const ALL: [Self; 3] = [Self::Harper, Self::MacOs, Self::Off];
+    #[cfg(not(target_os = "macos"))]
     pub const ALL: [Self; 2] = [Self::Harper, Self::Off];
 
     /// The spelling in the app's settings file.
@@ -61,6 +70,8 @@ impl Grammar {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Harper => "harper",
+            #[cfg(target_os = "macos")]
+            Self::MacOs => "macos",
             Self::Off => "off",
         }
     }
@@ -253,7 +264,7 @@ pub fn project_dictionary(session: &IdeSession, extra: &[String]) -> Vec<String>
 #[derive(Default)]
 pub struct Checker {
     #[cfg(target_os = "macos")]
-    spelling: Option<macos::Spelling>,
+    os: Option<macos::OsChecker>,
 }
 
 impl Checker {
@@ -307,7 +318,8 @@ impl Checker {
         compose(harper::check(source, spans, dictionary, dialect), grammar)
     }
 
-    /// The OS for spelling, Harper for the grammar the setting asks for.
+    /// The OS for spelling; the grammar from whichever checker the
+    /// setting names.
     #[cfg(target_os = "macos")]
     fn run(
         &mut self,
@@ -326,15 +338,18 @@ impl Checker {
             .zip(spans)
             .filter_map(|(&(a, b), &(at, _))| Some((source.get(a as usize..b as usize)?, at)))
             .collect();
-        let spelling = self
-            .spelling
-            .get_or_insert_with(macos::Spelling::new)
-            .check(&texts, dictionary, dialect);
+        let (spelling, os_grammar) = self.os.get_or_insert_with(macos::OsChecker::new).check(
+            &texts,
+            dictionary,
+            dialect,
+            grammar == Grammar::MacOs,
+        );
         let grammar = match grammar {
             Grammar::Harper => harper::check(source, spans, dictionary, dialect)
                 .into_iter()
                 .filter(|lint| lint.kind != SPELLING)
                 .collect(),
+            Grammar::MacOs => os_grammar,
             Grammar::Off => Vec::new(),
         };
         merge(spelling, grammar)

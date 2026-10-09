@@ -1,5 +1,6 @@
-//! macOS's own spell checker (`NSSpellChecker`): the spelling on macOS
-//! (`docs/gpui-prose-checker-spec.md` §5).
+//! macOS's own spell checker (`NSSpellChecker`): the spelling on macOS,
+//! and its quick grammar when the author picks it
+//! (`docs/gpui-prose-checker-spec.md` §5, §6).
 //!
 //! It honours the words the author has taught macOS anywhere ("Learn
 //! Spelling" in Mail, Pages, …), and it takes the project's words as a
@@ -32,8 +33,9 @@ use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
 
 use objc2::rc::{Retained, autoreleasepool};
+use objc2::runtime::AnyObject;
 use objc2_app_kit::NSSpellChecker;
-use objc2_foundation::{NSArray, NSRange, NSString, NSTextCheckingType};
+use objc2_foundation::{NSArray, NSDictionary, NSRange, NSString, NSTextCheckingType, NSValue};
 
 use super::{Lint16, MAX_FIXES, ProseFix, SPELLING};
 
@@ -54,7 +56,7 @@ static CHECKER: Mutex<()> = Mutex::new(());
 
 /// The checker, and what it keeps between checks. Lives in the worker
 /// loop for one project; dropping it closes the spell document.
-pub(super) struct Spelling {
+pub(super) struct OsChecker {
     checker: Retained<NSSpellChecker>,
     /// This project's spell document — the scope of the ignore list.
     tag: isize,
@@ -62,13 +64,24 @@ pub(super) struct Spelling {
     words: Vec<String>,
     /// The language as last applied (`en_US`, …); empty before the first.
     language: &'static str,
-    /// A span's text → its misspellings, relative to the span.
-    spans: Recent<Vec<Miss>>,
+    /// Whether the last check asked for grammar too.
+    grammar: bool,
+    /// A span's text → what the checker found in it, relative to the span.
+    spans: Recent<Scan>,
     /// A word → the checker's suggestions for it, in `language`.
     guesses: Recent<Vec<String>>,
 }
 
-/// A misspelling inside one span, in UTF-16 code units from its start.
+/// One span's answer, in UTF-16 code units from the span's start.
+#[derive(Debug, Clone, Default)]
+struct Scan {
+    /// Misspelled words. Their fixes are looked up per check, under the
+    /// suggestion budget, so they are not part of the span's answer.
+    misses: Vec<Miss>,
+    /// Grammar findings, complete with their fixes.
+    grammar: Vec<Lint16>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Miss {
     start: u32,
@@ -76,44 +89,50 @@ struct Miss {
     word: String,
 }
 
-impl Spelling {
+impl OsChecker {
     pub(super) fn new() -> Self {
         Self {
             checker: NSSpellChecker::sharedSpellChecker(),
             tag: NSSpellChecker::uniqueSpellDocumentTag(),
             words: Vec::new(),
             language: "",
+            grammar: false,
             spans: Recent::new(SPAN_CACHE),
             guesses: Recent::new(GUESS_CACHE),
         }
     }
 
-    /// The misspellings in `spans` — each a span's text and where it
-    /// starts in the file, in UTF-16 — as lints in the file's UTF-16.
+    /// Check `spans` — each a span's text and where it starts in the file,
+    /// in UTF-16 — and answer `(spelling, grammar)` as lints in the file's
+    /// UTF-16. The grammar is the checker's quick rules plus whatever its
+    /// model has cached for these sentences (spec §2.1), and only when
+    /// `grammar` asks for it.
     pub(super) fn check(
         &mut self,
         spans: &[(&str, u32)],
         dictionary: &[String],
         dialect: Option<&str>,
-    ) -> Vec<Lint16> {
+        grammar: bool,
+    ) -> (Vec<Lint16>, Vec<Lint16>) {
         // A poisoned lock guards nothing but the language, which this
         // check sets again first thing.
         let _checker = CHECKER.lock().unwrap_or_else(PoisonError::into_inner);
         autoreleasepool(|_| {
-            self.configure(dictionary, dialect);
+            self.configure(dictionary, dialect, grammar);
             let deadline = Instant::now() + SUGGESTION_BUDGET;
-            let mut out = Vec::new();
+            let mut spelling = Vec::new();
+            let mut found = Vec::new();
             for &(text, at) in spans {
-                let misses = if let Some(misses) = self.spans.get(text) {
-                    misses.clone()
+                let scan = if let Some(scan) = self.spans.get(text) {
+                    scan.clone()
                 } else {
-                    let misses = self.scan(text);
-                    self.spans.insert(text.to_owned(), misses.clone());
-                    misses
+                    let scan = self.scan(text);
+                    self.spans.insert(text.to_owned(), scan.clone());
+                    scan
                 };
-                for miss in misses {
+                for miss in scan.misses {
                     let fixes = self.fixes(&miss.word, deadline);
-                    out.push(Lint16 {
+                    spelling.push(Lint16 {
                         start: at + miss.start,
                         end: at + miss.end,
                         kind: SPELLING.to_owned(),
@@ -122,16 +141,22 @@ impl Spelling {
                         fixes,
                     });
                 }
+                found.extend(scan.grammar.into_iter().map(|lint| Lint16 {
+                    start: at + lint.start,
+                    end: at + lint.end,
+                    ..lint
+                }));
             }
-            out
+            (spelling, found)
         })
     }
 
     /// Hand the checker this project's words and English. The language is
-    /// the shared checker's, so it is set again on every check — another
-    /// project's check may have moved it — and it is a setter, nearly free. The caches answer
-    /// for one configuration and are dropped when it changes.
-    fn configure(&mut self, dictionary: &[String], dialect: Option<&str>) {
+    /// the shared checker's, so it is set again on every check (another
+    /// project's check may have moved it); it is a setter, nearly free.
+    /// The caches answer for one configuration and are dropped when it
+    /// changes.
+    fn configure(&mut self, dictionary: &[String], dialect: Option<&str>, grammar: bool) {
         let language = language_for(dialect);
         self.checker.setAutomaticallyIdentifiesLanguages(false);
         // `false` when the language is not installed; the checker then
@@ -141,6 +166,10 @@ impl Spelling {
             self.language = language;
             self.spans.clear();
             self.guesses.clear();
+        }
+        if grammar != self.grammar {
+            self.grammar = grammar;
+            self.spans.clear();
         }
         if dictionary != self.words.as_slice() {
             let words: Vec<Retained<NSString>> =
@@ -155,9 +184,16 @@ impl Spelling {
     }
 
     /// Ask the checker about one span.
-    fn scan(&self, text: &str) -> Vec<Miss> {
+    fn scan(&self, text: &str) -> Scan {
         let string = NSString::from_str(text);
         let whole = NSRange::new(0, string.length());
+        // Grammar is never asked for alone: on its own the checker answers
+        // nothing at all (spec §2.1).
+        let types = if self.grammar {
+            NSTextCheckingType::Spelling.0 | NSTextCheckingType::Grammar.0
+        } else {
+            NSTextCheckingType::Spelling.0
+        };
         // SAFETY: no options dictionary is passed, so there is no generic
         // to get wrong, and the word count is not wanted — the binding
         // accepts a null pointer there.
@@ -166,7 +202,7 @@ impl Spelling {
                 .checkString_range_types_options_inSpellDocumentWithTag_orthography_wordCount(
                     &string,
                     whole,
-                    NSTextCheckingType::Spelling.0,
+                    types,
                     None,
                     self.tag,
                     None,
@@ -174,20 +210,28 @@ impl Spelling {
                 )
         };
         let units: Vec<u16> = text.encode_utf16().collect();
-        results
-            .iter()
-            .filter(|r| r.resultType() == NSTextCheckingType::Spelling)
-            .filter_map(|r| {
-                let range = r.range();
-                let end = range.location.checked_add(range.length)?;
-                let word = String::from_utf16_lossy(units.get(range.location..end)?);
-                Some(Miss {
-                    start: u32::try_from(range.location).ok()?,
-                    end: u32::try_from(end).ok()?,
-                    word,
-                })
-            })
-            .collect()
+        let mut scan = Scan::default();
+        for result in &results {
+            let range = result.range();
+            if result.resultType() == NSTextCheckingType::Spelling {
+                if let Some(miss) = miss(&units, range) {
+                    scan.misses.push(miss);
+                }
+            } else if result.resultType() == NSTextCheckingType::Grammar {
+                let details = result
+                    .grammarDetails()
+                    .map(|d| d.to_vec())
+                    .unwrap_or_default();
+                scan.grammar.extend(
+                    details
+                        .iter()
+                        .filter_map(|d| grammar_lint(&units, range, d)),
+                );
+            }
+            // Anything else (an orthography result comes back on some
+            // inputs) is not a finding.
+        }
+        scan
     }
 
     /// A misspelling's fixes: the cached suggestions, fresh ones while the
@@ -236,10 +280,73 @@ impl Spelling {
     }
 }
 
-impl Drop for Spelling {
+impl Drop for OsChecker {
     fn drop(&mut self) {
         self.checker.closeSpellDocumentWithTag(self.tag);
     }
+}
+
+/// A spelling result as a [`Miss`]; `None` for a range that does not fit
+/// the span, which the checker should never send.
+fn miss(units: &[u16], range: NSRange) -> Option<Miss> {
+    let end = range.location.checked_add(range.length)?;
+    Some(Miss {
+        word: String::from_utf16_lossy(units.get(range.location..end)?),
+        start: u32::try_from(range.location).ok()?,
+        end: u32::try_from(end).ok()?,
+    })
+}
+
+/// One entry of a grammar result's details as a lint, relative to the span
+/// (spec §7.4). Every key is read as optional: they are AppKit's, several
+/// arrived only with macOS 27, and a missing one should cost a detail of
+/// the lint, not the lint. `None` only when no range in the span is left.
+fn grammar_lint(
+    units: &[u16],
+    sentence: NSRange,
+    detail: &NSDictionary<NSString, AnyObject>,
+) -> Option<Lint16> {
+    let get = |key: &str| detail.objectForKey(&NSString::from_str(key));
+    let text = |key: &str| {
+        get(key)
+            .and_then(|o| o.downcast::<NSString>().ok())
+            .map(|s| s.to_string())
+            .filter(|s| !s.trim().is_empty())
+    };
+    // `NSGrammarRange` is relative to the sentence the result covers; a
+    // detail without one is about the whole sentence.
+    let (start, len) = match get("NSGrammarRange")
+        .and_then(|o| o.downcast::<NSValue>().ok())
+        .and_then(|v| v.get_range())
+    {
+        Some(inner) => (sentence.location.checked_add(inner.location)?, inner.length),
+        None => (sentence.location, sentence.length),
+    };
+    let end = start.checked_add(len)?;
+    if len == 0 || end > units.len() {
+        return None;
+    }
+    let fixes = get("NSGrammarCorrections")
+        .and_then(|o| o.downcast::<NSArray>().ok())
+        .map(|corrections| {
+            corrections
+                .iter()
+                .filter_map(|c| c.downcast::<NSString>().ok())
+                .map(|c| ProseFix::Replace(c.to_string()))
+                .take(MAX_FIXES)
+                .collect()
+        })
+        .unwrap_or_default();
+    Some(Lint16 {
+        start: u32::try_from(start).ok()?,
+        end: u32::try_from(end).ok()?,
+        // "Word Usage" → `WordUsage`: a kind is half of a `prose.<kind>`
+        // code, and a code has no spaces.
+        kind: text("NSGrammarSystemCategory")
+            .map_or_else(|| "Grammar".to_owned(), |c| c.split_whitespace().collect()),
+        message: text("NSGrammarUserDescription").unwrap_or_else(|| "Grammar".to_owned()),
+        fixes,
+    })
 }
 
 /// `[prose] dialect` as the checker's language. The spellings are
@@ -314,13 +421,15 @@ mod tests {
 
     #[test]
     fn a_misspelling_lands_where_it_is_in_the_file() {
-        let mut spelling = Spelling::new();
+        let mut spelling = OsChecker::new();
         // Two spans of one file; the second starts at UTF-16 unit 20.
         let file = "Rain fell. 🌊 She… recieve the letter.";
         let units: Vec<u16> = file.encode_utf16().collect();
         let at = 14;
         let second = String::from_utf16_lossy(&units[at..]);
-        let lints = spelling.check(&[("Rain fell.", 0), (&second, at as u32)], &[], None);
+        let lints = spelling
+            .check(&[("Rain fell.", 0), (&second, at as u32)], &[], None, false)
+            .0;
         assert_eq!(
             kinds_and_words(&lints, file),
             vec![("Spelling".to_owned(), "recieve".to_owned())]
@@ -334,14 +443,16 @@ mod tests {
 
     #[test]
     fn the_projects_words_pass_in_any_case() {
-        let mut spelling = Spelling::new();
+        let mut spelling = OsChecker::new();
         let text = "Kaelen nodded. KAELEN shouted. kaelen whispered.";
-        let without = spelling.check(&[(text, 0)], &[], None);
+        let without = spelling.check(&[(text, 0)], &[], None, false).0;
         assert!(
             !without.is_empty(),
             "an invented name is flagged by default"
         );
-        let with = spelling.check(&[(text, 0)], &["Kaelen".to_owned()], None);
+        let with = spelling
+            .check(&[(text, 0)], &["Kaelen".to_owned()], None, false)
+            .0;
         assert!(
             with.is_empty(),
             "and passes once it is the project's: {with:?}"
@@ -350,17 +461,68 @@ mod tests {
 
     #[test]
     fn the_dialect_picks_the_english() {
-        let mut spelling = Spelling::new();
+        let mut spelling = OsChecker::new();
         let text = "The colour of the harbour.";
-        let us = spelling.check(&[(text, 0)], &[], Some("american"));
+        let us = spelling.check(&[(text, 0)], &[], Some("american"), false).0;
         assert_eq!(us.len(), 2, "American flags both: {us:?}");
-        let gb = spelling.check(&[(text, 0)], &[], Some("british"));
+        let gb = spelling.check(&[(text, 0)], &[], Some("british"), false).0;
         assert!(gb.is_empty(), "British accepts them: {gb:?}");
-        let back = spelling.check(&[(text, 0)], &[], None);
+        let back = spelling.check(&[(text, 0)], &[], None, false).0;
         assert_eq!(
             back.len(),
             2,
             "and the cache did not keep the British answer"
+        );
+    }
+
+    /// The quick rules, which answer synchronously. The system's model
+    /// cache may answer instead for a sentence it has seen (spec §2.1), so
+    /// these pin where a finding is and what it offers, not its wording.
+    #[test]
+    fn grammar_comes_back_where_it_is_with_its_fix() {
+        let mut checker = OsChecker::new();
+        let text = "She ate a apple. He opened the the door.";
+        let (spelling, grammar) = checker.check(&[(text, 7)], &[], None, true);
+        assert!(spelling.is_empty(), "nothing misspelled: {spelling:?}");
+        let units: Vec<u16> = text.encode_utf16().collect();
+        let found: Vec<(String, Vec<ProseFix>)> = grammar
+            .iter()
+            .map(|l| {
+                let (a, b) = (l.start as usize - 7, l.end as usize - 7);
+                (String::from_utf16_lossy(&units[a..b]), l.fixes.clone())
+            })
+            .collect();
+        assert!(
+            found.contains(&("a".to_owned(), vec![ProseFix::Replace("an".to_owned())])),
+            "the article, at the span's offset: {found:?}"
+        );
+        assert!(
+            found.contains(&(
+                "the the".to_owned(),
+                vec![ProseFix::Replace("the".to_owned())]
+            )),
+            "the doubled word: {found:?}"
+        );
+        assert!(
+            grammar
+                .iter()
+                .all(|l| l.kind != SPELLING && !l.kind.contains(' ')),
+            "a category, as a code can carry it: {grammar:?}"
+        );
+    }
+
+    #[test]
+    fn grammar_is_asked_for_only_when_wanted() {
+        let mut checker = OsChecker::new();
+        let text = "She ate a apple.";
+        let (_, off) = checker.check(&[(text, 0)], &[], None, false);
+        assert!(off.is_empty(), "spelling only: {off:?}");
+        // Same text, now with grammar: the span cache must not answer for
+        // the spelling-only check.
+        let (_, on) = checker.check(&[(text, 0)], &[], None, true);
+        assert!(
+            !on.is_empty(),
+            "the cache did not keep the spelling-only answer"
         );
     }
 

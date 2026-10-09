@@ -944,6 +944,12 @@ mod tests {
             Grammar::Harper,
             "a checker this build lacks is the default, not an error"
         );
+        #[cfg(target_os = "macos")]
+        assert_eq!(
+            AppSettings::from_json(&json!({ "prose_grammar": "macos" })).prose_grammar,
+            Grammar::MacOs,
+            "macOS's own grammar is a choice on macOS"
+        );
     }
 
     #[test]
