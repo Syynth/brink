@@ -5869,6 +5869,7 @@
 - **WHY:** In Write mode the author is writing, not only testing. A player that keeps the manuscript on the line being played turns a playthrough into an editing pass: read it as the player sees it, and fix it in place without hunting for the source. Stage is already the ruled look for reading a story, so the revamp builds on it instead of starting over.
 
 ## Write-mode player: Play vs Fast-forward, line-level breakpoints, play-aware editor
+- **SUPERSEDED IN PART:** the single Fast-forward is replaced by Autoplay (`>>`) and Skip (`>|`). See "Write-mode transport: a symmetric strip with rewind" (2026-10-09).
 - **WHEN:** 2026-10-08
 - **PROJECT:** brink
 - **SYSTEM:** brink-gpui
@@ -5889,6 +5890,7 @@
 - **WHY:** The dot then means the same on every line: hold just before this line's content plays. It also gives the only way to catch a fallback choice, which ink takes without showing a card or stopping.
 
 ## Write-mode player toolbar: session header on top, transport strip at the bottom
+- **SUPERSEDED IN PART:** the strip's buttons are now the symmetric set in "Write-mode transport: a symmetric strip with rewind" (2026-10-09). The header/strip split stands.
 - **WHEN:** 2026-10-09
 - **PROJECT:** brink
 - **SYSTEM:** brink-gpui
@@ -5902,3 +5904,21 @@
 
   Every control the web toolbar has keeps a place, except the step buttons, which belong to Script mode.
 - **WHY:** The web player's toolbar packed everything into one row that folded unpredictably. Follow-in-editor vanished entirely when narrow, and "⋯" could open empty. Splitting by purpose puts the transport where a reader's eye already is, at the bottom with the newest line. Session state, which is checked occasionally, sits out of the way at the top, and every control has a defined place to fold into.
+
+## Write-mode transport: a symmetric strip with rewind
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-gpui
+- **SCOPE:** moderate
+- **WHAT:** The Write-mode player's transport strip reads, centred: `|<` back to the last choice · `<<` back one line · ▶ Continue · `>>` Autoplay · `>|` Skip to the next stop.
+  - **▶ Continue** plays one line (space).
+  - **`>>` Autoplay** keeps continuing on its own at the reading pace set in Settings.
+  - **`>|` Skip** goes straight to the next stop.
+  - **Stops:** Autoplay and Skip both stop at a breakpoint, a choice point, or DONE.
+  - **Pause:** while autoplaying, the big button is ❚❚ Pause, never the ■, which is Stop and ends the story.
+  - **Rewind:** `<<` steps back one line. `|<` returns to the last choice, which is offered again with the previous pick marked. Lines rewound past are shown as undone (struck through in the player, a dashed rail in the manuscript) until the story moves on.
+  - **Placement:** Restart and Stop sit at the strip's edge. At a choice only the rewind buttons are live.
+
+  This replaces the single Fast-forward button and its speed setting; the Settings value is Autoplay's reading pace.
+- **WHY:** Two forward buttons say what each does without a speed cycle to learn: one autoplays at a reading pace, the other jumps to where something happens. Rewind balances the strip and makes revisiting a choice cheap, so trying the other branch is one press instead of a restart. The runtime already snapshots story state (`Story::speculate`, `StorySnapshot`), so rewinding is a restore, not a replay.
+- **STATUS:** tentative (rewind's details are open: whether `<<` crosses a choice, snapshot retention for long playthroughs, and rewinding past an edit)
