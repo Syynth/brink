@@ -897,6 +897,18 @@ impl Studio {
                     PlayerEvent::Log { .. } => {}
                     // Write mode's pane listens for its own close.
                     PlayerEvent::Close => {}
+                    // A hover's peek, in the manuscript only: Code view's
+                    // tabs have no NOW to come back to.
+                    PlayerEvent::Peek { path, span } => {
+                        if this.workspace.read(cx).editor_view(cx) == EditorView::Write {
+                            this.manuscript
+                                .update(cx, |m, cx| m.peek_span(path, span.clone(), cx));
+                        }
+                    }
+                    PlayerEvent::PeekEnd { now } => {
+                        let now = now.clone();
+                        this.manuscript.update(cx, |m, cx| m.end_peek(now, cx));
+                    }
                     PlayerEvent::OpenSettings => {
                         this.workspace.update(cx, |workspace, cx| {
                             workspace.open_settings(Some("player"), window, cx);
@@ -3781,6 +3793,66 @@ mod modes_driven {
             player_until(&mut h, &player, |p| p.line_count() >= 1),
             "F5 started it"
         );
+    }
+
+    /// At a choice point NOW is where the choices are offered; hovering a
+    /// Player row brings its source to NOW without moving the caret, and
+    /// the pointer leaving the Player goes back (decision log 2026-10-09).
+    #[test]
+    fn choices_sit_on_now_and_hovers_peek_and_come_back() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        let now = h.read(|cx| crate::player::now_line_for_test(cx, window));
+        let offset_of = |needle: &str| {
+            u32::try_from(STAGE_STORY.find(needle).expect("in the story")).expect("small")
+        };
+        let top_of = |h: &mut Harness, needle: &str| {
+            h.read(|cx| {
+                manuscript
+                    .read(cx)
+                    .offset_top("tower.ink", offset_of(needle), cx)
+            })
+        };
+        let settled = |h: &mut Harness, needle: &str| {
+            h.settle_until(std::time::Duration::from_secs(3), |h| {
+                h.redraw(window);
+                top_of(h, needle).is_some_and(|t| (t - now).abs() <= 2.)
+            })
+        };
+        assert!(
+            settled(&mut h, "* [Ask about the lamp]"),
+            "the choices sit on NOW: {:?} vs {now}",
+            top_of(&mut h, "* [Ask about the lamp]")
+        );
+        let caret = h.read(|cx| manuscript.read(cx).caret_in("tower.ink", cx));
+
+        // Hover the first row: its source comes to NOW; the caret stays.
+        let first = h
+            .read(|cx| player.read(cx).row_bounds(0))
+            .expect("the first row");
+        h.hover(
+            window,
+            f32::from(first.center().x),
+            f32::from(first.center().y),
+        );
+        assert!(
+            settled(&mut h, "The fog sits"),
+            "the hovered line peeks at NOW"
+        );
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).caret_in("tower.ink", cx)),
+            caret,
+            "a peek never moves the caret"
+        );
+
+        // Off the Player: back to the choices.
+        h.hover(window, 10., 600.);
+        assert!(settled(&mut h, "* [Ask about the lamp]"), "back at NOW");
     }
 
     /// `>|` runs straight to the next stop — here, the first choice.

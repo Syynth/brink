@@ -55,6 +55,17 @@ pub enum PlayerEvent {
     /// Write mode's close: the Player is a pane there, and its header is
     /// the pane's.
     Close,
+    /// The pointer is on a row or choice: show its source on the NOW line,
+    /// scrolling only (decision log 2026-10-09).
+    Peek {
+        path: String,
+        span: Range<usize>,
+    },
+    /// The pointer left the Player: back to NOW — the line the story is
+    /// on, or the choices it is offering.
+    PeekEnd {
+        now: Option<(String, Range<usize>)>,
+    },
     /// Something worth keeping outside the transcript — a compile failure
     /// or a runtime error. Restart clears the transcript; the Output log
     /// (`crate::output_log`) keeps the record.
@@ -524,6 +535,12 @@ impl Player {
             .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
     }
 
+    /// Where entry `ix`'s row was laid out, in window coordinates.
+    #[cfg(test)]
+    pub(crate) fn row_bounds(&self, ix: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
+        self.list.bounds_for_item(ix + 1)
+    }
+
     /// Where the current row was laid out, in window coordinates.
     #[cfg(test)]
     pub(crate) fn active_row_bounds(&self) -> Option<gpui::Bounds<gpui::Pixels>> {
@@ -711,6 +728,29 @@ impl Player {
         self.entries.iter().rev().find_map(|e| match e {
             Entry::Line { source, .. } => source.as_ref(),
             _ => None,
+        })
+    }
+
+    /// The choices on offer, as one span of their source: from the first
+    /// choice's line to the last's (in the first's file).
+    fn choices_span(&self) -> Option<(String, Range<usize>)> {
+        let first = self.choices.iter().find_map(|c| c.source.as_ref())?;
+        let end = self
+            .choices
+            .iter()
+            .filter_map(|c| c.source.as_ref())
+            .filter(|l| l.path == first.path)
+            .map(|l| l.end)
+            .max()
+            .unwrap_or(first.end);
+        Some((first.path.clone(), first.start as usize..end as usize))
+    }
+
+    /// Where NOW is: the choices on offer, or the line the story is on.
+    pub(crate) fn now_target(&self) -> Option<(String, Range<usize>)> {
+        self.choices_span().or_else(|| {
+            self.current_source()
+                .map(|loc| (loc.path.clone(), loc.start as usize..loc.end as usize))
         })
     }
 
@@ -985,14 +1025,16 @@ impl Player {
                 }
             }
         }
-        if let Some(loc) = follow
+        // At a choice point NOW is where the choices are offered, not the
+        // line before them (decision log 2026-10-09).
+        let follow = self
+            .choices_span()
+            .or_else(|| follow.map(|loc| (loc.path, loc.start as usize..loc.end as usize)));
+        if let Some((path, span)) = follow
             && !self.follow_paused
             && brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
         {
-            cx.emit(PlayerEvent::Follow {
-                path: loc.path.clone(),
-                span: loc.start as usize..loc.end as usize,
-            });
+            cx.emit(PlayerEvent::Follow { path, span });
         }
         for warning in outcome.warnings {
             let text = SharedString::from(format!("warning: {warning}"));
@@ -1424,6 +1466,14 @@ impl Player {
         cx.listener(move |this, hovered: &bool, _, cx| {
             if *hovered {
                 this.hovered = Some((loc.clone(), choice));
+                if brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
+                    && !this.follow_paused
+                {
+                    cx.emit(PlayerEvent::Peek {
+                        path: loc.path.clone(),
+                        span: loc.start as usize..loc.end as usize,
+                    });
+                }
             } else if this.hovered.as_ref().is_some_and(|(l, _)| *l == loc) {
                 this.hovered = None;
             } else {
@@ -2332,6 +2382,14 @@ impl Render for Player {
         v_flex()
             .id("player")
             .track_focus(&self.focus)
+            // The pointer leaving the Player ends a hover's peek.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered {
+                    cx.emit(PlayerEvent::PeekEnd {
+                        now: this.now_target(),
+                    });
+                }
+            }))
             .on_key_down(cx.listener(Self::on_key))
             .size_full()
             .bg(surface)
@@ -2451,6 +2509,14 @@ const HINT_MIN_WIDTH: f32 = 560.;
 /// Where the NOW line sits, as a share of the window's height: the Player
 /// and the manuscript both put the current line's top there.
 const NOW_FRACTION: f32 = 0.4;
+
+/// The NOW line of the window `handle`, for a test.
+#[cfg(test)]
+pub(crate) fn now_line_for_test(cx: &mut App, handle: gpui::AnyWindowHandle) -> f32 {
+    handle
+        .update(cx, |_, window, _| now_line(window))
+        .unwrap_or(0.)
+}
 
 /// The NOW line in `window`'s coordinates.
 pub(crate) fn now_line(window: &Window) -> f32 {

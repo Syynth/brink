@@ -6031,3 +6031,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** ⌘P is Show/Hide Player — out, running the story when nothing has run, and away again on a second press (free since go-to moved to ⌘K). F5, the debugger's Continue, starts the story when nothing is running instead of reporting that nothing is.
 - **WHY:** Maintainer wanted a keyboard way to start the Player in Write mode ("⌘P probably, or maybe F5?"); F5 already reached the Player but "just sucks" with nothing running — a debugger's F5 starts the program it has nothing to continue.
+
+## At a choice point NOW is the choices; following, a hover peeks and the view comes back
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** (1) When the story stops at a choice point, the manuscript's NOW is where the choices are offered (the first choice's line to the last's), not the line played before them. (2) While the manuscript is at NOW — following, not scrolled away or paused — hovering a Player row or choice scrolls the manuscript so that row's source sits on NOW, without moving the caret; when the pointer leaves the Player, the manuscript returns to NOW. Scrolled away or paused, a hover only draws the source bracket.
+- **WHY:** Maintainer: "when at a choice point, the 'now' position shouldn't be the last thing, but instead like where the choices are offered … when you're on the 'current position' … the editor should also scroll to follow mouse-overs on the rows and choices, and when you leave the player, resume at the 'now' position."

@@ -180,6 +180,12 @@ pub struct ContinuousView {
     /// mounted yet; the list mounts it on the way there, and the next
     /// render applies the selection.
     pending_reveal: Option<(String, std::ops::Range<usize>)>,
+    /// Whether the pending reveal also puts the caret there. A Player
+    /// hover's peek only scrolls (decision log 2026-10-09).
+    reveal_select: bool,
+    /// A Player hover is showing its source: the view left NOW for it, and
+    /// goes back when the pointer leaves the Player.
+    peeking: bool,
     /// The Read view (W8): whether it is on, and the prose it keeps — shared
     /// with every section's highlighter.
     read: ReadCell,
@@ -329,6 +335,8 @@ impl ContinuousView {
             measured_line_height: None,
             stale_line_height: None,
             pending_reveal: None,
+            reveal_select: true,
+            peeking: false,
             read: std::rc::Rc::new(ReadView::default()),
             me: cx.weak_entity(),
             focus: cx.focus_handle(),
@@ -479,6 +487,7 @@ impl ContinuousView {
         // `ListState::splice` zeroes the scroll offset inside the spliced
         // item — a scroll applied before that pass was thrown away by it.
         self.pending_reveal = Some((path.to_owned(), span));
+        self.reveal_select = true;
         self.reveal_retries = REVEAL_TRIES;
         cx.notify();
     }
@@ -555,14 +564,47 @@ impl ContinuousView {
             item_ix: index,
             offset_in_item: px(offset),
         });
-        editor.update(cx, |state, cx| {
-            state.set_selected_range(span, cx);
-            cx.notify();
-        });
-        // The caret is where the reveal put it, focused or not: the sidebar
-        // and the title bar's knot › stitch follow from here.
-        self.follow_caret(path, editor, cx);
+        if std::mem::replace(&mut self.reveal_select, true) {
+            editor.update(cx, |state, cx| {
+                state.set_selected_range(span, cx);
+                cx.notify();
+            });
+            // The caret is where the reveal put it, focused or not: the
+            // sidebar and the title bar's knot › stitch follow from here.
+            self.follow_caret(path, editor, cx);
+        }
         cx.notify();
+    }
+
+    /// A Player hover's peek (decision log 2026-10-09): while the view is at
+    /// NOW — following, not scrolled away — show the hovered line's source
+    /// on the NOW line, without moving the caret. Once peeking, further
+    /// hovers follow the pointer; [`Self::end_peek`] goes back.
+    pub fn peek_span(&mut self, path: &str, span: std::ops::Range<usize>, cx: &mut Context<Self>) {
+        if !self.peeking {
+            if self.now_is_below(cx).is_some() {
+                return;
+            }
+            self.peeking = true;
+        }
+        self.follow_span(path, span, cx);
+        self.reveal_select = false;
+    }
+
+    /// The pointer left the Player: back to NOW (`now`), if a peek had
+    /// taken the view away.
+    pub fn end_peek(
+        &mut self,
+        now: Option<(String, std::ops::Range<usize>)>,
+        cx: &mut Context<Self>,
+    ) {
+        if !std::mem::take(&mut self.peeking) {
+            return;
+        }
+        if let Some((path, span)) = now {
+            self.follow_span(&path, span, cx);
+            self.reveal_select = false;
+        }
     }
 
     /// How many rows will pin above `offset` once it is near the top of
@@ -854,6 +896,18 @@ impl ContinuousView {
     #[cfg(test)]
     pub(crate) fn active_line_top(&self, cx: &App) -> Option<f32> {
         let loc = self.trail.borrow().active.clone()?;
+        self.offset_top(&loc.path, loc.start, cx)
+    }
+
+    /// The top of the line holding `offset` in `path`, in window
+    /// coordinates, where its section is laid out.
+    #[cfg(test)]
+    pub(crate) fn offset_top(&self, path: &str, offset: u32, cx: &App) -> Option<f32> {
+        let loc = brink_gpui_model::query::Location {
+            path: path.to_owned(),
+            start: offset,
+            end: offset,
+        };
         let index = self.files.iter().position(|f| *f == loc.path)?;
         let item = self.list.bounds_for_item(index)?;
         let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
@@ -869,6 +923,13 @@ impl ContinuousView {
                 + SEPARATOR_HEIGHT
                 + state.display_row_of_buffer_line(line) as f32 * line_height,
         )
+    }
+
+    /// Where the caret is in `path`'s section.
+    #[cfg(test)]
+    pub(crate) fn caret_in(&self, path: &str, cx: &App) -> Option<usize> {
+        let (editor, _) = self.editors.borrow().get(path).cloned()?;
+        Some(editor.read(cx).cursor())
     }
 
     /// Scroll the manuscript by `by` pixels — the test's stand-in for the
