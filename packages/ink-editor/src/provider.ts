@@ -38,6 +38,14 @@ export interface FileProvider {
    *  freed session. */
   onExternalChange?(callback: (path: string, content: string | null) => void): () => void;
 
+  /** The files the applied `brink.toml` reads — `[dialogue]`'s file, the
+   *  host manifest — as project-relative paths, replacing the previous set
+   *  (#3671). A host that only watches story files and the config should
+   *  also report external changes to these through `onExternalChange`, so
+   *  a host regenerating its manifest is picked up. Optional: a host that
+   *  already watches every file has nothing to do. */
+  watchConfigFiles?(paths: readonly string[]): void;
+
   /** Create a new file at the given path. */
   createFile(path: string, content: string): Promise<void>;
 

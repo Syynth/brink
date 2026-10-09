@@ -478,8 +478,68 @@ export class ProjectSession {
       }
       this.configuredEntry = null;
     }
+    this.syncConfigReads();
     this.onProjectConfigWarnings?.(warnings);
     this.onProjectConfigApplied?.();
+  }
+
+  /** The files the applied config reads (#3671): `[dialogue]`'s file and
+   *  the host manifest. A change to any of them applies the config again,
+   *  exactly as a change to `brink.toml` does. */
+  private configReads: ReadonlySet<string> = new Set();
+
+  /** Whether a change to `path` changes what the config resolves to:
+   *  `brink.toml` itself, or a file it reads (decision log 2026-10-09). */
+  private isConfigInput(path: string): boolean {
+    return isProjectConfigPath(path) || this.configReads.has(path);
+  }
+
+  /** Record what the config now reads, have the host watch it, and load
+   *  whichever of it the session does not hold yet — a host that lists
+   *  only story files never hands those over on its own. */
+  private syncConfigReads(): void {
+    const reads =
+      typeof this.session.getConfiguredConfigReads === "function"
+        ? this.session.getConfiguredConfigReads()
+        : [];
+    this.configReads = new Set(reads);
+    this.provider.watchConfigFiles?.(reads);
+    const missing = reads.filter((path) => this.session.getFileSource(path) === null);
+    if (missing.length > 0) void this.loadConfigReads(missing);
+  }
+
+  /** Fetch config-read files the session lacks; apply the config again if
+   *  any arrived. One that is not there stays missing — its warning says
+   *  so — and is asked for again the next time the config applies. */
+  private async loadConfigReads(paths: readonly string[]): Promise<void> {
+    let loaded = false;
+    for (const path of paths) {
+      const content = await this.provider.requestFile(path);
+      if (this.destroyed) return;
+      if (content !== null && this.session.getFileSource(path) === null) {
+        this.session.updateFile(path, content);
+        // What the host holds is the clean baseline, as at initialize.
+        this.changes.setBaseline(path, content);
+        loaded = true;
+      }
+    }
+    if (loaded) this.applyProjectConfig();
+  }
+
+  /** Why the manifest `[host] manifest` names could not be loaded
+   *  (#3671), or `null` — feature-detected. */
+  getConfiguredHostManifestError(): string | null {
+    return typeof this.session.getConfiguredHostManifestError === "function"
+      ? this.session.getConfiguredHostManifestError()
+      : null;
+  }
+
+  /** The applied config's whole current warning set (#3671), for a
+   *  Problems panel — or `null` from a session that cannot say. */
+  getConfiguredWarnings(): string[] | null {
+    return typeof this.session.getConfiguredWarnings === "function"
+      ? this.session.getConfiguredWarnings()
+      : null;
   }
 
   /**
@@ -677,7 +737,7 @@ export class ProjectSession {
       // `brink.toml` rewritten from outside the studio (issue #2324): the
       // file just landed in the session via `updateFile` above — re-run
       // discovery so an external edit is not silently ignored either.
-      if (isProjectConfigPath(path)) this.applyProjectConfig();
+      if (this.isConfigInput(path)) this.applyProjectConfig();
     });
     endInit(files.length);
   }
@@ -782,7 +842,7 @@ export class ProjectSession {
     // A `brink.toml` created after mount (issue #2324) was previously
     // undiscoverable — the file wasn't there for `initialize()`'s discovery
     // call, and nothing re-ran it.
-    if (isProjectConfigPath(path)) this.applyProjectConfig();
+    if (this.isConfigInput(path)) this.applyProjectConfig();
   }
 
   /** Remove a file from the wasm session (does not delete from provider). */
@@ -826,7 +886,7 @@ export class ProjectSession {
     // A deleted `brink.toml` (issue #2324) may uncover an ancestor
     // `brink.toml` discovery previously stopped short of (or find none,
     // which is not an error — see `applyProjectConfig`'s doc comment).
-    if (isProjectConfigPath(path)) this.applyProjectConfig();
+    if (this.isConfigInput(path)) this.applyProjectConfig();
     return true;
   }
 
@@ -913,7 +973,7 @@ export class ProjectSession {
     // `brink.toml` moved into or out of the tree (issue #2324): the
     // ancestor `brink.toml` discovery finds by walk-up depends on exact
     // paths, so either direction can change what's discovered.
-    if (isProjectConfigPath(oldPath) || isProjectConfigPath(newPath)) {
+    if (this.isConfigInput(oldPath) || this.isConfigInput(newPath)) {
       this.applyProjectConfig();
     }
 
@@ -1054,7 +1114,7 @@ export class ProjectSession {
     // `brink.toml` moved into or out of the tree (issue #2324).
     if (
       result.moved_files.some(
-        (mf) => isProjectConfigPath(mf.old_path) || isProjectConfigPath(mf.new_path),
+        (mf) => this.isConfigInput(mf.old_path) || this.isConfigInput(mf.new_path),
       )
     ) {
       this.applyProjectConfig();
@@ -1314,7 +1374,7 @@ export class ProjectSession {
     // the direct caller) and every bulk-edit path (through {@link applyEdit},
     // which calls this) both land here. The session's content for `path` is
     // already live by this point, so discovery picks up the new text.
-    if (isProjectConfigPath(path)) this.applyProjectConfig();
+    if (this.isConfigInput(path)) this.applyProjectConfig();
   }
 
   /**

@@ -25,6 +25,20 @@ describe("configDiagnostics", () => {
     ]);
     expect(configDiagnostics([], null)).toEqual([]);
   });
+
+  it("labels a config warning that is not the dialect's as the config's (#3671)", () => {
+    const rows = configDiagnostics(
+      [
+        "[dialogue]: unknown dialogue preset `fountain`",
+        "host manifest `build/host.json` (named by `[host] manifest` in brink.toml) could not be read: it is not in the project",
+      ],
+      null,
+    );
+    expect(rows.map((r) => [r.severity, r.code])).toEqual([
+      ["Error", "dialogue:config"],
+      ["Warning", "config"],
+    ]);
+  });
 });
 
 describe("malformedCueDiagnostics", () => {
