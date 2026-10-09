@@ -5916,9 +5916,8 @@
   - **`>|` Skip** goes straight to the next stop.
   - **Stops:** Autoplay and Skip both stop at a breakpoint, a choice point, or DONE.
   - **Pause:** while autoplaying, the big button is ❚❚ Pause, never the ■, which is Stop and ends the story.
-  - **Rewind:** `<<` steps back one line. `|<` returns to the last choice, which is offered again with the previous pick marked. Lines rewound past are shown as undone (struck through in the player, a dashed rail in the manuscript) until the story moves on.
+  - **Rewind:** `<<` rewinds continuously, one line at a time at the same pace Autoplay moves forward; ❚❚ Pause stops it, as it does Autoplay. `|<` jumps to just before the last choice, which is offered again with the previous pick marked. Lines rewound past are shown as undone (struck through in the player, a dashed rail in the manuscript) until the story moves on. Rewind is built as a follow-up, after the rest of the Write-mode player.
   - **Placement:** Restart and Stop sit at the strip's edge. At a choice only the rewind buttons are live.
 
   This replaces the single Fast-forward button and its speed setting; the Settings value is Autoplay's reading pace.
 - **WHY:** Two forward buttons say what each does without a speed cycle to learn: one autoplays at a reading pace, the other jumps to where something happens. Rewind balances the strip and makes revisiting a choice cheap, so trying the other branch is one press instead of a restart. The runtime already snapshots story state (`Story::speculate`, `StorySnapshot`), so rewinding is a restore, not a replay.
-- **STATUS:** tentative (rewind's details are open: whether `<<` crosses a choice, snapshot retention for long playthroughs, and rewinding past an edit)
