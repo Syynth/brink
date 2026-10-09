@@ -74,6 +74,9 @@ pub struct ToggleFold {
 gpui::actions!(
     editor_menu,
     [
+        /// Ask Apple's grammar model about the prose the focused editor's
+        /// selection touches (`docs/gpui-prose-checker-spec.md` §7).
+        CheckGrammar,
         /// Show the TODOs tool window.
         ShowTodos,
         /// Show or hide the editor's gutters — the Appearance setting.
@@ -104,6 +107,9 @@ struct Click {
     todo: bool,
     breakpoint: bool,
     gutters: bool,
+    /// Whether Apple's grammar model answers on this Mac — the item is not
+    /// offered where it never could run.
+    model_grammar: bool,
 }
 
 /// Ask the worker, then open the menu at `position`.
@@ -142,6 +148,8 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
             todo,
             breakpoint,
             gutters: brink_gpui_shell::settings::AppSettings::get(cx).show_gutters,
+            model_grammar: brink_gpui_model::prose::model_state()
+                == brink_gpui_model::prose::ModelState::Available,
         }
     };
     let rope = site.editor.read(cx).text().clone();
@@ -440,6 +448,15 @@ fn text_menu(
     if click.todo {
         entries.push(item("Show in TODOs Panel", ShowTodos));
     }
+    // Native-only, like New Stitch…: the web has no model to ask. It acts
+    // on the selection, so without one it is shown but cannot run.
+    if click.model_grammar {
+        entries.push(Entry::Item {
+            label: "Check Grammar with Apple Intelligence".to_owned(),
+            disabled: !click.has_selection,
+            action: Box::new(CheckGrammar),
+        });
+    }
     if entries.len() > before {
         entries.push(Entry::Separator);
     }
@@ -501,6 +518,7 @@ mod tests {
             todo: false,
             breakpoint: false,
             gutters: true,
+            model_grammar: false,
         }
     }
 
@@ -525,6 +543,19 @@ mod tests {
                 "Hide Gutters"
             ]
         );
+    }
+
+    /// Where the model answers, its command sits with the line's own, and
+    /// runs only on a selection.
+    #[test]
+    fn the_grammar_model_is_offered_where_it_answers() {
+        let mut c = click("The lamp gutters.");
+        c.model_grammar = true;
+        let menu = labels(&text_menu(&c, &[], false, None, None));
+        assert_eq!(menu[..2], ["(Check Grammar with Apple Intelligence)", "─"]);
+        c.has_selection = true;
+        let menu = labels(&text_menu(&c, &[], false, None, None));
+        assert_eq!(menu[0], "Check Grammar with Apple Intelligence");
     }
 
     /// The web's group order: fixes, identity, the line's own, text.

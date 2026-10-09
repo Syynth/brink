@@ -102,6 +102,19 @@ pub enum Request {
     /// A file left the project: forget it. A rename is a `RemoveFile`
     /// then an `AddFile`, in that order.
     RemoveFile { path: String },
+    /// The app's prose options — today the grammar checked while typing
+    /// (`AppSettings.prose_grammar`). Kept across `Open`: they belong to
+    /// this machine, not to the project. Changes no text, so it produces
+    /// no analysis; the editors ask for their prose again themselves.
+    SetProseOptions { grammar: crate::prose::Grammar },
+    /// "Check Grammar with Apple Intelligence" over the prose that the
+    /// selection `start..end` (bytes of `path`) touches. Answered with
+    /// [`Response::GrammarChecked`] — at once when there is nothing to
+    /// ask, otherwise seconds later, when the model has read all of it.
+    CheckGrammar { path: String, start: u32, end: u32 },
+    /// Sent by the worker to itself, from the thread that waited on one
+    /// chunk of a model check. Not for the UI.
+    GrammarChunkDone(crate::prose::ModelChunk),
     /// Drive the play session — see [`crate::play`]. Answered after the
     /// queries of the same drain, against the same text.
     Play {
@@ -115,6 +128,12 @@ pub enum Request {
 pub enum Response {
     Opened(Box<Result<Opened, String>>),
     Analyzed(Box<Analyzed>),
+    /// How a [`Request::CheckGrammar`] ended. Its findings are already in
+    /// the path's prose lints; the editors over it ask for them again.
+    GrammarChecked {
+        path: String,
+        outcome: crate::prose::ModelCheck,
+    },
 }
 
 /// A freshly loaded project.
@@ -362,9 +381,12 @@ impl Worker {
     pub fn spawn() -> Self {
         let (req_tx, req_rx) = async_channel::unbounded::<Request>();
         let (res_tx, res_rx) = async_channel::unbounded::<Response>();
+        // Weak, so the worker's own handle does not keep its request
+        // channel open: the thread still ends when `self` drops.
+        let to_self = req_tx.downgrade();
         std::thread::Builder::new()
             .name("brink-analysis".to_owned())
-            .spawn(move || run(&req_rx, &res_tx))
+            .spawn(move || run(&req_rx, &res_tx, &to_self))
             .expect("spawning the analysis worker");
         Self {
             requests: req_tx,
@@ -405,7 +427,11 @@ fn session_with_stdlib() -> IdeSession {
     session
 }
 
-fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::Sender<Response>) {
+fn run(
+    requests: &async_channel::Receiver<Request>,
+    responses: &async_channel::Sender<Response>,
+    to_self: &async_channel::WeakSender<Request>,
+) {
     let mut session = session_with_stdlib();
     let mut config = ConfigState::default();
     let mut revision = 0_u64;
@@ -414,6 +440,22 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
     // The play session, the breakpoint marks that outlive it, and what a
     // fault left behind — see [`PlaySlot`].
     let mut play = PlaySlot::default();
+    // The app's prose options, which outlive any one project.
+    let mut grammar = crate::prose::Grammar::default();
+    // The checkers and their caches, which do not: a project's spell
+    // document is its own.
+    let mut prose = crate::prose::Checker::default();
+    // How a model check's waiting threads hand their chunk back to this
+    // loop: a request like any other, so it is handled in order with the
+    // edits around it.
+    let report: crate::prose::ModelReport = {
+        let to_self = to_self.clone();
+        std::sync::Arc::new(move |chunk| {
+            if let Some(tx) = to_self.upgrade() {
+                let _ = tx.send_blocking(Request::GrammarChunkDone(chunk));
+            }
+        })
+    };
 
     while let Ok(first) = requests.recv_blocking() {
         // Drain what is already queued. See the module doc: this declines
@@ -427,6 +469,8 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
         let mut edited = false;
         let mut queries = Vec::new();
         let mut plays = Vec::new();
+        let mut grammar_checks = Vec::new();
+        let mut chunks_done = Vec::new();
         for request in batch {
             match request {
                 Request::Query { kind, reply } => queries.push((kind, reply)),
@@ -435,6 +479,7 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     session = session_with_stdlib();
                     config = ConfigState::default();
                     play = PlaySlot::default();
+                    prose = crate::prose::Checker::default();
                     files.clear();
                     let opened = match open(&mut session, root, entry) {
                         Ok((opened, state)) => {
@@ -490,6 +535,11 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                     files.retain(|f| f != &path);
                     edited = true;
                 }
+                Request::SetProseOptions { grammar: chosen } => grammar = chosen,
+                Request::CheckGrammar { path, start, end } => {
+                    grammar_checks.push((path, start, end));
+                }
+                Request::GrammarChunkDone(chunk) => chunks_done.push(chunk),
             }
         }
 
@@ -537,12 +587,14 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
                 )))
             } else if let QueryKind::Prose { path } = &kind {
                 // The config decides whether it runs at all, in which
-                // English, and which invented names are words.
+                // English, and which invented names are words; the app's
+                // own setting decides which grammar comes with it.
                 if config.prose_enabled() {
                     let dictionary =
                         crate::prose::project_dictionary(&session, config.prose_dictionary());
                     QueryResult::Prose(
-                        crate::prose::check(&session, path, &dictionary, config.prose_dialect())
+                        prose
+                            .check(&session, path, &dictionary, config.prose_dialect(), grammar)
                             .unwrap_or_default(),
                     )
                 } else {
@@ -568,6 +620,46 @@ fn run(requests: &async_channel::Receiver<Request>, responses: &async_channel::S
             };
             // A dropped receiver just means the asker moved on.
             let _ = reply.send_blocking(result);
+        }
+
+        // Model checks after the queries, so a new one reads the text this
+        // drain left. A chunk coming back is checked into the prose lints;
+        // the response that ends a check is what tells the editors to ask
+        // for them again.
+        for chunk in chunks_done {
+            if let Some((path, outcome)) = prose.model_chunk_done(chunk, &report)
+                && responses
+                    .send_blocking(Response::GrammarChecked { path, outcome })
+                    .is_err()
+            {
+                return;
+            }
+        }
+        for (path, start, end) in grammar_checks {
+            let outcome = if !usable {
+                Some(crate::prose::ModelCheck::NoProse)
+            } else if !config.prose_enabled() {
+                Some(crate::prose::ModelCheck::ProseOff)
+            } else {
+                let dictionary =
+                    crate::prose::project_dictionary(&session, config.prose_dictionary());
+                prose.check_grammar(
+                    &session,
+                    &path,
+                    start,
+                    end,
+                    &dictionary,
+                    config.prose_dialect(),
+                    &report,
+                )
+            };
+            if let Some(outcome) = outcome
+                && responses
+                    .send_blocking(Response::GrammarChecked { path, outcome })
+                    .is_err()
+            {
+                return;
+            }
         }
 
         // The play session last: a start compiles what the edits above
