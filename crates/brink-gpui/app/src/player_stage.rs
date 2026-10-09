@@ -30,11 +30,14 @@ pub(crate) enum Role {
 }
 
 /// One row's reading: its role, and the text to show — a cue line's text
-/// without the cue itself, since the name prints as the run's header.
+/// without the cue itself, since the name prints as the run's header — and
+/// a direction that opens a speech (`(quietly)`), set apart from the words
+/// so it reads as direction, not dialogue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Look {
     pub role: Role,
     pub text: String,
+    pub direction: Option<String>,
 }
 
 /// A dialect with its emitted parser compiled, kept between renders.
@@ -68,10 +71,12 @@ pub(crate) fn read(rows: &[Option<&str>], echo: &[bool], reader: Option<&Reader>
             Some(text) => Look {
                 role: Role::Narration,
                 text: (*text).to_owned(),
+                direction: None,
             },
             None => Look {
                 role: Role::Chrome,
                 text: String::new(),
+                direction: None,
             },
         })
         .collect();
@@ -126,16 +131,20 @@ pub(crate) fn read(rows: &[Option<&str>], echo: &[bool], reader: Option<&Reader>
             match &speaker {
                 Some(name) => {
                     let cue = n == 0;
-                    if cue {
-                        // The name is the header; the line shows the rest.
-                        look.text = segments
-                            .iter()
-                            .skip(1)
-                            .map(|s| s.text.as_str())
-                            .collect::<String>()
-                            .trim()
-                            .to_owned();
-                    }
+                    // The name is the header; the line shows the rest. A
+                    // direction opening the speech stands apart from it.
+                    let rest = &segments[usize::from(cue).min(segments.len())..];
+                    let opens = rest
+                        .first()
+                        .filter(|s| s.kind.as_deref().is_some_and(action));
+                    look.direction = opens.map(|s| s.text.trim().to_owned());
+                    look.text = rest
+                        .iter()
+                        .skip(usize::from(opens.is_some()))
+                        .map(|s| s.text.as_str())
+                        .collect::<String>()
+                        .trim()
+                        .to_owned();
                     look.role = Role::Speech {
                         speaker: name.clone(),
                         cue,
@@ -211,6 +220,31 @@ mod tests {
             "the next narrative line chains into the run"
         );
         assert_eq!(looks[2].role, Role::Chrome);
+    }
+
+    #[test]
+    fn a_direction_opening_a_speech_stands_apart() {
+        let dialect = brink_ir::dialect::at_cue_preset();
+        let reader = Reader::new(&dialect).expect("the preset compiles");
+        let looks = read(
+            &[
+                Some("@JONAH: (quietly)I said I would."),
+                Some("(beat)Every year."),
+            ],
+            &[false, false],
+            Some(&reader),
+        );
+        assert_eq!(
+            looks[0].direction.as_deref(),
+            Some("(quietly)"),
+            "{looks:?}"
+        );
+        assert_eq!(looks[0].text, "I said I would.");
+        // Only after a cue: at a line's start the dialect's emitted parser
+        // takes reserved prefixes alone, so prose that opens with "(" is
+        // never mistaken for a direction (the web's parser, one rule).
+        assert_eq!(looks[1].direction, None, "{looks:?}");
+        assert_eq!(looks[1].text, "(beat)Every year.");
     }
 
     #[test]

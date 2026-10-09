@@ -898,9 +898,9 @@ impl Player {
         let row = div().id(("play-row", ix)).relative().w_full().child(spine);
         match entry {
             Entry::Line { text, tags, source } => {
-                let (role, shown) = self.looks.get(ix).map_or_else(
-                    || (Role::Narration, text.to_string()),
-                    |look| (look.role.clone(), look.text.clone()),
+                let (role, shown, direction) = self.looks.get(ix).map_or_else(
+                    || (Role::Narration, text.to_string(), None),
+                    |look| (look.role.clone(), look.text.clone(), look.direction.clone()),
                 );
                 let active = self.active_row() == Some(ix);
                 let mut body = v_flex().w_full().py(px(5.)).pr_4();
@@ -930,7 +930,12 @@ impl Player {
                             );
                         }
                         if !shown.is_empty() {
-                            body = body.child(div().pl(px(SPEECH_X)).text_color(fg).child(shown));
+                            body = body.child(
+                                div()
+                                    .pl(px(SPEECH_X))
+                                    .text_color(fg)
+                                    .child(Self::speech(direction, shown, muted)),
+                            );
                         }
                     }
                     Role::Action => {
@@ -1049,6 +1054,31 @@ impl Player {
                 px(size * 0.55),
                 colour,
             ))
+    }
+
+    /// A speech line's text, with a direction opening it — `(quietly)` —
+    /// set apart: dimmed, italic, and a space before the words. One run of
+    /// text, so a long line still wraps as prose.
+    fn speech(direction: Option<String>, words: String, muted: Hsla) -> gpui::AnyElement {
+        let Some(direction) = direction.filter(|d| !d.is_empty()) else {
+            return words.into_any_element();
+        };
+        let set_apart = 0..direction.len();
+        let text = if words.is_empty() {
+            direction
+        } else {
+            format!("{direction} {words}")
+        };
+        gpui::StyledText::new(text)
+            .with_highlights([(
+                set_apart,
+                gpui::HighlightStyle {
+                    color: Some(muted),
+                    font_style: Some(gpui::FontStyle::Italic),
+                    ..Default::default()
+                },
+            )])
+            .into_any_element()
     }
 
     /// Link a row back to where it was written (#3436, ruled 2026-09-02):
