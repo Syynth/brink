@@ -230,6 +230,9 @@ pub struct ContinuousView {
     /// Room after the last file while a story plays, so a line near the
     /// story's end can still come up to NOW (0 when nothing plays).
     now_tail: f32,
+    /// And before the first, so a line near the story's start can come
+    /// down to it — the Player's head spacer, mirrored.
+    now_head: f32,
     /// The running story's trail, for the sections' gutters and bands.
     trail: TrailCell,
     /// Each section's fold candidates.
@@ -344,6 +347,7 @@ impl ContinuousView {
             reveal_now: false,
             now_y: 0.,
             now_tail: 0.,
+            now_head: 0.,
             trail: Rc::default(),
             folds: Rc::default(),
             reveal_retries: 0,
@@ -546,7 +550,7 @@ impl ContinuousView {
             }
             _ => (self.pinned_rows_at(&path, &text, span.start) + 1) as f32 * line_height,
         };
-        let offset = (SEPARATOR_HEIGHT + y - reserve).max(0.0);
+        let offset = (self.lead(index) + SEPARATOR_HEIGHT + y - reserve).max(0.0);
         self.list.scroll_to(gpui::ListOffset {
             item_ix: index,
             offset_in_item: px(offset),
@@ -807,6 +811,12 @@ impl ContinuousView {
         cx.notify();
     }
 
+    /// What sits above a section's separator inside its list item: the
+    /// head room, for the first file while a story plays; nothing else.
+    fn lead(&self, index: usize) -> f32 {
+        if index == 0 { self.now_head } else { 0. }
+    }
+
     /// Whether the line the story is on is off screen, and which way:
     /// `Some(true)` below the view, `Some(false)` above, `None` on screen
     /// (or nothing playing).
@@ -824,6 +834,7 @@ impl ContinuousView {
                     .get(..(loc.start as usize).min(text.len()))
                     .map_or(0, |before| before.matches('\n').count());
                 let top = f32::from(item.top())
+                    + self.lead(index)
                     + SEPARATOR_HEIGHT
                     + state.display_row_of_buffer_line(line) as f32 * line_height;
                 if top + line_height < f32::from(view.top()) {
@@ -836,6 +847,28 @@ impl ContinuousView {
             }
             None => Some(index > self.list.logical_scroll_top().item_ix),
         }
+    }
+
+    /// The top of the line the story is on, in window coordinates, where
+    /// its section is laid out.
+    #[cfg(test)]
+    pub(crate) fn active_line_top(&self, cx: &App) -> Option<f32> {
+        let loc = self.trail.borrow().active.clone()?;
+        let index = self.files.iter().position(|f| *f == loc.path)?;
+        let item = self.list.bounds_for_item(index)?;
+        let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+        let state = editor.read(cx);
+        let line_height = f32::from(state.line_height()?);
+        let text = state.value();
+        let line = text
+            .get(..(loc.start as usize).min(text.len()))
+            .map_or(0, |before| before.matches('\n').count());
+        Some(
+            f32::from(item.top())
+                + self.lead(index)
+                + SEPARATOR_HEIGHT
+                + state.display_row_of_buffer_line(line) as f32 * line_height,
+        )
     }
 
     /// Scroll the manuscript by `by` pixels — the test's stand-in for the
@@ -1000,8 +1033,10 @@ impl ContinuousView {
         };
         let item = self.list.bounds_for_item(index)?;
         let view = self.last_view.get()?;
-        let top =
-            f32::from(item.top() - view.top()) + SEPARATOR_HEIGHT + top_row as f32 * line_height;
+        let top = f32::from(item.top() - view.top())
+            + self.lead(index)
+            + SEPARATOR_HEIGHT
+            + top_row as f32 * line_height;
         let height = (end_row.saturating_sub(top_row)).max(1) as f32 * line_height;
         let width = f32::from(view.size.width);
         let right = match column {
@@ -1083,7 +1118,7 @@ impl ContinuousView {
     )> {
         let top = self.list.logical_scroll_top();
         let path = self.files.get(top.item_ix)?.clone();
-        let into_text = top.offset_in_item - px(SEPARATOR_HEIGHT);
+        let into_text = top.offset_in_item - px(self.lead(top.item_ix) + SEPARATOR_HEIGHT);
         if into_text <= px(0.) {
             return None;
         }
@@ -1569,6 +1604,16 @@ impl Render for ContinuousView {
                 self.list.remeasure_items(n - 1..n);
             }
         }
+        let head = match self.last_view.get() {
+            Some(view) if playing => (self.now_y - f32::from(view.top())).max(0.),
+            _ => 0.,
+        };
+        if (head - self.now_head).abs() > 0.5 {
+            self.now_head = head;
+            if !self.files.is_empty() {
+                self.list.remeasure_items(0..1);
+            }
+        }
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
@@ -1584,6 +1629,7 @@ impl Render for ContinuousView {
         let files = self.files.clone();
         let count = files.len();
         let now_tail = self.now_tail;
+        let now_head = self.now_head;
         let project = self.project.clone();
         let me = self.me.clone();
         let editors = self.editors.clone();
@@ -1715,6 +1761,9 @@ impl Render for ContinuousView {
                     };
                     v_flex()
                         .w_full()
+                        .when(index == 0 && now_head > 0., |el| {
+                            el.child(div().h(px(now_head)))
+                        })
                         .child(separator(&path, column, marks, &me, cx))
                         .child(
                             // The column: centred in the room there is,
@@ -1812,7 +1861,7 @@ impl Render for ContinuousView {
                                     &editors.borrow(),
                                     path,
                                     *offset,
-                                    line_height,
+                                    (line_height, now_head),
                                     covered,
                                     cx,
                                 )
@@ -2035,7 +2084,7 @@ fn keep_caret_on_screen(
     editors: &HashMap<String, Section>,
     path: &str,
     offset: usize,
-    line_height: f32,
+    (line_height, head): (f32, f32),
     covered: usize,
     cx: &App,
 ) -> bool {
@@ -2067,8 +2116,12 @@ fn keep_caret_on_screen(
         (Some(at), Some(line_top)) => f32::from(at.top() - line_top.top()).max(0.),
         _ => 0.,
     };
-    let in_item =
-        SEPARATOR_HEIGHT + state.display_row_of_buffer_line(line) as f32 * line_height + within;
+    // The first file carries the head room above its separator.
+    let lead = if index == 0 { head } else { 0. };
+    let in_item = lead
+        + SEPARATOR_HEIGHT
+        + state.display_row_of_buffer_line(line) as f32 * line_height
+        + within;
     let Some(item) = list.bounds_for_item(index) else {
         list.scroll_to(gpui::ListOffset {
             item_ix: index,

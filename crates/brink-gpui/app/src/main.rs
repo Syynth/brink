@@ -3349,7 +3349,9 @@ mod modes_driven {
     #[test]
     fn the_current_line_sits_on_now() {
         let mut h = Harness::new();
-        let (_, player) = stage_started(&mut h);
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
         for press in 0..4 {
             if press > 0 {
                 h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
@@ -3365,6 +3367,15 @@ mod modes_driven {
             assert!(
                 (top - now).abs() <= 2.,
                 "line {press}: its top is at {top}, NOW at {now}"
+            );
+            // Level with it in the manuscript — from the first line, which
+            // needs room above the first file to come down to NOW.
+            let source = h
+                .read(|cx| manuscript.read(cx).active_line_top(cx))
+                .expect("its source is laid out");
+            assert!(
+                (source - now).abs() <= 2.,
+                "line {press}: its source's top is at {source}, NOW at {now}"
             );
         }
         // The choice cards take room from the transcript; the line before
