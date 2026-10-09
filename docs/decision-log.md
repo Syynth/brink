@@ -6047,3 +6047,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The manuscript's NOW pill shows as soon as the manuscript is scrolled even a little off NOW (the line the story is on, or the choices at a choice point) — not only once that line has left the screen. The label drops "above"/"below"; the arrow alone says which way. A hover's peek and a reveal in flight don't count as drift, and hovering only peeks while in sync.
 - **WHY:** Maintainer: "remove the 'above/below' label and instead just have it appear as soon as you scroll even a little, because following is desynced at that point."
+
+## Closing the Player pauses following; reopening resumes at NOW
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** Putting Write mode's Player away pauses following for the session (the Follow setting is untouched): the manuscript stops moving, the NOW pill goes, and autoplay stops. Bringing the Player back resumes following and returns the manuscript to NOW, as Play and Restart do.
+- **WHY:** Maintainer: "if i close the player, disable following" — with the Player away the manuscript is the author's to write in.

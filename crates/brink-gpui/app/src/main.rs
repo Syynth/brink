@@ -3864,6 +3864,49 @@ mod modes_driven {
         assert!(settled(&mut h, "* [Ask about the lamp]"), "back at NOW");
     }
 
+    /// Closing Write mode's Player stops following — the manuscript is the
+    /// author's while it is away, and there is no NOW — and opening it
+    /// again resumes at NOW (decision log 2026-10-09).
+    #[test]
+    fn closing_the_player_stops_following_and_opening_resumes() {
+        let mut h = Harness::new();
+        let (window, player) = stage_started(&mut h);
+        let studio = h.studio(window).expect("open");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
+        assert!(player_until(&mut h, &player, |p| !p.is_busy()));
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(!player_open(&mut h, window));
+        assert!(
+            h.read(|cx| player.read(cx).is_follow_paused()),
+            "following stopped"
+        );
+        assert!(
+            h.read(|cx| player.read(cx).trail().now.is_none()),
+            "no NOW while away"
+        );
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(200., cx)));
+        h.redraw(window);
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)),
+            None,
+            "no pill: scrolling is just writing"
+        );
+
+        h.dispatch(window, super::TogglePlayer);
+        assert!(player_open(&mut h, window));
+        assert!(
+            !h.read(|cx| player.read(cx).is_follow_paused()),
+            "following again"
+        );
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(synced, "and back at NOW");
+    }
+
     /// `>|` runs straight to the next stop — here, the first choice.
     #[test]
     fn skip_runs_to_the_choice() {

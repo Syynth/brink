@@ -109,6 +109,9 @@ enum Entry {
 pub struct Player {
     project: Entity<Project>,
     entries: Vec<Entry>,
+    /// Whether the Player is out (Write mode's pane, or Script's tab). Put
+    /// away, following pauses and the manuscript keeps no NOW.
+    shown: bool,
     /// The source under the pointer — a row or a choice card — for the
     /// manuscript's bracket (decision log 2026-10-09), and whether it is a
     /// choice.
@@ -218,6 +221,7 @@ impl Player {
             arrivals: Vec::new(),
             choices_at: None,
             hovered: None,
+            shown: true,
             undone: Vec::new(),
             history: 0,
             attached: None,
@@ -568,6 +572,12 @@ impl Player {
         self.status(cx).0.to_string()
     }
 
+    /// Whether following is paused.
+    #[cfg(test)]
+    pub(crate) fn is_follow_paused(&self) -> bool {
+        self.follow_paused
+    }
+
     /// Whether `>>` is playing on.
     #[cfg(test)]
     pub(crate) fn is_autoplaying(&self) -> bool {
@@ -698,15 +708,32 @@ impl Player {
         }
     }
 
+    /// Write mode put the Player away, or brought it back (decision log
+    /// 2026-10-09). Away, following pauses — the manuscript stops moving
+    /// under the author and the NOW pill goes — and autoplay stops; back,
+    /// following resumes at NOW, as Play and Restart resume it.
+    pub fn set_shown(&mut self, shown: bool, cx: &mut Context<Self>) {
+        if self.shown == shown {
+            return;
+        }
+        self.shown = shown;
+        if shown {
+            self.back_to_now(cx);
+        } else {
+            self.follow_paused = true;
+            self.halt_autoplay();
+            cx.notify();
+        }
+    }
+
     /// The manuscript's NOW pill: follow again, and go back to the line the
     /// story is on.
     pub fn back_to_now(&mut self, cx: &mut Context<Self>) {
         self.follow_paused = false;
-        if let Some(loc) = self.current_source().cloned() {
-            cx.emit(PlayerEvent::Follow {
-                path: loc.path,
-                span: loc.start as usize..loc.end as usize,
-            });
+        if let Some((path, span)) = self.now_target()
+            && brink_gpui_shell::settings::AppSettings::get(cx).follow_in_editor
+        {
+            cx.emit(PlayerEvent::Follow { path, span });
         }
         cx.notify();
     }
@@ -783,11 +810,14 @@ impl Player {
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
             hover: self.hovered.clone(),
-            now: self.now_target().map(|(path, span)| Location {
-                path,
-                start: u32::try_from(span.start).unwrap_or(u32::MAX),
-                end: u32::try_from(span.end).unwrap_or(u32::MAX),
-            }),
+            now: self
+                .now_target()
+                .filter(|_| self.shown)
+                .map(|(path, span)| Location {
+                    path,
+                    start: u32::try_from(span.start).unwrap_or(u32::MAX),
+                    end: u32::try_from(span.end).unwrap_or(u32::MAX),
+                }),
             chosen: self.chosen_sources(),
             not_taken: {
                 let chosen = self.chosen_sources();
