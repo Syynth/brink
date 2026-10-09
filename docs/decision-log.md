@@ -5938,6 +5938,14 @@
 - **WHAT:** The native player's ▶ (one line), Start and taking a choice advance with the runtime's debug verb `debug_run_to_line`, not `continue_single`; `>|` Skip uses `debug_run`. One road for everything the Player does.
 - **WHY:** Only the debug road can hold *before* a breakpoint line, which is what a line breakpoint means while playing in Write mode; `continue_single` cannot see breakpoints, and two roads would split the delivery stream. The road's quirks (a blank line flushed at a yield point, a line completing only once the next output begins) are handled at the worker's edge.
 
+## A played line's source is where it was emitted, not the line table's
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-runtime, brink-codegen-inkb, brink-format
+- **SCOPE:** moderate
+- **WHAT:** A line's (and a choice's) `source` is the union of its fragments' *emit sites*. Codegen records, in the `DebugInfo` section, each `EmitLine`'s own source location (the location `add_line` already receives for that use) keyed by bytecode offset; the runtime resolves a fragment through that table, falling back to the line table's entry. Line-table deduplication and the line table's `source_location` (the first occurrence's, for intl/xliff context) are unchanged. (#3670, option 2 — revised from option 1.)
+- **WHY:** Dedup shares one entry across every repeat of a text, so resolving through the entry dragged a line's span back to the text's first use — every repeated speaker cue banded the whole scene since its first appearance. Option 1 (resolve the emit site through `DebugInfo`'s statement entries) was tried first and was too coarse: a choice set resolved its second choice's text to the first choice's statement. Codegen already holds each use's exact location at the call that dedups it; keeping it is the only exact answer for both lines and choices.
+
 ## Native studio prose checking on macOS: OS spelling, Harper grammar while typing, Apple Intelligence grammar on request
 - **WHEN:** 2026-10-08
 - **PROJECT:** brink

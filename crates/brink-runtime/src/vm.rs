@@ -204,7 +204,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 flow,
                 program,
                 line_tables,
-                pos.container_idx,
+                (pos.container_idx, pos.offset),
                 idx,
                 slot_count,
             )?;
@@ -216,7 +216,7 @@ fn step_impl<R: crate::rng::StoryRng>(
                 flow,
                 program,
                 line_tables,
-                pos.container_idx,
+                (pos.container_idx, pos.offset),
                 idx,
                 slot_count,
             )?;
@@ -3055,12 +3055,14 @@ fn resume_at(flow: &mut Flow, pos: ContainerPosition) {
 
 /// `Opcode::EmitLine`: capture the template slot values from the stack and
 /// push a deferred line reference for line `idx` of the current
-/// container's scope table, with the precomputed flags for filtering.
+/// container's scope table, with the precomputed flags for filtering, and
+/// the instruction's own place — `(container, offset)` — so the line's
+/// source is where it was emitted (#3670).
 fn emit_line(
     flow: &mut Flow,
     program: &Program,
     line_tables: &[Vec<LineEntry>],
-    container_idx: u32,
+    (container_idx, offset): (u32, usize),
     idx: u16,
     slot_count: u8,
 ) -> Result<(), RuntimeError> {
@@ -3075,7 +3077,9 @@ fn emit_line(
         .and_then(|lines| lines.get(idx as usize))
         .map_or(brink_format::LineFlags::EMPTY, |entry| entry.flags);
     note_effect_emit(flow, program);
-    flow.output.push_line_ref(container_idx, idx, slots, flags);
+    let site = u32::try_from(offset).ok();
+    flow.output
+        .push_emitted_line_ref(container_idx, idx, slots, flags, site);
     Ok(())
 }
 
