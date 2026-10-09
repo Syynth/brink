@@ -3594,8 +3594,16 @@ mod modes_driven {
         assert!(player_until(&mut h, &player, |p| p.line_count() == 1 && !p.is_busy()));
         h.advance(std::time::Duration::from_millis(600));
         let away = |h: &mut Harness| h.read(|cx| manuscript.read(cx).now_is_below(cx));
-        assert_eq!(away(&mut h), None, "the playing line starts on screen");
+        let synced = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(synced, "the playing line starts on NOW: {:?}", away(&mut h));
 
+        // Even a nudge puts the manuscript out of step with the story.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(30., cx)));
+        h.redraw(window);
+        assert_eq!(away(&mut h), Some(false), "a nudge down: NOW is above");
         h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_by(3000., cx)));
         h.advance(std::time::Duration::from_millis(100));
         assert_eq!(
@@ -3613,10 +3621,11 @@ mod modes_driven {
             });
         });
         let _ = write;
-        for _ in 0..6 {
-            h.advance(std::time::Duration::from_millis(50));
-        }
-        assert_eq!(away(&mut h), None, "the pill brought it back");
+        let back = h.settle_until(std::time::Duration::from_secs(3), |h| {
+            h.redraw(window);
+            h.read(|cx| manuscript.read(cx).now_is_below(cx)).is_none()
+        });
+        assert!(back, "the pill brought it back: {:?}", away(&mut h));
     }
 
     /// Save state end to end (W14, decision log 2026-10-09): a save lands

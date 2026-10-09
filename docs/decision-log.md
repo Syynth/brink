@@ -6039,3 +6039,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** (1) When the story stops at a choice point, the manuscript's NOW is where the choices are offered (the first choice's line to the last's), not the line played before them. (2) While the manuscript is at NOW — following, not scrolled away or paused — hovering a Player row or choice scrolls the manuscript so that row's source sits on NOW, without moving the caret; when the pointer leaves the Player, the manuscript returns to NOW. Scrolled away or paused, a hover only draws the source bracket.
 - **WHY:** Maintainer: "when at a choice point, the 'now' position shouldn't be the last thing, but instead like where the choices are offered … when you're on the 'current position' … the editor should also scroll to follow mouse-overs on the rows and choices, and when you leave the player, resume at the 'now' position."
+
+## The NOW pill appears at any drift from NOW, without "above/below"
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** The manuscript's NOW pill shows as soon as the manuscript is scrolled even a little off NOW (the line the story is on, or the choices at a choice point) — not only once that line has left the screen. The label drops "above"/"below"; the arrow alone says which way. A hover's peek and a reveal in flight don't count as drift, and hovering only peeks while in sync.
+- **WHY:** Maintainer: "remove the 'above/below' label and instead just have it appear as soon as you scroll even a little, because following is desynced at that point."

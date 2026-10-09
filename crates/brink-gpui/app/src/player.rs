@@ -783,6 +783,11 @@ impl Player {
             held: self.held_at.clone().filter(|_| self.paused),
             next: self.next_at.clone().filter(|_| self.running),
             hover: self.hovered.clone(),
+            now: self.now_target().map(|(path, span)| Location {
+                path,
+                start: u32::try_from(span.start).unwrap_or(u32::MAX),
+                end: u32::try_from(span.end).unwrap_or(u32::MAX),
+            }),
             chosen: self.chosen_sources(),
             not_taken: {
                 let chosen = self.chosen_sources();
@@ -2182,6 +2187,8 @@ pub struct PlayTrail {
     /// The source of the transcript row (or choice card) under the
     /// pointer, and whether it is a choice — the manuscript brackets it.
     pub hover: Option<(Location, bool)>,
+    /// Where NOW is: the choices on offer, or the line the story is on.
+    pub now: Option<Location>,
     /// The choices taken, and the ones offered beside them and passed by.
     pub chosen: Vec<Location>,
     pub not_taken: Vec<Location>,

@@ -104,6 +104,9 @@ const SEPARATOR_HEIGHT: f32 = 92.0;
 const BRACKET_WIDTH: f32 = 8.;
 const BRACKET_INSET: f32 = 12.;
 const BRACKET_PAD: f32 = 3.;
+
+/// How far off the NOW line counts as out of step with the story.
+const NOW_SYNC: f32 = 2.;
 const SEPARATOR_SPACE_ABOVE: f32 = 36.0;
 
 /// Frames a caret move may take to be brought on screen (`reveal_caret`).
@@ -859,13 +862,18 @@ impl ContinuousView {
         if index == 0 { self.now_head } else { 0. }
     }
 
-    /// Whether the line the story is on is off screen, and which way:
-    /// `Some(true)` below the view, `Some(false)` above, `None` on screen
-    /// (or nothing playing).
+    /// Whether the manuscript has drifted off NOW — the line the story is
+    /// on, or the choices it is offering — and which way it lies:
+    /// `Some(true)` below the NOW line, `Some(false)` above, `None` in
+    /// sync (or nothing playing). Any scroll at all desyncs it (decision
+    /// log 2026-10-09); a hover's peek or a reveal in flight does not
+    /// count.
     pub(crate) fn now_is_below(&self, cx: &App) -> Option<bool> {
-        let loc = self.trail.borrow().active.clone()?;
+        if self.peeking || self.pending_reveal.is_some() {
+            return None;
+        }
+        let loc = self.trail.borrow().now.clone()?;
         let index = self.files.iter().position(|f| *f == loc.path)?;
-        let view = self.last_view.get()?;
         match self.list.bounds_for_item(index) {
             Some(item) => {
                 let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
@@ -879,13 +887,8 @@ impl ContinuousView {
                     + self.lead(index)
                     + SEPARATOR_HEIGHT
                     + state.display_row_of_buffer_line(line) as f32 * line_height;
-                if top + line_height < f32::from(view.top()) {
-                    Some(false)
-                } else if top > f32::from(view.bottom()) {
-                    Some(true)
-                } else {
-                    None
-                }
+                let off = top - self.now_y;
+                (off.abs() > NOW_SYNC).then_some(off > 0.)
             }
             None => Some(index > self.list.logical_scroll_top().item_ix),
         }
@@ -989,12 +992,13 @@ impl ContinuousView {
         )
     }
 
-    /// The canvas's Away frame: when the line the story is on is off
-    /// screen — scrolled away to edit — a pill at the bottom of the
-    /// manuscript names where it is and takes you back (`BackToNow`).
+    /// The canvas's Away frame, from the first pixel of drift: once the
+    /// manuscript is off NOW, following is out of step, so a pill at the
+    /// bottom names where NOW is — the arrow says which way — and takes you
+    /// back (`BackToNow`).
     fn now_pill(&self, cx: &mut Context<Self>) -> Option<gpui::AnyElement> {
         let below = self.now_is_below(cx)?;
-        let loc = self.trail.borrow().active.clone()?;
+        let loc = self.trail.borrow().now.clone()?;
         // Where it is: the file, and the knot or stitch around the line.
         let name = self.outlines.get(&loc.path).and_then(|scopes| {
             let around = scopes
@@ -1009,8 +1013,8 @@ impl ContinuousView {
         });
         let file = loc.path.rsplit('/').next().unwrap_or(&loc.path).to_owned();
         let label = match name {
-            Some(name) => format!("{file} · {name}, {}", if below { "below" } else { "above" }),
-            None => format!("{file}, {}", if below { "below" } else { "above" }),
+            Some(name) => format!("{file} · {name}"),
+            None => file,
         };
         let theme = cx.theme();
         let (accent, fg, card, on_accent) = (
