@@ -1020,6 +1020,15 @@ impl ContinuousView {
             .map(|v| (f32::from(v.top()), f32::from(v.bottom())))
     }
 
+    /// `path`'s section editor, once mounted.
+    #[cfg(test)]
+    pub(crate) fn editor_for_test(&self, path: &str) -> Option<Entity<EditorState>> {
+        self.editors
+            .borrow()
+            .get(path)
+            .map(|(editor, _)| editor.clone())
+    }
+
     /// Where the caret is in `path`'s section.
     #[cfg(test)]
     pub(crate) fn caret_in(&self, path: &str, cx: &App) -> Option<usize> {

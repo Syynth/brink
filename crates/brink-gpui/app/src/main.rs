@@ -6853,12 +6853,10 @@ mod modes_driven {
         );
     }
 
-    /// A literal argument the host manifest labels carries a value chip;
-    /// clicking it opens every value for that argument, and picking one
-    /// replaces the literal (#3645, the value-list half).
-    #[test]
-    fn a_value_chip_opens_the_arguments_values() {
-        let dir = scratch_dir("value-chip");
+    /// A project whose one external takes a host-manifest type with two
+    /// labelled values, called once with `9` (`Vault`).
+    fn value_chip_project(what: &str) -> std::path::PathBuf {
+        let dir = scratch_dir(what);
         std::fs::write(
             dir.join("brink.toml"),
             "[project]\nentry = \"story.ink\"\n\n[host]\nmanifest = \"host.json\"\n",
@@ -6883,8 +6881,16 @@ mod modes_driven {
             "EXTERNAL set_switch(id)\n-> start\n=== start ===\n~ set_switch(9)\n-> END\n",
         )
         .expect("story");
+        dir
+    }
+
+    /// A literal argument the host manifest labels carries a value chip;
+    /// clicking it opens every value for that argument, and picking one
+    /// replaces the literal (#3645, the value-list half).
+    #[test]
+    fn a_value_chip_opens_the_arguments_values() {
         let mut h = Harness::new();
-        let window = h.open(&dir);
+        let window = h.open(&value_chip_project("value-chip"));
         let studio = h.studio(window).expect("open");
         let project = h.read(|cx| studio.read(cx).project.clone());
         let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
@@ -6896,12 +6902,49 @@ mod modes_driven {
             let document = s.code.read(cx).active_document().cloned().expect("open");
             document.read(cx).editor().clone()
         });
+        pick_through_the_value_chip(&mut h, window, &project, &editor, "value-chip");
+    }
 
+    /// The same chip in Write's manuscript.
+    #[test]
+    fn a_value_chip_works_in_the_manuscript() {
+        let mut h = Harness::new();
+        let window = h.open(&value_chip_project("value-chip-write"));
+        let studio = h.studio(window).expect("open");
+        let (project, manuscript) = h.read(|cx| {
+            (
+                studio.read(cx).project.clone(),
+                studio.read(cx).manuscript.clone(),
+            )
+        });
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeWrite);
+        let mounted = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| manuscript.read(cx).editor_for_test("story.ink").is_some())
+        });
+        assert!(mounted, "the manuscript never mounted the file");
+        let editor = h
+            .read(|cx| manuscript.read(cx).editor_for_test("story.ink"))
+            .expect("mounted");
+        pick_through_the_value_chip(&mut h, window, &project, &editor, "value-chip-write");
+    }
+
+    /// Find the chip as what the inlays add to the frame, click it, and pick
+    /// the first value.
+    fn pick_through_the_value_chip(
+        h: &mut Harness,
+        window: gpui::AnyWindowHandle,
+        project: &gpui::Entity<crate::project::Project>,
+        editor: &gpui::Entity<gpui_component::input::EditorState>,
+        name: &str,
+    ) {
         // The frame without inlays, then with them: the chip is what changed.
         h.update(|cx| editor.update(cx, |state, cx| state.set_inlays(Vec::new(), cx)));
         let bare = h.capture(window);
         h.update(|cx| {
-            crate::document::request_inlays(&project, "story.ink", &editor, false, cx);
+            crate::document::request_inlays(project, "story.ink", editor, false, cx);
         });
         let mut chip = None;
         let found = h.settle_until(PINS_WAIT, |h| {
@@ -6919,7 +6962,7 @@ mod modes_driven {
         });
         assert!(found, "no chip was drawn");
         let (x0, y0, x1, y1) = chip.expect("found above");
-        let shot = scratch_dir("shot").join("value-chip.png");
+        let shot = scratch_dir("shot").join(format!("{name}.png"));
         h.screenshot(window, &shot);
         eprintln!("value chip screenshot: {}", shot.display());
 
@@ -6945,11 +6988,11 @@ mod modes_driven {
         });
         assert!(opened, "clicking the chip never opened the values");
         assert_eq!(
-            menu(&mut h),
+            menu(h),
             Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
             "every value, not just those matching the literal"
         );
-        let shot = scratch_dir("shot").join("value-chip-open.png");
+        let shot = scratch_dir("shot").join(format!("{name}-open.png"));
         h.screenshot(window, &shot);
         eprintln!("value chip menu screenshot: {}", shot.display());
 
