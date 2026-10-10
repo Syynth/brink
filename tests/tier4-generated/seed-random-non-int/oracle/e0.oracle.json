@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "text": "first line\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "RUNTIME ERROR: 'story.ink' line 3: Invalid value passed to SEED_RANDOM"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "s": "x"
+    },
+    "turn_index": 0
+  }
+}
