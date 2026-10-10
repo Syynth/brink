@@ -220,7 +220,7 @@ struct Studio {
     caret: Option<Subscription>,
     /// The filesystem watch, held for the window's lifetime: dropping the
     /// task stops the pump and the watcher with it.
-    _watching: gpui::Task<()>,
+    _watching: watch::Watching,
     /// Where this window is in closing (see [`closing`]).
     close: CloseState,
     _subscriptions: Vec<Subscription>,
@@ -4687,6 +4687,72 @@ mod modes_driven {
                 .any(|f| f == "build/host.json")
         });
         assert!(not_a_source, "the config's file, never a story source");
+    }
+
+    /// A host manifest outside the project root — in a build folder beside
+    /// it — is followed on disk like one inside (#3687): written after the
+    /// project opened, then rewritten, through the real watcher.
+    #[test]
+    fn a_host_manifest_outside_the_root_is_followed_on_disk() {
+        let mut h = Harness::new();
+        let base = scratch_dir("host-manifest-outside");
+        let root = base.join("ink");
+        std::fs::create_dir_all(&root).expect("ink");
+        std::fs::create_dir_all(base.join("build")).expect("build");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\nentry = \"story.brink\"\n\n[host]\nmanifest = \"../build/host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            root.join("story.brink"),
+            "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n",
+        )
+        .expect("story");
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let codes = |h: &mut Harness| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .diagnostics_for("story.brink")
+                    .iter()
+                    .map(|d| d.code.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let ready = h.settle_until(wait, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        assert!(
+            !codes(&mut h).contains(&"E164".to_owned()),
+            "freeform until then"
+        );
+
+        // The host writes it: a vocabulary without `<shake>`.
+        std::fs::write(
+            base.join("build/host.json"),
+            r#"{ "markup": [{ "name": "b" }] }"#,
+        )
+        .expect("manifest");
+        let applied = h.settle_until(wait, |h| {
+            h.advance(std::time::Duration::from_millis(250));
+            codes(h).contains(&"E164".to_owned())
+        });
+        assert!(applied, "the new manifest applies: {:?}", codes(&mut h));
+
+        // And rewrites it: now `<shake>` is declared.
+        std::fs::write(
+            base.join("build/host.json"),
+            r#"{ "markup": [{ "name": "b" }, { "name": "shake" }] }"#,
+        )
+        .expect("rewrite");
+        let followed = h.settle_until(wait, |h| {
+            h.advance(std::time::Duration::from_millis(250));
+            !codes(h).contains(&"E164".to_owned())
+        });
+        assert!(followed, "the rewrite applies too: {:?}", codes(&mut h));
     }
 
     /// The grammar setting reaches the checker and both kinds of editor,

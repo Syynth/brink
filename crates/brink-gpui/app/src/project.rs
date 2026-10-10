@@ -1279,6 +1279,12 @@ impl Project {
         self.kinds.get(path).unwrap_or(&self.empty_kinds)
     }
 
+    /// Every file the applied config reads, on disk or not, by its config
+    /// key — `../` included when it lives outside the root.
+    pub fn config_reads(&self) -> impl Iterator<Item = &String> {
+        self.config_reads.iter()
+    }
+
     /// Whether `path` is a file the applied config reads, on disk or not —
     /// what the watcher follows besides sources and the config itself.
     #[must_use]
