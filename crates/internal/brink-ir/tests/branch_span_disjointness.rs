@@ -91,6 +91,40 @@ fn ink_multiline_conditional_branches_are_disjoint() {
     check_branches(cond.ptr, &branches, "ink multiline conditional");
 }
 
+/// Issue #3510: an empty then-branch followed by a lone `- else:` lowers
+/// to an if/else whose first arm has no node of its own. Its synthetic span
+/// must still sit inside the construct and stop where the else arm starts.
+#[test]
+fn ink_implied_empty_then_arm_is_disjoint_from_the_else_arm() {
+    for src in [
+        "{x > 5:\n- else:\n  Poor.\n}\n",
+        "{x > 5:\n   \n- else:\n  Poor.\n}\n",
+    ] {
+        let (block, diags) = lower_ink_body(src);
+        assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
+        let Stmt::Conditional(cond) = &block.stmts[0] else {
+            panic!("expected Conditional, got {:?}", block.stmts[0]);
+        };
+        assert!(
+            matches!(cond.kind, brink_ir::CondKind::InitialCondition),
+            "an `if` with an empty true branch, not a switch: {:?}",
+            cond.kind
+        );
+        assert_eq!(cond.branches.len(), 2, "{src:?}");
+        assert!(
+            cond.branches[0].condition.is_some(),
+            "the implied arm tests the condition"
+        );
+        assert!(cond.branches[0].body.stmts.is_empty(), "and prints nothing");
+        assert!(
+            cond.branches[1].condition.is_none(),
+            "the else arm keeps none"
+        );
+        let branches: Vec<Provenance> = cond.branches.iter().map(|b| b.ptr).collect();
+        check_branches(cond.ptr, &branches, "ink implied empty then-arm");
+    }
+}
+
 /// Regression test for the review's correctness finding: the branchless
 /// body's implicit first arm must not contain the sibling `- else:` arm.
 #[test]
