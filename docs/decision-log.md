@@ -6079,3 +6079,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The manuscript bracket that marks a hovered Player choice runs the height of the choice's whole block: the choice line and everything downstream of it (the outline's choice scope, trailing blank lines left off), not the choice line alone. A story line's bracket still covers only its own lines.
 - **WHY:** Maintainer: make the choice bracket "the height of the entire container that's downstream of the choice, not just the choice line itself". The block is what picking the choice plays, and the hover already scrolls that same block into view.
+
+## Write mode's scroll position is sacred
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui / Write-mode manuscript
+- **SCOPE:** moderate
+- **WHAT:** The manuscript's scroll position in Write mode belongs to the author. It is remembered across restarts and project reopens (as Script mode's per-file scroll already is), and nothing moves it unasked: mode switches, edits, analysis refreshes and resizes keep the same place in the text. Player following is the one sanctioned mover, and only while following is on. Tracked as an issue.
+- **WHY:** Maintainer: "scroll position in write mode needs to be sacred. it needs to be remembered across restarts, etc."
