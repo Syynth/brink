@@ -7035,7 +7035,11 @@ mod modes_driven {
         // The capture is 2x; a click is in window points.
         #[expect(clippy::cast_precision_loss, reason = "screen pixels")]
         let (x, y) = ((x0 + x1) as f32 / 4. + 4., (y0 + y1) as f32 / 4.);
-        h.click_with(window, x, y, gpui::Modifiers::default());
+        // A real click: press, a hair of movement, release. Nothing between
+        // the press and the release may drag the caret off the literal.
+        h.mouse_down(window, x, y);
+        h.drag(window, x + 3., y);
+        h.mouse_up(window, x + 3., y);
         let menu = |h: &mut Harness| {
             h.read(|cx| {
                 let state = editor.read(cx).completion_menu_state();
@@ -7057,6 +7061,16 @@ mod modes_driven {
             menu(h),
             Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
             "every value, not just those matching the literal"
+        );
+        let (caret, literal) = h.read(|cx| {
+            let state = editor.read(cx);
+            let text = state.value().to_string();
+            let at = text.find("set_switch(9").expect("the call") + "set_switch(".len();
+            (state.cursor(), at)
+        });
+        assert_eq!(
+            caret, literal,
+            "the caret, and the menu, stay at the literal"
         );
         let selected = h.read(|cx| editor.read(cx).completion_menu_state().selected);
         assert_eq!(selected, Some(1), "it opens on the value written, `Vault`");

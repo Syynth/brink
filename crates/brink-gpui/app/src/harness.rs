@@ -290,6 +290,23 @@ impl Harness {
         self.settle();
     }
 
+    /// Move the pointer to `(x, y)` with the left button held — the drag
+    /// between a press and its release.
+    pub fn drag(&mut self, window: AnyWindowHandle, x: f32, y: f32) {
+        let event = gpui::PlatformInput::MouseMove(gpui::MouseMoveEvent {
+            position: gpui::point(px(x), px(y)),
+            pressed_button: Some(gpui::MouseButton::Left),
+            modifiers: gpui::Modifiers::default(),
+        });
+        self.app()
+            .update_window(window, |_, window, cx| {
+                window.dispatch_event(event, cx);
+                window.refresh();
+            })
+            .expect("dragging in a window that is open");
+        self.settle();
+    }
+
     /// Type `text` into whatever has focus in `window`, a character at a
     /// time, as a keyboard would.
     pub fn type_text(&mut self, window: AnyWindowHandle, text: &str) {
