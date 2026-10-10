@@ -4013,6 +4013,18 @@ mod modes_driven {
             centred,
             "the hovered choice and its body sit in the middle: {dbg:?}"
         );
+
+        // Its bracket runs the whole block: `+ [Left]` down to `-> pick`,
+        // not the choice line alone (decision log 2026-10-09).
+        let line = |needle: &str| {
+            story[..story.find(needle).expect("in the story")]
+                .matches('\n')
+                .count()
+        };
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).bracket_lines_for_test(cx)),
+            Some((line("+ [Left]"), line("    -> pick"))),
+        );
     }
 
     /// A long list of choices takes at most half the Player and scrolls in

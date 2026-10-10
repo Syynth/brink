@@ -6071,3 +6071,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** The Player's choice cards take at most half of its height; a longer list scrolls in place. The cards' staggered slide-in stops growing after eight cards.
 - **WHY:** Maintainer, at a choice point with fifteen options that pushed the transcript out of the Player: "we should probably have the choices only be half the height of the player at most."
+
+## A hovered choice's bracket spans its whole block
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** gpui-player / Write-mode manuscript
+- **SCOPE:** minor/local
+- **WHAT:** The manuscript bracket that marks a hovered Player choice runs the height of the choice's whole block: the choice line and everything downstream of it (the outline's choice scope, trailing blank lines left off), not the choice line alone. A story line's bracket still covers only its own lines.
+- **WHY:** Maintainer: make the choice bracket "the height of the entire container that's downstream of the choice, not just the choice line itself". The block is what picking the choice plays, and the hover already scrolls that same block into view.

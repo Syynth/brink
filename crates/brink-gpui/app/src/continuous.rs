@@ -644,15 +644,31 @@ impl ContinuousView {
         // A choice shows with its body (decision log 2026-10-09): the
         // outline's choice block holding its line.
         if choice {
-            self.reveal_block = self.outlines.get(path).and_then(|scopes| {
-                scopes
-                    .iter()
-                    .filter(|s| s.kind == ScopeKind::Choice)
-                    .filter(|s| (s.start as usize) <= span.start && span.start < s.end as usize)
-                    .max_by_key(|s| s.start)
-                    .map(|s| s.end as usize)
-            });
+            let text = self
+                .editors
+                .borrow()
+                .get(path)
+                .map(|(editor, _)| editor.read(cx).value().to_string());
+            self.reveal_block =
+                text.and_then(|text| self.choice_block_end(path, span.start, &text));
         }
+    }
+
+    /// Where the choice block holding `at` ends: the outline's innermost
+    /// choice scope around it — the choice and everything downstream of it
+    /// — with the blank lines after it left off. `None` before the outline
+    /// arrives.
+    fn choice_block_end(&self, path: &str, at: usize, text: &str) -> Option<usize> {
+        let end = self
+            .outlines
+            .get(path)?
+            .iter()
+            .filter(|s| s.kind == ScopeKind::Choice)
+            .filter(|s| (s.start as usize) <= at && at < s.end as usize)
+            .max_by_key(|s| s.start)
+            .map(|s| s.end as usize)?;
+        let trimmed = text.get(..end.min(text.len()))?.trim_end().len();
+        Some(trimmed.max(at + 1))
     }
 
     /// The pointer left the Player: back to NOW (`now`), if a peek had
@@ -1195,6 +1211,38 @@ impl ContinuousView {
             .collect()
     }
 
+    /// The buffer lines, first and last, the bracket for `loc` spans. A
+    /// choice brackets its whole block — the choice and what follows it
+    /// (decision log 2026-10-09) — a story line just its own lines.
+    fn bracket_lines(
+        &self,
+        loc: &brink_gpui_model::query::Location,
+        choice: bool,
+        text: &str,
+    ) -> (usize, usize) {
+        let line_of = |at: usize| {
+            text.get(..at.min(text.len()))
+                .map_or(0, |before| before.matches('\n').count())
+        };
+        let start = loc.start as usize;
+        let end = if choice {
+            self.choice_block_end(&loc.path, start, text)
+                .unwrap_or(loc.end as usize)
+        } else {
+            loc.end as usize
+        };
+        (line_of(start), line_of(end.saturating_sub(1).max(start)))
+    }
+
+    /// [`Self::bracket_lines`] for the row under the pointer, if any.
+    #[cfg(test)]
+    pub(crate) fn bracket_lines_for_test(&self, cx: &App) -> Option<(usize, usize)> {
+        let (loc, choice) = self.trail.borrow().hover.clone()?;
+        let (editor, _) = self.editors.borrow().get(&loc.path).cloned()?;
+        let text = editor.read(cx).value().to_string();
+        Some(self.bracket_lines(&loc, choice, &text))
+    }
+
     /// The bracket beside the source lines of the Player row under the
     /// pointer (decision log 2026-10-09, the canvas's glue bracket put to a
     /// wider use): on the text column's right edge, from the first line's
@@ -1207,12 +1255,7 @@ impl ContinuousView {
         let state = editor.read(cx);
         let line_height = f32::from(state.line_height()?);
         let text = state.value();
-        let line_of = |at: u32| {
-            text.get(..(at as usize).min(text.len()))
-                .map_or(0, |before| before.matches('\n').count())
-        };
-        let first = line_of(loc.start);
-        let last = line_of(loc.end.saturating_sub(1).max(loc.start));
+        let (first, last) = self.bracket_lines(&loc, choice, &text);
         let top_row = state.display_row_of_buffer_line(first);
         let lines = text.matches('\n').count() + 1;
         let end_row = if last + 1 < lines {
