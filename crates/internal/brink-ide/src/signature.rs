@@ -153,7 +153,9 @@ pub struct ArgumentValueCompletion {
 /// Pickable values for the argument at `byte_offset` (#174): if the cursor is
 /// inside a call whose active parameter has a value source, return its labelled
 /// items — `static` items from the manifest, or `host` items from the pushed
-/// cache (`host_values`, empty/`None` when no host is attached). Empty for a
+/// cache (`host_values`, empty/`None` when no host is attached). A type with
+/// no value source but an `enum` constraint offers the enum's members, as
+/// string literals — the same closed set E042 checks against. Empty for a
 /// non-value param. Reuses the same call-site → semantic-type join point as
 /// [`signature_help`].
 #[must_use]
@@ -195,7 +197,20 @@ pub fn argument_value_completions(
         Some(brink_ir::ValueSource::Host) => host_values
             .and_then(|hv| hv.get(&rt.name))
             .map_or_else(Vec::new, |items| items.iter().map(to_completion).collect()),
-        None => Vec::new(),
+        None => match &rt.constraint {
+            // A member holding a double quote can't be written as a plain
+            // literal, so it is left out rather than offered broken.
+            Some(brink_ir::Constraint::Enum { values }) => values
+                .iter()
+                .filter(|v| !v.contains('"'))
+                .map(|v| ArgumentValueCompletion {
+                    value: format!("\"{v}\""),
+                    label: v.clone(),
+                    detail: None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -309,6 +324,56 @@ mod tests {
         // Cursor in the second arg slot (on: bool — no value source) → empty.
         let on_offset = src.find("true").expect("second arg");
         assert!(super::argument_value_completions(analysis, src, on_offset, None).is_empty());
+    }
+
+    /// A type with an `enum` constraint and no value source offers the
+    /// enum's members — the closed set E042 checks — as string literals.
+    #[test]
+    fn argument_value_completions_for_an_enum_constraint() {
+        use brink_ir::{
+            BaseType, Constraint, ExternalKind, HostManifest, ManifestExternal, ManifestParam,
+            SemanticTypeDef, TypeRef,
+        };
+
+        let src = "EXTERNAL face(dir)\n~ face(\"north\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "face".into(),
+                params: vec![ManifestParam {
+                    name: "dir".into(),
+                    ty: TypeRef("direction".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "direction".into(),
+                base: BaseType::String,
+                constraint: Some(Constraint::Enum {
+                    values: vec!["north".into(), "south".into(), "say \"hi\"".into()],
+                }),
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("face(\"").expect("call") + "face(".len();
+        let values = super::argument_value_completions(analysis, src, offset, None);
+        let got: Vec<(&str, &str)> = values
+            .iter()
+            .map(|v| (v.label.as_str(), v.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [("north", "\"north\""), ("south", "\"south\"")],
+            "the members, quoted; one with a quote in it is left out"
+        );
     }
 
     #[test]
