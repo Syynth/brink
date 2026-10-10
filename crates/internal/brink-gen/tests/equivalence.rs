@@ -88,52 +88,16 @@ type SourcePredicate = fn(&str) -> bool;
 /// `KNOWN_DIVERGENCES` discipline (`inkjs_differential.rs`): a failing story
 /// that matches a predicate is counted and reported, not a failure; one
 /// that matches none is a new finding. Remove an entry with its fix.
-const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
-    (
-        // A text-less fallback choice is emitted as an `else` arm the native
-        // parser rejects.
-        "#3515 fallback choice respelled as an `else` arm",
-        |src| {
-            src.lines().any(|l| {
-                let t = l.trim_start().trim_start_matches(['*', '+', ' ']);
-                t.starts_with("-> ") && l.trim_start().starts_with(['*', '+'])
-            })
-        },
-    ),
-    (
-        // `not` is emitted as a bare word, and its parenthesised operand is
-        // flattened.
-        "#3516 `not` respelled as a bare word / operand precedence lost",
-        |src| src.contains("not "),
-    ),
-    (
-        // An ink VAR respells to a module-private native `var`, which the
-        // host cannot read — item 3 of the trace diverges. Needs a ruling
-        // (emit `pub var`?); until then every story with a global matches.
-        "#3517 ink VAR/LIST respelled as a private native var (host-readable globals)",
-        |src| {
-            src.lines()
-                .any(|l| l.starts_with("VAR ") || l.starts_with("LIST "))
-        },
-    ),
-    (
-        // A nested binary expression loses its parentheses (`0 - (0 + 1)`
-        // → `0 - 0 + 1`). The generator's printer parenthesises every
-        // binary node, so a nested one shows as an operator followed by
-        // `(`, or as `((` — or, under a unary operator, as `-(`
-        // (`-(0 + 1)` → `-0 + 1`, the first CI run's finding).
-        "#3518 nested binary expression loses its parentheses",
-        |src| {
-            src.contains("((")
-                || src.contains("-(")
-                || [
-                    "+", "-", "*", "/", "mod", "and", "or", "==", "!=", "<", "<=", ">", ">=",
-                ]
-                .iter()
-                .any(|op| src.contains(&format!(" {op} (")))
-        },
-    ),
-];
+const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[(
+    // An ink VAR respells to a module-private native `var`, which the
+    // host cannot read — item 3 of the trace diverges. Needs a ruling
+    // (emit `pub var`?); until then every story with a global matches.
+    "#3517 ink VAR/LIST respelled as a private native var (host-readable globals)",
+    |src| {
+        src.lines()
+            .any(|l| l.starts_with("VAR ") || l.starts_with("LIST "))
+    },
+)];
 
 fn fail(msg: String) -> TestCaseError {
     TestCaseError::fail(msg)
@@ -299,17 +263,19 @@ fn respeller_preserves_the_trace_plain_ink() {
 
 /// `Profile::RESPELLABLE` — structure only, no inline conditionals — is the
 /// subset the emitter supports today: here the property must actually run.
-/// A non-vacuity floor of one story in ten tracing equal guards against the
-/// respell route regressing into refusing everything; measured 2026-09-04
-/// at 72 of 300, with the rest refused for a spring (#1976) or hitting a
-/// listed divergence (#3515, #3516, #3518). Raise the floor as those close.
+/// A non-vacuity floor of one story in four tracing equal guards against
+/// the respell route regressing into refusing everything. Measured
+/// 2026-09-04 at 72 of 300, with the rest refused for a spring (#1976) or
+/// hitting a listed divergence (#3515, #3516, #3518); with those three
+/// fixed, 2026-10-10 measured 536 of 1000, every other story refused for a
+/// spring. Raise the floor as #1976 closes.
 #[test]
 fn respeller_preserves_the_trace_respellable_tier() {
     let cases = config().cases;
     let tally = respell_tally(Profile::RESPELLABLE, cases);
     report("respellable", cases, &tally);
     let equal = tally.0;
-    let floor = usize::try_from(cases / 10).unwrap_or(0);
+    let floor = usize::try_from(cases / 4).unwrap_or(0);
     assert!(
         equal >= floor,
         "only {equal} of {cases} respellable-tier stories traced equal through the respeller \
