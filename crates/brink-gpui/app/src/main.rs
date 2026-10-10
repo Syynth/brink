@@ -6758,6 +6758,101 @@ mod modes_driven {
         h.capture(window);
     }
 
+    /// An external's argument offers the values the host manifest named
+    /// in `brink.toml` gives its type: `(` opens the menu on them, typing
+    /// narrows it, and picking one writes its literal, not its label.
+    #[test]
+    fn an_argument_offers_the_host_manifests_values() {
+        let dir = scratch_dir("argument-values");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\n\n[host]\nmanifest = \"host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            dir.join("host.json"),
+            r#"{
+  "externals": [{ "name": "set_switch", "params": [{ "name": "id", "ty": "switch_id" }] }],
+  "types": [{
+    "name": "switch_id", "base": "int",
+    "values": { "source": "static", "items": [
+      { "value": "5", "label": "HarborGate", "detail": "Switch #5" },
+      { "value": "9", "label": "Vault" }
+    ] }
+  }]
+}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            dir.join("story.ink"),
+            "EXTERNAL set_switch(id)\n-> start\n=== start ===\n~ set_switch\n-> END\n",
+        )
+        .expect("story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // The caret at the end of `~ set_switch`.
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_cursor_position(gpui_component::input::Position::new(3, 12), window, cx);
+            });
+        });
+        let menu = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx).completion_menu_state();
+                state.open.then(|| {
+                    state
+                        .items
+                        .iter()
+                        .map(|i| i.label.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+        h.type_text(window, "(");
+        let opened = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some()
+        });
+        assert!(opened, "`(` never opened the menu");
+        assert_eq!(
+            menu(&mut h),
+            Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
+            "the values alone, labelled"
+        );
+        let shot = scratch_dir("shot").join("argument-values.png");
+        h.screenshot(window, &shot);
+        eprintln!("argument values screenshot: {}", shot.display());
+
+        h.type_text(window, "Va");
+        let narrowed = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some_and(|items| items.first().is_some_and(|l| l == "Vault"))
+        });
+        assert!(narrowed, "typing narrows to `Vault`: {:?}", menu(&mut h));
+        h.press(window, "enter");
+        let written = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9"))
+        });
+        assert!(
+            written,
+            "the literal replaces what was typed: {:?}",
+            h.read(|cx| editor.read(cx).value().to_string())
+        );
+    }
+
     /// The editor menu's Fold and Unfold reach the editor they were asked
     /// from, as the gutter's chevron does.
     #[test]

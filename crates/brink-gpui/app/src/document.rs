@@ -1682,21 +1682,30 @@ impl CompletionProvider for BrinkCompletion {
             },
             cx,
         );
+        let text = text.to_string();
         cx.background_spawn(async move {
             let QueryResult::Completions(items) = query.await? else {
                 return Ok(lsp::CompletionResponse::Array(Vec::new()));
             };
+            let index = LineIndex::new(&text);
             Ok(lsp::CompletionResponse::Array(
-                items.iter().map(completion_item).collect(),
+                items
+                    .iter()
+                    .map(|item| completion_item(item, &index))
+                    .collect(),
             ))
         })
     }
 
+    /// Identifier characters, `.`, `>` and `@` as ever; and `(`, `,`, `"`
+    /// and whitespace, which open the menu only where an argument has
+    /// values in the host manifest (the query answers nothing elsewhere).
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
-        new_text
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '>' | '@'))
+        new_text.chars().last().is_some_and(|c| {
+            c.is_alphanumeric()
+                || c.is_whitespace()
+                || matches!(c, '_' | '.' | '>' | '@' | '(' | ',' | '"')
+        })
     }
 }
 
@@ -1739,7 +1748,7 @@ pub(crate) fn position(index: &LineIndex, offset: u32) -> lsp::Position {
 
 /// The one place brink's kinds are mapped onto LSP's, so the two vocabularies
 /// meet exactly once.
-fn completion_item(item: &Completion) -> lsp::CompletionItem {
+fn completion_item(item: &Completion, index: &LineIndex) -> lsp::CompletionItem {
     use brink_ir::SymbolKind as K;
     let (kind, detail) = match item.kind {
         CompletionKind::Symbol(symbol) => (
@@ -1757,11 +1766,27 @@ fn completion_item(item: &Completion) -> lsp::CompletionItem {
         ),
         CompletionKind::StdlibFunction => (lsp::CompletionItemKind::FUNCTION, "stdlib".to_owned()),
         CompletionKind::Builtin => (lsp::CompletionItemKind::KEYWORD, "built-in".to_owned()),
+        CompletionKind::Value => (
+            lsp::CompletionItemKind::VALUE,
+            item.detail.clone().unwrap_or_else(|| "value".to_owned()),
+        ),
     };
+    // A value writes its literal over what was typed of it, not its label
+    // at the cursor.
+    let text_edit = item.replace.as_ref().map(|(new_text, range)| {
+        lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+            range: lsp::Range {
+                start: position(index, range.start),
+                end: position(index, range.end),
+            },
+            new_text: new_text.clone(),
+        })
+    });
     lsp::CompletionItem {
         label: item.label.clone(),
         kind: Some(kind),
         detail: Some(detail),
+        text_edit,
         ..Default::default()
     }
 }

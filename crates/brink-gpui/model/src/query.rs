@@ -567,6 +567,12 @@ pub struct HoverTarget {
 pub struct Completion {
     pub label: String,
     pub kind: CompletionKind,
+    /// Secondary text the kind does not already say (a value's detail).
+    pub detail: Option<String>,
+    /// What to write and over which byte range, when that is not just the
+    /// label at the cursor: an argument value shows its label and inserts
+    /// its literal over what was typed of it.
+    pub replace: Option<(String, std::ops::Range<u32>)>,
 }
 
 /// Kept as brink's own kind rather than an LSP one so the LSP mapping is
@@ -577,6 +583,9 @@ pub enum CompletionKind {
     StdlibFunction,
     /// `DONE` / `END`.
     Builtin,
+    /// A value from the host manifest for the argument being written: a
+    /// type's static `values`, or its `enum` members.
+    Value,
 }
 
 /// One declaration in a file's outline — a knot (with its stitches), a
@@ -1273,6 +1282,23 @@ fn completions(
     let ref_root = ref_arg_root_prefix(source, offset);
     let mut items = Vec::new();
 
+    // An argument with values in the host manifest offers them first: the
+    // label shown, the literal written over what was typed of it. A value
+    // literal is never a legal `ref` root.
+    if matches!(ctx, CompletionContext::FunctionArgs) && ref_root.is_none() {
+        items.extend(argument_values(analysis, source, offset));
+    }
+    // Punctuation and spaces open the menu only for argument values (`(`,
+    // `,`, `"` and a space are triggers for exactly that); everything else
+    // waits for an identifier character, as it always did.
+    if source[..offset]
+        .chars()
+        .next_back()
+        .is_some_and(|c| matches!(c, '(' | ',' | '"') || c.is_whitespace())
+    {
+        return Some(items);
+    }
+
     // A dotted path is exhaustive: only that knot's members can complete,
     // so this returns rather than falling through to the general sweep.
     if let CompletionContext::DottedPath { ref knot } = ctx {
@@ -1286,6 +1312,8 @@ fn completions(
                     items.push(Completion {
                         label: suffix.to_owned(),
                         kind: CompletionKind::Symbol(info.kind),
+                        detail: None,
+                        replace: None,
                     });
                 }
             }
@@ -1305,12 +1333,16 @@ fn completions(
         items.push(Completion {
             label: info.name.clone(),
             kind: CompletionKind::Symbol(info.kind),
+            detail: None,
+            replace: None,
         });
     }
     for f in stdlib_completions(&ctx, session.language_dialect()) {
         items.push(Completion {
             label: f.name.to_owned(),
             kind: CompletionKind::StdlibFunction,
+            detail: None,
+            replace: None,
         });
     }
     if matches!(
@@ -1321,10 +1353,43 @@ fn completions(
             items.push(Completion {
                 label: label.to_owned(),
                 kind: CompletionKind::Builtin,
+                detail: None,
+                replace: None,
             });
         }
     }
     Some(items)
+}
+
+/// The host manifest's values for the argument at `offset`, narrowed to
+/// what has been typed of one (its label or its literal, case aside), each
+/// replacing that typed part.
+fn argument_values(
+    analysis: &brink_analyzer::AnalysisResult,
+    source: &str,
+    offset: usize,
+) -> Vec<Completion> {
+    let start = source[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '"'))
+        .last()
+        .map_or(offset, |(i, _)| i);
+    let typed = source[start..offset].trim_start_matches('"').to_lowercase();
+    let range = u32::try_from(start).unwrap_or(u32::MAX)..u32::try_from(offset).unwrap_or(u32::MAX);
+    brink_ide::signature::argument_value_completions(analysis, source, offset, None)
+        .into_iter()
+        .filter(|v| {
+            v.label.to_lowercase().starts_with(&typed)
+                || v.value.trim_matches('"').to_lowercase().starts_with(&typed)
+        })
+        .map(|v| Completion {
+            label: v.label,
+            kind: CompletionKind::Value,
+            detail: v.detail,
+            replace: Some((v.value, range.clone())),
+        })
+        .collect()
 }
 
 /// Lift the selected lines into a new knot or function.
@@ -1792,6 +1857,96 @@ mod tests {
             "the literal carries a swatch: {colours:?}"
         );
         assert_eq!(colours[0].2, "#ff0000");
+    }
+
+    /// An argument whose type has values in the host manifest completes
+    /// them: label shown, literal written over what was typed. `(`, `,` and
+    /// a space open the menu only there — in prose they offer nothing.
+    #[test]
+    fn an_argument_completes_the_host_manifests_values() {
+        use super::{CompletionKind, completions};
+        use brink_ide::session::IdeSession;
+        use brink_ir::host_manifest as m;
+
+        let mut session = IdeSession::new();
+        session.set_host_manifest(m::HostManifest {
+            externals: vec![m::ManifestExternal {
+                name: "set_switch".to_owned(),
+                params: vec![m::ManifestParam {
+                    name: "id".to_owned(),
+                    ty: m::TypeRef("switch_id".to_owned()),
+                }],
+                returns: m::TypeRef::default(),
+                kind: m::ExternalKind::default(),
+                doc: None,
+                widgets: Vec::new(),
+                path: Vec::new(),
+            }],
+            types: vec![m::SemanticTypeDef {
+                name: "switch_id".to_owned(),
+                base: m::BaseType::Int,
+                constraint: None,
+                values: Some(m::ValueSource::Static {
+                    items: vec![
+                        m::ValueItem {
+                            value: "5".to_owned(),
+                            label: "HarborGate".to_owned(),
+                            detail: Some("Switch #5".to_owned()),
+                        },
+                        m::ValueItem {
+                            value: "9".to_owned(),
+                            label: "Vault".to_owned(),
+                            detail: None,
+                        },
+                    ],
+                }),
+                widget: None,
+            }],
+            ..Default::default()
+        });
+        // `|` marks the cursor and is not part of the source.
+        let complete = |session: &mut IdeSession, marked: &str| {
+            let offset = u32::try_from(marked.find('|').expect("a cursor")).expect("small");
+            session.update_source("main.ink", marked.replace('|', ""));
+            session.refresh_analysis();
+            completions(session, "main.ink", offset).expect("an answer")
+        };
+        let head = "EXTERNAL set_switch(id)\n=== start ===\nThe gate, the vault.\n";
+
+        // Straight after `(`: only the values.
+        let items = complete(&mut session, &format!("{head}~ set_switch(|)\n-> DONE\n"));
+        let labels: Vec<&str> = items.iter().map(|c| c.label.as_str()).collect();
+        assert_eq!(labels, ["HarborGate", "Vault"], "values alone after `(`");
+        assert_eq!(items[0].kind, CompletionKind::Value);
+        assert_eq!(items[0].detail.as_deref(), Some("Switch #5"));
+        // As typed: the `(` not yet closed.
+        let items = complete(&mut session, &format!("{head}~ set_switch(|\n-> DONE\n"));
+        assert_eq!(items.len(), 2, "an unclosed `(` too: {items:?}");
+
+        // Part of a label typed: narrowed, and the literal replaces it.
+        let source = format!("{head}~ set_switch(Har|)\n-> DONE\n");
+        let items = complete(&mut session, &source);
+        let value = items
+            .iter()
+            .find(|c| c.kind == CompletionKind::Value)
+            .expect("a value");
+        assert_eq!(value.label, "HarborGate");
+        assert!(
+            items
+                .iter()
+                .filter(|c| c.kind == CompletionKind::Value)
+                .count()
+                == 1,
+            "`Vault` does not start with `Har`"
+        );
+        let (literal, range) = value.replace.clone().expect("a replacement");
+        assert_eq!(literal, "5");
+        let at = u32::try_from(source.find("Har|").expect("typed")).expect("small");
+        assert_eq!(range, at..at + 3, "over the typed `Har`");
+
+        // A comma or a space in prose: nothing.
+        let items = complete(&mut session, "=== start ===\nThe gate, |the vault.\n");
+        assert!(items.is_empty(), "prose offers nothing: {items:?}");
     }
 
     #[test]
