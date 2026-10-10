@@ -6935,7 +6935,7 @@ mod modes_driven {
   "types": [{
     "name": "switch_id", "base": "int",
     "values": { "source": "static", "items": [
-      { "value": "5", "label": "HarborGate", "detail": "Switch #5" },
+      { "value": "5", "label": "HarborGate", "detail": "The harbour gate, east pier — opens at dawn" },
       { "value": "9", "label": "Vault" }
     ] }
   }]

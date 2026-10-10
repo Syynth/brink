@@ -747,8 +747,10 @@ pub(crate) fn install_value_picker(
                             .as_ref()
                             .is_some_and(|(literal, _)| literal == written)
                     });
+                    // The caret at the literal's start: the menu opens under
+                    // the text a pick replaces, not past the chip.
                     state.focus(window, cx);
-                    state.set_selected_range(offset..offset, cx);
+                    state.set_selected_range(range.start..range.start, cx);
                     let items = values.iter().map(|v| completion_item(v, &index)).collect();
                     state.present_completion_items_selected(range.start, "", items, current, cx);
                 });
