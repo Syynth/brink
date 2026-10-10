@@ -170,7 +170,9 @@ pub struct ArgGroupWidget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ManifestParam {
     pub name: String,
-    #[serde(default)]
+    /// Written `ty`; `type` is read too. A widget's key is `type`, so a
+    /// param written the same way was silently untyped.
+    #[serde(default, alias = "type")]
     pub ty: TypeRef,
 }
 
@@ -396,6 +398,24 @@ mod manifest_field_name_tests {
         // Round-trips through the constant-derived shape unchanged.
         let parsed: HostManifest = serde_json::from_str(&json).expect("re-parse");
         assert_eq!(parsed, manifest);
+    }
+}
+
+#[cfg(test)]
+mod param_key_tests {
+    use super::{ManifestParam, TypeRef};
+
+    /// `type` is read as `ty` — the key a widget uses, and the one a host
+    /// generator is likely to write.
+    #[test]
+    fn a_params_type_reads_from_ty_or_type() {
+        for json in [
+            r#"{ "name": "kind", "ty": "weather" }"#,
+            r#"{ "name": "kind", "type": "weather" }"#,
+        ] {
+            let param: ManifestParam = serde_json::from_str(json).expect("parses");
+            assert_eq!(param.ty, TypeRef("weather".to_owned()), "{json}");
+        }
     }
 }
 
