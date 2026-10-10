@@ -29,7 +29,13 @@ import {
   type TranscriptLine,
 } from "@brink/studio-store";
 import { useStudioStore } from "./StoreContext.js";
-import { foldPlayerRuns, speakerPaletteIndex, type PlayerRow } from "./player-runs.js";
+import {
+  castColor,
+  foldPlayerRuns,
+  speakerPaletteIndex,
+  speakerStyle,
+  type PlayerRow,
+} from "./player-runs.js";
 import type { Choice } from "@brink/wasm-types";
 import { loadPlayerSettings, savePlayerSettings } from "./SettingsDocument.js";
 import { PlayerLauncher } from "./PlayerLauncher.js";
@@ -305,6 +311,7 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
   const showChoiceMarkers = useStudioStore((s) => s.showChoiceMarkers);
   const lines = useStudioStore((s) => s.sessionLines);
   const projectDialect = useStudioStore((s) => s.projectDialect);
+  const projectCast = useStudioStore((s) => s.projectCast);
   const groups = useMemo(() => foldPlayerRuns(lines, projectDialect), [lines, projectDialect]);
   // Out-of-sync gate (spec §5): degraded suppresses provenance and the
   // chip goes warning — suppressed, never stale.
@@ -1031,6 +1038,9 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
               return <Fragment key={`g${gi.toString()}`}>{group.rows.map(renderRow)}</Fragment>;
             }
             const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
+            // A `[cast]` colour wins over the palette's, on the run (its
+            // rule) and on the cue alike — each sets the variable itself.
+            const cast = speakerStyle(castColor(projectCast, group.speaker));
             // The cue rides with its run: settled once the first line under
             // it is, so a restored run does not flash its speaker header.
             const cueSettled =
@@ -1040,8 +1050,10 @@ function PlayerPane({ groupId, active }: DocumentViewProps) {
                 key={`g${gi.toString()}`}
                 className={`player-run dialect-${group.kind ?? "run"} speaker-${palette.toString()}`}
                 data-speaker={group.speaker}
+                style={cast}
               >
                 <p
+                  style={cast}
                   className={
                     `player-run-cue speaker-${palette.toString()}` +
                     (cueSettled ? " is-settled" : "")

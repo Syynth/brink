@@ -34,7 +34,7 @@ import { useStudioStore, useStudioStoreApi } from "./StoreContext.js";
 import { isConfigPath } from "./ConfigFormPanel.js";
 import { SettingsGroup, SettingsRow } from "./SettingsRow.js";
 import { KnotIcon, PasteIcon, StitchIcon } from "./icons.js";
-import { foldPlayerRuns, speakerPaletteIndex } from "./player-runs.js";
+import { castColor, foldPlayerRuns, speakerPaletteIndex, speakerStyle } from "./player-runs.js";
 import { renderRowBody } from "./PlayerPane.js";
 
 interface SymbolHit {
@@ -68,6 +68,7 @@ export function ConventionsSettings() {
   const storeApi = useStudioStoreApi();
   const outline = useStudioStore((s) => s.outline);
   const projectDialect = useStudioStore((s) => s.projectDialect);
+  const projectCast = useStudioStore((s) => s.projectCast);
   const [version, bump] = useReducer((x: number) => x + 1, 0);
 
   const [query, setQuery] = useState("");
@@ -469,7 +470,12 @@ export function ConventionsSettings() {
                 const palette = speakerPaletteIndex(group.speaker, SPEAKER_PALETTE_SIZE);
                 return (
                   <div key={`g${gi.toString()}`} className={`player-run dialect-${group.kind ?? "run"}`}>
-                    <p className={`player-run-cue speaker-${palette.toString()}`}>{group.speaker}</p>
+                    <p
+                      className={`player-run-cue speaker-${palette.toString()}`}
+                      style={speakerStyle(castColor(projectCast, group.speaker))}
+                    >
+                      {group.speaker}
+                    </p>
                     {rows}
                   </div>
                 );

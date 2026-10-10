@@ -731,6 +731,26 @@ impl EditorSession {
             .and_then(|d| serde_json::to_string(d).ok())
     }
 
+    /// `[cast]` from the applied `brink.toml` (decision log 2026-10-10), as
+    /// a JSON array of `{ name, color }` — only speakers with a valid
+    /// colour, normalised to `#rrggbb`, in name order. `"[]"` when the
+    /// project declares none. The Player matches a speaker against `name`
+    /// ignoring case.
+    #[must_use]
+    pub fn configured_cast(&self) -> String {
+        let cast: Vec<serde_json::Value> = self
+            .session
+            .project_settings()
+            .cast
+            .iter()
+            .filter_map(|m| {
+                let color = m.color.as_deref()?;
+                Some(serde_json::json!({ "name": m.name, "color": color }))
+            })
+            .collect();
+        serde_json::Value::Array(cast).to_string()
+    }
+
     /// Why `[dialogue]` did not resolve (#3391), or `None` — see the field.
     #[must_use]
     pub fn configured_dialogue_error(&self) -> Option<String> {
@@ -5029,6 +5049,25 @@ mod tests {
         // disagreement the ruling removed.
         let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
         assert_eq!(s.configured_indent(), None);
+    }
+
+    #[test]
+    fn configured_cast_carries_valid_colours_and_clears() {
+        let mut s = EditorSession::new();
+        assert_eq!(s.configured_cast(), "[]", "nothing applied yet");
+
+        let _ = s.apply_project_config(
+            "[cast.Mara]\ncolor = \"#D97757\"\n\n[cast.Jonah]\ncolor = \"blue\"\n",
+        );
+        let cast: serde_json::Value = serde_json::from_str(&s.configured_cast()).expect("JSON");
+        assert_eq!(
+            cast,
+            serde_json::json!([{ "name": "Mara", "color": "#d97757" }]),
+            "normalised, and the invalid colour left out"
+        );
+
+        let _ = s.apply_project_config("[project]\nentry = \"main.ink\"\n");
+        assert_eq!(s.configured_cast(), "[]", "a dropped [cast] clears");
     }
 
     #[test]
