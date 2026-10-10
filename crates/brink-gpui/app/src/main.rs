@@ -34,6 +34,7 @@ mod quick_open;
 mod rename;
 mod saves;
 mod search;
+mod settings_cast;
 mod settings_config;
 mod settings_conventions;
 mod settings_diagnostics;
@@ -309,10 +310,11 @@ impl Studio {
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
         let prose = cx.new(|cx| ProseSection::new(project.clone(), window, cx));
         let conventions = cx.new(|cx| ConventionsSection::new(project.clone(), window, cx));
+        let cast = cx.new(|cx| settings_cast::CastSection::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
             // The Project scope: the shell owns the App sections, and this
-            // crate owns `brink.toml` — the studio's four, in its order.
+            // crate owns `brink.toml` — the studio's sections, in its order.
             workspace.add_settings_section(Section::new(
                 SectionMeta::new(
                     "general",
@@ -393,6 +395,23 @@ impl Studio {
                     ],
                 ),
                 conventions.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "cast",
+                    Scope::Project,
+                    "Cast",
+                    &[
+                        "speaker",
+                        "character",
+                        "colour",
+                        "color",
+                        "player",
+                        "cue",
+                        "name",
+                    ],
+                ),
+                cast.clone(),
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)
