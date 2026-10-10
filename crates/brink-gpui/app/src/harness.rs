@@ -557,10 +557,10 @@ mod tests {
     use super::{Harness, scratch_project};
 
     /// The leak canary: a project window opened and closed leaves nothing
-    /// behind. Ignored while #3628 (one code editor per closed window) is
-    /// open; un-ignore it with the fix so the check guards from then on.
+    /// behind. It caught #3628: gpui-kit's document-colors task held its
+    /// editor strongly while stored on that editor, so one code editor
+    /// outlived every closed window.
     #[test]
-    #[ignore = "#3628: a closed window still leaks one code editor"]
     fn a_closed_window_frees_everything() {
         let mut h = Harness::new().check_leaks();
         let window = h.open(&scratch_project(
