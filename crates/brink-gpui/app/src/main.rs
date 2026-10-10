@@ -34,6 +34,7 @@ mod quick_open;
 mod rename;
 mod saves;
 mod search;
+mod settings_cast;
 mod settings_config;
 mod settings_conventions;
 mod settings_diagnostics;
@@ -309,10 +310,11 @@ impl Studio {
         let diagnostics = cx.new(|cx| DiagnosticsSection::new(project.clone(), window, cx));
         let prose = cx.new(|cx| ProseSection::new(project.clone(), window, cx));
         let conventions = cx.new(|cx| ConventionsSection::new(project.clone(), window, cx));
+        let cast = cx.new(|cx| settings_cast::CastSection::new(project.clone(), window, cx));
 
         workspace.update(cx, |workspace, cx| {
             // The Project scope: the shell owns the App sections, and this
-            // crate owns `brink.toml` — the studio's four, in its order.
+            // crate owns `brink.toml` — the studio's sections, in its order.
             workspace.add_settings_section(Section::new(
                 SectionMeta::new(
                     "general",
@@ -393,6 +395,23 @@ impl Studio {
                     ],
                 ),
                 conventions.clone(),
+            ));
+            workspace.add_settings_section(Section::new(
+                SectionMeta::new(
+                    "cast",
+                    Scope::Project,
+                    "Cast",
+                    &[
+                        "speaker",
+                        "character",
+                        "colour",
+                        "color",
+                        "player",
+                        "cue",
+                        "name",
+                    ],
+                ),
+                cast.clone(),
             ));
             workspace.add_tool_window(
                 ToolWindowSpec::new("binder", "Binder", RailSlot::LEFT_UPPER)
@@ -3033,6 +3052,35 @@ mod modes_driven {
     fn mode(h: &mut Harness, window: AnyWindowHandle) -> EditorView {
         let studio = h.studio(window).expect("open");
         h.read(|cx| studio.read(cx).workspace.read(cx).editor_view(cx))
+    }
+
+    /// `[cast]` colours a speaker in the Player, matched ignoring case;
+    /// a speaker it does not list keeps the automatic colour.
+    #[test]
+    fn the_player_draws_a_cast_speaker_in_the_cast_colour() {
+        let dir = scratch_dir("cast");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"main.ink\"\n\n[cast.Mara]\ncolor = \"#d97757\"\n",
+        )
+        .expect("writing the config");
+        std::fs::write(dir.join("main.ink"), "Hello.\n-> END\n").expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir.join("brink.toml"));
+        let studio = h.studio(window).expect("open");
+        let (mara, jonah, automatic) = h.read(|cx| {
+            let player = studio.read(cx).player.read(cx);
+            (
+                player.speaker_colour("MARA", cx),
+                player.speaker_colour("Jonah", cx),
+                super::player::Player::automatic_colour("Jonah", cx),
+            )
+        });
+        assert_eq!(
+            mara,
+            gpui::Hsla::from(gpui::Rgba::try_from("#d97757").expect("a colour"))
+        );
+        assert_eq!(jonah, automatic, "not in the cast: the automatic colour");
     }
 
     /// `[project] name` titles the window, an edit to `brink.toml`

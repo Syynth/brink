@@ -2291,6 +2291,18 @@ export class EditorSession {
    */
   private configuredIndent: number | undefined;
 
+  /**
+   * `[cast]` from the most recently parsed `brink.toml` (decision log
+   * 2026-10-10): each `[cast.<name>]` table's valid `color`, normalised to
+   * lowercase `#rrggbb` like the real `normalize_color`.
+   */
+  private configuredCast: { name: string; color: string }[] = [];
+
+  /** Mock of `configured_cast`: a JSON array of `{ name, color }`. */
+  configured_cast(): string {
+    return JSON.stringify(this.configuredCast);
+  }
+
   /** Mock of `configured_indent` (#3149). */
   configured_indent(): number | undefined {
     return this.configuredIndent;
@@ -2380,11 +2392,14 @@ export class EditorSession {
     ]);
     const warnings: string[] = [];
     let section: "project" | "lints" | null = null;
+    // The `[cast.<name>]` table being read, if any (bare or quoted name).
+    let castName: string | null = null;
     // Wholesale replace (#2331, mirroring `conventions`'s own no-precedence
     // contract): reset before scanning, so a file that dropped `entry`
     // since the last call actually clears it.
     this.configuredEntry = undefined;
     this.configuredIndent = undefined;
+    this.configuredCast = [];
     this.draftGlobs = [];
     for (const raw of toml.split("\n")) {
       const line = raw.trim();
@@ -2393,6 +2408,8 @@ export class EditorSession {
       if (sectionMatch) {
         const name = sectionMatch[1]!.trim();
         section = name === "project" ? "project" : name === "lints" ? "lints" : null;
+        const cast = /^cast\s*\.\s*(?:"([^"]*)"|'([^']*)'|([A-Za-z0-9_-]+))$/.exec(name);
+        castName = cast === null ? null : (cast[1] ?? cast[2] ?? cast[3] ?? null);
         continue;
       }
       const kv = /^([^=]+)=\s*(.*)$/.exec(line);
@@ -2400,6 +2417,14 @@ export class EditorSession {
       const key = kv[1]!.trim();
       if (section === "project" && !KNOWN_PROJECT_KEYS.has(key)) {
         warnings.push(`unknown key \`project.${key}\` in brink.toml (ignored)`);
+      }
+      if (castName !== null && key === "color") {
+        const hex = /^["']#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})["']$/.exec(kv[2]!.replace(/\s+#.*$/, "").trim());
+        if (hex) {
+          const digits = hex[1]!.toLowerCase();
+          const full = digits.length === 3 ? [...digits].map((c) => c + c).join("") : digits;
+          this.configuredCast.push({ name: castName, color: `#${full}` });
+        }
       }
       if (section === "project" && key === "entry") {
         const valueMatch = /^"([^"]*)"$/.exec(kv[2]!.trim());

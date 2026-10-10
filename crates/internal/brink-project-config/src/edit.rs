@@ -21,6 +21,9 @@
 
 use toml_edit::{Array, DocumentMut, Item, Value};
 
+/// The `[cast]` table's name (decision log 2026-10-10).
+const CAST: &str = "cast";
+
 /// A parsed `brink.toml` that remembers how it was written.
 ///
 /// Construct from the file's text, apply edits, then [`Self::to_string`] the
@@ -263,6 +266,98 @@ impl ConfigDocument {
             .map(str::to_owned)
     }
 
+    /// The `[cast]` entries as written: each speaker's name and its `color`
+    /// string (unvalidated — the form shows what the file says), in the
+    /// order written. Entries that are not tables are skipped; the parser
+    /// already warns about them.
+    #[must_use]
+    pub fn cast_members(&self) -> Vec<(String, Option<String>)> {
+        let Some(cast) = self.doc.get(CAST).and_then(Item::as_table_like) else {
+            return Vec::new();
+        };
+        cast.iter()
+            .filter_map(|(name, entry)| {
+                let entry = entry.as_table_like()?;
+                let color = entry.get("color").and_then(Item::as_str).map(str::to_owned);
+                Some((name.to_owned(), color))
+            })
+            .collect()
+    }
+
+    /// Set the colour of the cast member named `name`, matched ignoring
+    /// case like the Player matches it, so editing `MARA` updates an
+    /// existing `[cast.Mara]` rather than adding a second entry. A speaker
+    /// not yet in the cast gets a new `[cast.<name>]` table.
+    ///
+    /// # Errors
+    /// [`EditError::Shape`] when `cast`, or the speaker's entry, exists as
+    /// something other than a table.
+    pub fn set_cast_color(&mut self, name: &str, color: &str) -> Result<(), EditError> {
+        let key = self.cast_key(name).unwrap_or_else(|| name.to_owned());
+        let cast = self.table_mut(CAST)?;
+        if let Some(cast_table) = cast.as_table_mut() {
+            // `[cast]` has no keys of its own: only its `[cast.<name>]`
+            // sub-tables are written, never a bare `[cast]` header.
+            if cast_table.is_empty() {
+                cast_table.set_implicit(true);
+            }
+        }
+        let Some(cast) = cast.as_table_like_mut() else {
+            return Err(Self::not_a_table(CAST));
+        };
+        if cast.get(&key).is_none_or(Item::is_none) {
+            cast.insert(&key, Item::Table(toml_edit::Table::new()));
+        }
+        let Some(entry) = cast.get_mut(&key) else {
+            return Err(Self::not_a_table(&format!("{CAST}.{key}")));
+        };
+        if !entry.is_table_like() {
+            return Err(Self::not_a_table(&format!("{CAST}.{key}")));
+        }
+        Self::assign_keeping_decor(entry, "color", toml_edit::value(color));
+        Ok(())
+    }
+
+    /// Remove the cast member named `name` (matched ignoring case), and the
+    /// `[cast]` table with it when it was the last. Returns whether the
+    /// document changed.
+    ///
+    /// # Errors
+    /// [`EditError::Shape`] when `cast` exists as something other than a table.
+    pub fn remove_cast_member(&mut self, name: &str) -> Result<bool, EditError> {
+        let Some(key) = self.cast_key(name) else {
+            return Ok(false);
+        };
+        let Some(cast) = self.doc.get_mut(CAST).and_then(Item::as_table_like_mut) else {
+            return Err(Self::not_a_table(CAST));
+        };
+        cast.remove(&key);
+        if cast.is_empty() {
+            self.doc.remove(CAST);
+        }
+        Ok(true)
+    }
+
+    /// The key `[cast]` already uses for `name`, matched ignoring case.
+    fn cast_key(&self, name: &str) -> Option<String> {
+        let name = name.to_lowercase();
+        self.doc
+            .get(CAST)
+            .and_then(Item::as_table_like)?
+            .iter()
+            .map(|(key, _)| key)
+            .find(|key| key.to_lowercase() == name)
+            .map(str::to_owned)
+    }
+
+    fn not_a_table(path: &str) -> EditError {
+        EditError::Shape {
+            path: path.to_owned(),
+            found: "a non-table",
+            expected: "a table",
+        }
+    }
+
     /// Assign `item` to `key`, keeping the existing value's decoration.
     ///
     /// `toml_edit` attaches a trailing comment to the VALUE, so a plain
@@ -299,6 +394,58 @@ impl ConfigDocument {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cast_colours_are_added_updated_and_removed_in_place() {
+        let text = "# My story\n[project]\nentry = \"main.ink\"\n";
+        let mut doc = ConfigDocument::parse(text).expect("parse");
+        doc.set_cast_color("Mara", "#d97757").expect("add");
+        doc.set_cast_color("Old Tom", "#55bbff").expect("add");
+        let added = doc.to_toml_string();
+        assert!(
+            added.starts_with(text),
+            "the existing text is untouched: {added}"
+        );
+        assert!(
+            !added.contains("[cast]\n"),
+            "no bare [cast] header: {added}"
+        );
+        assert!(
+            added.contains("[cast.Mara]\ncolor = \"#d97757\""),
+            "{added}"
+        );
+        assert!(added.contains("[cast.\"Old Tom\"]"), "{added}");
+
+        // Editing `MARA` updates the existing entry, keeping its comment.
+        let mut doc = ConfigDocument::parse(&added.replace("\"#d97757\"", "\"#d97757\" # warm"))
+            .expect("parse");
+        doc.set_cast_color("MARA", "#aa0000").expect("update");
+        let updated = doc.to_toml_string();
+        assert!(
+            updated.contains("[cast.Mara]\ncolor = \"#aa0000\" # warm"),
+            "{updated}"
+        );
+        assert!(!updated.contains("MARA"), "{updated}");
+        assert_eq!(
+            doc.cast_members(),
+            vec![
+                ("Mara".to_owned(), Some("#aa0000".to_owned())),
+                ("Old Tom".to_owned(), Some("#55bbff".to_owned())),
+            ]
+        );
+
+        assert!(doc.remove_cast_member("old tom").expect("remove"));
+        assert!(
+            !doc.remove_cast_member("Jonah").expect("absent"),
+            "absent is a no-op"
+        );
+        assert!(doc.remove_cast_member("Mara").expect("remove"));
+        assert_eq!(
+            doc.to_toml_string(),
+            text,
+            "the last member takes [cast] with it"
+        );
+    }
 
     /// A hand-written config, with everything a formatter would happily
     /// destroy: comments, a blank line, alignment, single quotes, and a

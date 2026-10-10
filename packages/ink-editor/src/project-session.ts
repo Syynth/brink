@@ -18,7 +18,12 @@
 
 import type { FileProvider } from "./provider.js";
 import { EditorSessionHandle, getDiagnosticRegistry } from "@brink-lang/web";
-import type { CompileResult, PassageLine, RenameDiagnostic } from "@brink/wasm-types";
+import type {
+  CastColor,
+  CompileResult,
+  PassageLine,
+  RenameDiagnostic,
+} from "@brink/wasm-types";
 import { FileChangeHub, type FileChange, type FileConflict } from "./file-change-hub.js";
 import { scheduleIdleWork, cancelIdleWork, type IdleHandle } from "./idle-schedule.js";
 import { withPerfTiming } from "./perf/wasm-proxy.js";
@@ -565,6 +570,14 @@ export class ProjectSession {
     return typeof this.session.passageLines === "function"
       ? this.session.passageLines(path)
       : null;
+  }
+
+  /** `[cast]`'s speaker colours, `[]` when none — feature-detected, like
+   *  the dialect, for injected sessions that predate it. */
+  getConfiguredCast(): CastColor[] {
+    return typeof this.session.getConfiguredCast === "function"
+      ? this.session.getConfiguredCast()
+      : [];
   }
 
   getConfiguredDialogueDialect(): DialogueDialect | null {

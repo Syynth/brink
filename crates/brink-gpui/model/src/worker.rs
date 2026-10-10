@@ -154,6 +154,8 @@ pub struct Opened {
     pub entry: Option<String>,
     /// `[project] name` from `brink.toml`, if one was found and sets it.
     pub name: Option<String>,
+    /// `[cast]` from `brink.toml`: the Player's per-speaker colours.
+    pub cast: Vec<brink_project_config::CastMember>,
     /// Config-file warnings, already prefixed with their source.
     pub warnings: Vec<String>,
     /// Files the config POINTS AT and the session never sees as
@@ -232,6 +234,8 @@ pub struct Analyzed {
     /// `[project] name` as the config currently applied sets it. Rides
     /// every analysis for the same reason `entry` does.
     pub name: Option<String>,
+    /// `[cast]` as the config currently applied sets it.
+    pub cast: Vec<brink_project_config::CastMember>,
     /// The applied config's warnings, unprefixed. Also reported as
     /// `diagnostics` rows under the config's own path.
     pub config_warnings: Vec<String>,
@@ -289,6 +293,8 @@ pub struct ConfigState {
     explicit_entry: Option<String>,
     /// `[project] name` as applied — what the studio calls the project.
     name: Option<String>,
+    /// `[cast]` as applied — the Player's per-speaker colours.
+    cast: Vec<brink_project_config::CastMember>,
     /// The applied config's warnings, unprefixed.
     warnings: Vec<String>,
     /// The current text's parse error, if it has one: its byte span in
@@ -768,6 +774,7 @@ fn open(
             sources,
             entry: state.entry.clone(),
             name: state.name.clone(),
+            cast: state.cast.clone(),
             warnings,
             artifacts,
             config_reads: state.read_artifacts.iter().cloned().collect(),
@@ -889,6 +896,7 @@ fn apply_config_text(session: &mut IdeSession, state: &mut ConfigState, text: &s
                 .clone()
                 .or_else(|| config.entry.clone());
             state.name.clone_from(&config.name);
+            state.cast.clone_from(&config.cast);
             state.prose = Some(ProseState {
                 // Unset means on: a project that has said nothing about
                 // prose still wants its prose checked.
@@ -1049,6 +1057,7 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         closure: session.compilation_closure_paths(),
         entry: config.entry.clone(),
         name: config.name.clone(),
+        cast: config.cast.clone(),
         config_warnings: config.warnings.clone(),
         config_reads: config.read_artifacts.iter().cloned().collect(),
         draft_globs: report
@@ -1349,6 +1358,46 @@ mod tests {
         let analyzed = analyzed_after_open(&drive_with_entry(&tree, Some("side.ink")));
         assert_eq!(analyzed.entry.as_deref(), Some("side.ink"));
         assert_eq!(analyzed.closure, ["side.ink"]);
+    }
+
+    #[test]
+    fn the_configs_cast_rides_the_open_and_every_analysis() {
+        let tree = Tree::new(
+            "cast",
+            &[
+                (
+                    "brink.toml",
+                    "[project]\nentry = \"main.ink\"\n\n[cast.Mara]\ncolor = \"#D97757\"\n",
+                ),
+                ("main.ink", "Main.\n-> DONE\n"),
+            ],
+        );
+        let worker = drive(&tree);
+        let Response::Opened(opened) = next(&worker) else {
+            panic!("expected Opened first");
+        };
+        let opened = opened.expect("the open must succeed");
+        assert_eq!(
+            brink_project_config::cast_color(&opened.cast, "MARA"),
+            Some("#d97757")
+        );
+        let Response::Analyzed(_) = next(&worker) else {
+            panic!("expected Analyzed after the open");
+        };
+        worker.send(Request::Edit {
+            path: "brink.toml".to_owned(),
+            text: "[project]\nentry = \"main.ink\"\n\n[cast.Mara]\ncolor = \"#123456\"\n"
+                .to_owned(),
+            revision: 1,
+        });
+        let Response::Analyzed(analyzed) = next(&worker) else {
+            panic!("expected Analyzed after the edit");
+        };
+        assert_eq!(
+            brink_project_config::cast_color(&analyzed.cast, "mara"),
+            Some("#123456"),
+            "an edit recolours the speaker"
+        );
     }
 
     #[test]
