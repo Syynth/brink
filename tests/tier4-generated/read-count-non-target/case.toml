@@ -7,6 +7,3 @@ source = "probe"
 property = "probe: #3363 against inkjs"
 oracle-source = "inkjs"
 issue = "#3363"
-
-[source]
-expected_mismatch = "#3363"

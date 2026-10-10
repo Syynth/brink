@@ -344,6 +344,47 @@ Scope, deliberately narrow: this is the `GetTemp` read path only.
 `TakeTemp` leaves `Value::Null` behind by design — neither substitutes a
 default.
 
+### Built-in argument faults
+
+Issues #3363 and #3364. Where the C# reference raises a hard error for a
+built-in's argument, brink faults with `RuntimeError::InvalidBuiltinArgument`,
+whose `Display` is the reference's own message:
+
+- `TURNS_SINCE`/`READ_COUNT` (`Opcode::TurnsSince`/`Opcode::VisitCount`) on
+  anything but a divert target. An int gets the reference's hint about
+  passing `knot` (a read count) where `-> knot` was meant.
+- `RANDOM` (`Opcode::Random`) with a non-int minimum (checked first) or
+  maximum, or with `max - min + 1 <= 0`. Floats are rejected too, not
+  truncated. The range is computed in wrapping 32-bit arithmetic, as the
+  reference's `int` does, so a range wider than an int also faults.
+- `SEED_RANDOM` (`Opcode::SeedRandom`) with a non-int seed.
+
+These used to play on with a substitute (`-1`, `0`, `min`, seed `0`). The RNG
+sequence for valid arguments is unchanged.
+
+### A fault after a finished line delivers the line first
+
+ink evaluates past a finished line inside the same `Continue`, to see whether
+glue reaches back over its newline. A fault in that lookahead is rolled back
+with the state snapshot taken at the newline: the line is delivered, and the
+fault happens again on the next `Continue`.
+
+`FlowInstance::advance` does the same without a snapshot. When `vm::step`
+faults, `OutputBuffer::take_line_before_fault` looks for the first newline
+in the unread transcript that survived glue, whether or not visible content
+has followed it yet (that is what `take_first_line` waits for, and nothing
+more is coming). If there is one, the line through it is delivered and the
+fault is held on `FlowInstance::pending_fault`, which the next `advance`
+returns before doing anything else. The interrupted line's own text is
+dropped, as ink drops it. With no surviving newline (a fault mid-line, or
+glue that took the newline) the fault is returned at once and nothing is
+delivered.
+
+The held fault is stamped with the run it happened in, like
+`Flow::pending_terminal`: a host jump or choice in between starts a new run
+and drops it. `drive_to_terminal` (and so `continue_maximally`) still drops
+the lines it gathered when a fault ends the drive; that is #3587.
+
 Warnings accumulate on the `Flow` (execution output, not a `Stats` counter),
 capped at `RUNTIME_WARNING_CAP` entries between drains so a loop cannot grow
 the list without bound. Hosts drain them with
