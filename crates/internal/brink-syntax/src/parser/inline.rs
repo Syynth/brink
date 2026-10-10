@@ -722,12 +722,42 @@ fn multiline_branch_text(p: &mut Parser<'_, '_>) {
 /// Parse branch content (inline): text, `inline_logic`, glue, escapes until `|` or `}`.
 fn branch_content(p: &mut Parser<'_, '_>) {
     p.start_node(BRANCH_CONTENT);
+    // Whether anything has been parsed in this branch yet. Whitespace
+    // before a `{` that follows earlier content is real text (`{ {a} {b} |
+    // c }` prints `A B` in ink); at the start of the branch it stays
+    // trivia, as it always has.
+    let mut started = false;
     loop {
-        match p.current() {
+        let at = p.current();
+        match at {
+            // Whitespace after the branch's last construct, before its
+            // `|` or `}` (#2982): text too (`{ {a} | c}.` prints `A .` in
+            // ink). After plain text there is none left over: `branch_text`
+            // already took it.
+            PIPE | R_BRACE if started && p.nth_raw(0) == WHITESPACE => {
+                branch_text(p);
+                break;
+            }
             PIPE | R_BRACE | NEWLINE | EOF => break,
             HASH => {
                 branch_tags(p);
                 break;
+            }
+            // Whitespace (or a comment) between earlier content and a `{`
+            // (#2982): keep it as TEXT, the way `content::mixed_content`'s
+            // `L_BRACE` arm does, then let the loop come back for the `{`.
+            // Every path here advances: `branch_text` takes the
+            // whitespace, `skip_comment_tokens` a comment it stopped at.
+            L_BRACE if started && p.nth_raw(0) != L_BRACE => {
+                let before = p.pos();
+                branch_text(p);
+                if p.pos() == before {
+                    p.skip_comment_tokens();
+                }
+                if p.pos() == before {
+                    p.skip_ws();
+                    inline_logic(p);
+                }
             }
             L_BRACE => {
                 p.skip_ws();
@@ -798,6 +828,7 @@ fn branch_content(p: &mut Parser<'_, '_>) {
                 }
             }
         }
+        started = true;
     }
     p.finish_node();
 }
