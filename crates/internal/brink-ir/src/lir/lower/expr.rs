@@ -1068,6 +1068,7 @@ fn lower_call(path: &hir::Path, args: &[hir::Expr], ctx: &mut LowerCtx<'_>) -> l
         // instead of the author's knot's (`-995`), with a clean compile
         // and no diagnostic.
         let lir_args: Vec<lir::Expr> = args.iter().map(|a| lower_expr(a, ctx)).collect();
+        check_builtin_args(builtin, &name, &lir_args, args.first(), path.range, ctx);
         lir::ExprKind::CallBuiltin {
             builtin,
             args: lir_args,
@@ -1369,8 +1370,10 @@ fn lower_ufcs_prelude_desugar(
     let receiver_path = ufcs_receiver_path(path);
 
     if let Some(builtin) = recognize_builtin(name) {
-        let mut lowered = vec![lower_expr(&hir::Expr::Path(receiver_path), ctx)];
+        let receiver = hir::Expr::Path(receiver_path);
+        let mut lowered = vec![lower_expr(&receiver, ctx)];
         lowered.extend(args.iter().map(|a| lower_expr(a, ctx)));
+        check_builtin_args(builtin, name, &lowered, Some(&receiver), path.range, ctx);
         return lir::ExprKind::CallBuiltin {
             builtin,
             args: lowered,
@@ -2112,6 +2115,121 @@ fn lower_t1b_stdlib_call(
             )
         }
         _ => None,
+    }
+}
+
+/// How many arguments each classic ink built-in takes.
+fn builtin_arity(builtin: lir::BuiltinFn) -> usize {
+    use lir::BuiltinFn as B;
+    match builtin {
+        B::Turns | B::ChoiceCount => 0,
+        B::TurnsSince
+        | B::ReadCount
+        | B::SeedRandom
+        | B::CastToInt
+        | B::CastToFloat
+        | B::Floor
+        | B::Ceiling
+        | B::ListCount
+        | B::ListMin
+        | B::ListMax
+        | B::ListAll
+        | B::ListInvert
+        | B::ListRandom
+        | B::ListValue => 1,
+        B::Random | B::Pow | B::Min | B::Max | B::ListFromInt => 2,
+        B::ListRange => 3,
+    }
+}
+
+/// A literal number that is not an int, as ink's parser sees it: a float,
+/// or a bool (ink's parser reads `true`/`false` as numbers too), possibly
+/// negated.
+fn is_non_int_number_literal(expr: &lir::Expr) -> bool {
+    match &expr.kind {
+        lir::ExprKind::Float(_) | lir::ExprKind::Bool(_) => true,
+        lir::ExprKind::Prefix(crate::PrefixOp::Negate, inner) => is_non_int_number_literal(inner),
+        _ => false,
+    }
+}
+
+/// Issue #3363/#3364: refuse a classic built-in call that inklecate's
+/// compiler refuses, in its words (E196). Every shape here faults at
+/// runtime too (a missing argument underflows the value stack, and a
+/// spare one is consumed by whatever reads the stack next), so these are
+/// hard errors, not the compat-deny tier. What inklecate lets through and
+/// only the runtime rejects (`RANDOM("a", 3)`, `RANDOM(5, 2)`, a variable
+/// holding an int) is left to the runtime fault.
+fn check_builtin_args(
+    builtin: lir::BuiltinFn,
+    name: &str,
+    args: &[lir::Expr],
+    first_arg: Option<&hir::Expr>,
+    call_range: rowan::TextRange,
+    ctx: &mut LowerCtx<'_>,
+) {
+    let mut refuse = |detail: String| {
+        ctx.diagnostics.push(crate::Diagnostic {
+            file: ctx.file,
+            range: call_range,
+            message: format!("{}: {detail}", crate::DiagnosticCode::E196.title()),
+            code: crate::DiagnosticCode::E196,
+        });
+    };
+    let expected = builtin_arity(builtin);
+    match builtin {
+        lir::BuiltinFn::TurnsSince | lir::BuiltinFn::ReadCount => {
+            let wants_a_target = || {
+                format!(
+                    "The {name}() function should take one argument: a divert target to the \
+                     target knot, stitch, gather or choice you want to check. e.g. \
+                     TURNS_SINCE(-> myKnot)"
+                )
+            };
+            let [arg] = args else {
+                refuse(wants_a_target());
+                return;
+            };
+            match &arg.kind {
+                // A bare knot, stitch or label name reads its count, an
+                // int, where `-> name` was meant.
+                lir::ExprKind::VisitCount(_) => {
+                    let target = match first_arg {
+                        Some(hir::Expr::Path(p)) => path_to_string(p),
+                        _ => "target".to_owned(),
+                    };
+                    refuse(format!(
+                        "Should be {name}(-> {target}). Usage without the '->' only makes \
+                         sense for variable targets."
+                    ));
+                }
+                lir::ExprKind::Int(_)
+                | lir::ExprKind::Float(_)
+                | lir::ExprKind::Bool(_)
+                | lir::ExprKind::String(_)
+                | lir::ExprKind::Null => refuse(wants_a_target()),
+                _ => {}
+            }
+        }
+        _ if args.len() != expected => refuse(match (builtin, expected) {
+            (lir::BuiltinFn::Random, _) => {
+                "RANDOM should take 2 parameters: a minimum and a maximum integer".to_owned()
+            }
+            (_, 0) => format!("The {name}() function shouldn't take any arguments"),
+            (_, 1) => format!("{name} should take 1 parameter"),
+            (_, n) => format!("{name} should take {n} parameters"),
+        }),
+        lir::BuiltinFn::Random => {
+            for (arg, which) in args.iter().zip(["minimum", "maximum"]) {
+                if is_non_int_number_literal(arg) {
+                    refuse(format!("RANDOM's {which} parameter should be an integer"));
+                }
+            }
+        }
+        lir::BuiltinFn::SeedRandom if args.first().is_some_and(is_non_int_number_literal) => {
+            refuse("SEED_RANDOM's parameter should be an integer seed".to_owned());
+        }
+        _ => {}
     }
 }
 

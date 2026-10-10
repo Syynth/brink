@@ -187,3 +187,90 @@ fn a_host_jump_drops_the_held_fault() {
         "{next:?}"
     );
 }
+
+// ── E196: what inklecate's compiler refuses, brink refuses too ─────────
+
+/// The `E196` messages a source compiles to (empty when it compiles).
+fn e196(source: &str) -> Vec<String> {
+    match brink_compiler::compile("story.ink", |_| Ok(source.to_owned())) {
+        Ok(_) => Vec::new(),
+        Err(brink_compiler::CompileError::Diagnostics(diags)) => diags
+            .iter()
+            .filter(|d| d.code == brink_compiler::DiagnosticCode::E196)
+            .map(|d| d.message.clone())
+            .collect(),
+        Err(other) => panic!("unexpected compile error {other}\n{source}"),
+    }
+}
+
+/// Each shape inklecate refuses, with inklecate's wording after the title
+/// (checked against `tools/inkjs-oracle`'s compiler).
+#[test]
+fn e196_refuses_what_inklecate_refuses() {
+    let target = "The TURNS_SINCE() function should take one argument: a divert target to the \
+                  target knot, stitch, gather or choice you want to check. e.g. \
+                  TURNS_SINCE(-> myKnot)";
+    let cases: &[(&str, &str)] = &[
+        (
+            "-> k\n=== k\nR: {READ_COUNT(k)}.\n-> END\n",
+            "Should be READ_COUNT(-> k). Usage without the '->' only makes sense for variable \
+             targets.",
+        ),
+        (
+            "-> k\n=== k\n= s\nT: {TURNS_SINCE(k.s)}.\n-> END\n",
+            "Should be TURNS_SINCE(-> k.s). Usage without the '->' only makes sense for \
+             variable targets.",
+        ),
+        ("T: {TURNS_SINCE(3)}.\n-> END\n", target),
+        ("T: {TURNS_SINCE()}.\n-> END\n", target),
+        (
+            "R: {RANDOM(1, 2.5)}.\n-> END\n",
+            "RANDOM's maximum parameter should be an integer",
+        ),
+        (
+            "R: {RANDOM(-1.5, 2)}.\n-> END\n",
+            "RANDOM's minimum parameter should be an integer",
+        ),
+        (
+            "R: {RANDOM(true, 2)}.\n-> END\n",
+            "RANDOM's minimum parameter should be an integer",
+        ),
+        (
+            "~ SEED_RANDOM(2.0)\nok\n-> END\n",
+            "SEED_RANDOM's parameter should be an integer seed",
+        ),
+        (
+            "R: {RANDOM(1)}.\n-> END\n",
+            "RANDOM should take 2 parameters: a minimum and a maximum integer",
+        ),
+        (
+            "R: {FLOOR(1, 2)}.\n-> END\n",
+            "FLOOR should take 1 parameter",
+        ),
+        (
+            "R: {CHOICE_COUNT(1)}.\n-> END\n",
+            "The CHOICE_COUNT() function shouldn't take any arguments",
+        ),
+    ];
+    for (source, detail) in cases {
+        let messages = e196(source);
+        let expected = format!("{}: {detail}", brink_compiler::DiagnosticCode::E196.title());
+        assert_eq!(messages, [expected], "{source}");
+    }
+}
+
+/// What inklecate compiles, brink compiles: divert targets, variables and
+/// parameters holding them, and arguments only the runtime can judge.
+#[test]
+fn e196_leaves_alone_what_inklecate_compiles() {
+    for source in [
+        "T: {TURNS_SINCE(-> k)} {READ_COUNT(-> k.s)}\n-> END\n=== k\n= s\n-> END\n",
+        "VAR v = -> k\n-> k\n=== k\nT: {TURNS_SINCE(v)}.\n-> END\n",
+        "-> k\n=== function f(x)\n~ return TURNS_SINCE(x)\n=== k\nT: {f(-> k)}.\n-> END\n",
+        "VAR x = 3\nT: {TURNS_SINCE(x)}.\n-> END\n",
+        "R: {RANDOM(\"a\", 3)} {RANDOM(5, 2)} {RANDOM(1, 2 + 0.5)}.\n-> END\n",
+        "R: {RANDOM(1, 6)} {FLOOR(1.5)} {TURNS()} {CHOICE_COUNT()}.\n-> END\n",
+    ] {
+        assert!(e196(source).is_empty(), "{source}");
+    }
+}
