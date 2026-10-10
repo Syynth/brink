@@ -1375,8 +1375,16 @@ fn argument_values(
         .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '"'))
         .last()
         .map_or(offset, |(i, _)| i);
+    // The whole literal the caret is in is replaced — `"thea|ter"` included
+    // — while only the part before the caret narrows the list.
+    let end = offset
+        + source[offset..]
+            .char_indices()
+            .take_while(|(_, c)| c.is_alphanumeric() || matches!(c, '_' | '-' | '"'))
+            .last()
+            .map_or(0, |(i, c)| i + c.len_utf8());
     let typed = source[start..offset].trim_start_matches('"').to_lowercase();
-    let range = u32::try_from(start).unwrap_or(u32::MAX)..u32::try_from(offset).unwrap_or(u32::MAX);
+    let range = u32::try_from(start).unwrap_or(u32::MAX)..u32::try_from(end).unwrap_or(u32::MAX);
     brink_ide::signature::argument_value_completions(analysis, source, offset, None)
         .into_iter()
         .filter(|v| {
@@ -1943,6 +1951,13 @@ mod tests {
         assert_eq!(literal, "5");
         let at = u32::try_from(source.find("Har|").expect("typed")).expect("small");
         assert_eq!(range, at..at + 3, "over the typed `Har`");
+
+        // Inside a literal already written: all of it is replaced.
+        let source = format!("{head}~ set_switch(Har|bor)\n-> DONE\n");
+        let items = complete(&mut session, &source);
+        let (_, range) = items[0].replace.clone().expect("a replacement");
+        let at = u32::try_from(source.find("Har|").expect("typed")).expect("small");
+        assert_eq!(range, at..at + 6, "over `Harbor`, not just `Har`");
 
         // A comma or a space in prose: nothing.
         let items = complete(&mut session, "=== start ===\nThe gate, |the vault.\n");
