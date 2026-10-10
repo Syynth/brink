@@ -184,18 +184,8 @@ fn resolve_callee<'a>(
     arity: usize,
     analysis: &'a AnalysisResult,
 ) -> Option<&'a brink_analyzer::SymbolMeta> {
-    let ids = analysis.index.by_name.get(callee_name)?;
-    let info = ids
-        .iter()
-        .filter_map(|id| analysis.index.symbols.get(id))
-        .find(|info| {
-            matches!(
-                info.kind,
-                brink_ir::SymbolKind::Knot
-                    | brink_ir::SymbolKind::Stitch
-                    | brink_ir::SymbolKind::External
-            ) && info.params.len() == arity
-        })?;
+    let info =
+        crate::signature::callee_named(analysis, callee_name, |info| info.params.len() == arity)?;
     analysis.symbol_meta.get(&info.id)
 }
 

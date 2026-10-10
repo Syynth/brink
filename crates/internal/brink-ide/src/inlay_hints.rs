@@ -286,36 +286,14 @@ fn build_param_hints(
         return;
     }
 
-    // Look up the callee in the symbol index
-    let Some(ids) = analysis.index.by_name.get(callee_name) else {
-        return;
-    };
-
     // Find a matching symbol with params. Prefer one whose param count matches.
-    let info = ids
-        .iter()
-        .filter_map(|id| analysis.index.symbols.get(id))
-        .find(|info| {
-            matches!(
-                info.kind,
-                brink_ir::SymbolKind::Knot
-                    | brink_ir::SymbolKind::Stitch
-                    | brink_ir::SymbolKind::External
-            ) && info.params.len() == args.len()
-        })
-        .or_else(|| {
-            // Fallback: any callable with params
-            ids.iter()
-                .filter_map(|id| analysis.index.symbols.get(id))
-                .find(|info| {
-                    matches!(
-                        info.kind,
-                        brink_ir::SymbolKind::Knot
-                            | brink_ir::SymbolKind::Stitch
-                            | brink_ir::SymbolKind::External
-                    ) && !info.params.is_empty()
-                })
-        });
+    let info = crate::signature::callee_named(analysis, callee_name, |info| {
+        info.params.len() == args.len()
+    })
+    // Fallback: any callable with params
+    .or_else(|| {
+        crate::signature::callee_named(analysis, callee_name, |info| !info.params.is_empty())
+    });
 
     let Some(info) = info else { return };
 

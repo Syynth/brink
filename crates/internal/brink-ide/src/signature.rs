@@ -26,15 +26,7 @@ pub fn signature_help(
     let (func_name, active_param) = find_call_context(source, byte_offset)?;
 
     // Look up the function in the symbol index
-    let info = analysis.index.symbols.values().find(|info| {
-        matches!(
-            info.kind,
-            brink_ir::SymbolKind::Knot
-                | brink_ir::SymbolKind::Stitch
-                | brink_ir::SymbolKind::External
-        ) && info.name == func_name
-            && !info.params.is_empty()
-    })?;
+    let info = callee_named(analysis, &func_name, |info| !info.params.is_empty())?;
 
     // Host-manifest enrichment: typed params / return / doc for externals.
     let meta = analysis.symbol_meta.get(&info.id);
@@ -140,6 +132,34 @@ pub fn signature_help_with_dialect(
     })
 }
 
+/// The callable a call to `name` resolves to for tooling, among those
+/// `accept` allows: a knot, stitch or `EXTERNAL`, and an `EXTERNAL` before
+/// an ink function of the same name. Ink lets an external carry such a
+/// function as its fallback, and the host manifest's types and values
+/// belong to the external — the fallback has none, so picking it would
+/// lose them. Otherwise the index's own order, so the answer is stable.
+pub(crate) fn callee_named<'a>(
+    analysis: &'a AnalysisResult,
+    name: &str,
+    accept: impl Fn(&brink_ir::SymbolInfo) -> bool,
+) -> Option<&'a brink_ir::SymbolInfo> {
+    analysis
+        .index
+        .by_name
+        .get(name)?
+        .iter()
+        .filter_map(|id| analysis.index.symbols.get(id))
+        .filter(|info| {
+            matches!(
+                info.kind,
+                brink_ir::SymbolKind::Knot
+                    | brink_ir::SymbolKind::Stitch
+                    | brink_ir::SymbolKind::External
+            ) && accept(info)
+        })
+        .min_by_key(|info| info.kind != brink_ir::SymbolKind::External)
+}
+
 /// One pickable value for an argument (Tier 3 static value source, #174).
 pub struct ArgumentValueCompletion {
     /// The literal inserted into source (e.g. `"5"`).
@@ -168,15 +188,7 @@ pub fn argument_value_completions(
     let Some((func_name, active_param)) = find_call_context(source, byte_offset) else {
         return Vec::new();
     };
-    let Some(info) = analysis.index.symbols.values().find(|info| {
-        matches!(
-            info.kind,
-            brink_ir::SymbolKind::Knot
-                | brink_ir::SymbolKind::Stitch
-                | brink_ir::SymbolKind::External
-        ) && info.name == func_name
-            && !info.params.is_empty()
-    }) else {
+    let Some(info) = callee_named(analysis, &func_name, |info| !info.params.is_empty()) else {
         return Vec::new();
     };
     let Some(rt) = analysis
@@ -432,6 +444,74 @@ mod tests {
             .map(|v| v.value)
             .collect();
         assert_eq!(values, ["\"rain\"", "\"fog\""]);
+    }
+
+    /// An `EXTERNAL` with an ink fallback function of the same name is
+    /// still described by the host manifest: signature help, argument
+    /// values and the value-label hint all read the external's types, not
+    /// the fallback's (which has none).
+    #[test]
+    fn an_external_with_an_ink_fallback_keeps_its_manifest_types() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL set_weather(kind)\n=== function set_weather(kind)\n~ return\n=== start ===\n~ set_weather(\"rain\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_weather".into(),
+                params: vec![ManifestParam {
+                    name: "kind".into(),
+                    ty: TypeRef("weather".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Presentation,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "weather".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![ValueItem {
+                        value: "rain".into(),
+                        label: "Rain".into(),
+                        detail: None,
+                    }],
+                }),
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("~ set_weather(\"").expect("call") + "~ set_weather(".len();
+
+        let sig = super::signature_help(analysis, src, offset).expect("a signature");
+        assert!(
+            sig.label.contains("kind: weather"),
+            "the external's type: {}",
+            sig.label
+        );
+        let values = super::argument_value_completions(analysis, src, offset, None);
+        assert_eq!(values.len(), 1, "the external's values");
+
+        let id = session.file_id("test.ink").expect("file");
+        let root = session.syntax_root(id).expect("root");
+        let whole = rowan::TextRange::new(
+            0.into(),
+            rowan::TextSize::from(u32::try_from(src.len()).expect("small")),
+        );
+        let hints = crate::inlay_hints::inlay_hints(&root, analysis, session.db(), id, whole, None);
+        assert!(
+            hints.iter().any(|h| h.label.contains("Rain")),
+            "the value label: {:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
