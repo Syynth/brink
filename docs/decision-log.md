@@ -6087,3 +6087,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The manuscript's scroll position in Write mode belongs to the author. It is remembered across restarts and project reopens (as Script mode's per-file scroll already is), and nothing moves it unasked: mode switches, edits, analysis refreshes and resizes keep the same place in the text. Player following is the one sanctioned mover, and only while following is on. Tracked as an issue.
 - **WHY:** Maintainer: "scroll position in write mode needs to be sacred. it needs to be remembered across restarts, etc."
+
+## The desktop studio may read and watch a host manifest outside the project folder
+- **WHEN:** 2026-10-09
+- **PROJECT:** brink
+- **SYSTEM:** brink-desktop / host manifest
+- **SCOPE:** moderate
+- **WHAT:** Narrows the desktop shell's "never reads or watches outside the project folder" rule (2026-10-09, `[host] manifest` entry) for exactly one file: the host manifest `brink.toml`'s `[host] manifest` names. The shell may read and watch it wherever it is (e.g. `../build/host-manifest.json`), provided it is a `.json` file that parses as a host manifest. Anything else outside the folder is still refused, and a file that stops being a valid manifest is dropped with a warning on `brink.toml`. The native studio follows the same file the same way (#3687).
+- **WHY:** Maintainer: "if a host-manifest.json is valid, can't we safely watch it, if it stays a json file, etc.?" A host generates its manifest into its own build folder, a sibling of the ink folder, and the pickers should follow it without a reopen.
