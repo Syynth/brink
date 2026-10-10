@@ -187,8 +187,16 @@ pub fn argument_value_completions(
     else {
         return Vec::new();
     };
+    // A string type's items may be written bare (`rain`) — the value-label
+    // hint already matches them against the quoted literal — so what is
+    // written is quoted, whichever way the host wrote it.
+    let is_string = rt.base == Some(brink_ir::BaseType::String);
     let to_completion = |it: &brink_ir::ValueItem| ArgumentValueCompletion {
-        value: it.value.clone(),
+        value: if is_string && !it.value.starts_with('"') {
+            format!("\"{}\"", it.value)
+        } else {
+            it.value.clone()
+        },
         label: it.label.clone(),
         detail: it.detail.clone(),
     };
@@ -374,6 +382,56 @@ mod tests {
             [("north", "\"north\""), ("south", "\"south\"")],
             "the members, quoted; one with a quote in it is left out"
         );
+    }
+
+    /// A string type's static items written bare complete as quoted
+    /// literals; one already quoted is left as it is.
+    #[test]
+    fn a_string_types_values_complete_quoted() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL set_weather(kind)\n~ set_weather(\"rain\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let item = |value: &str, label: &str| ValueItem {
+            value: value.into(),
+            label: label.into(),
+            detail: None,
+        };
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_weather".into(),
+                params: vec![ManifestParam {
+                    name: "kind".into(),
+                    ty: TypeRef("weather".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Presentation,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "weather".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![item("rain", "Rain"), item("\"fog\"", "Fog")],
+                }),
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("weather(\"").expect("call") + "weather(".len();
+        let values: Vec<String> = super::argument_value_completions(analysis, src, offset, None)
+            .into_iter()
+            .map(|v| v.value)
+            .collect();
+        assert_eq!(values, ["\"rain\"", "\"fog\""]);
     }
 
     #[test]
