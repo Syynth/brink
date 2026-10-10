@@ -1001,9 +1001,16 @@ impl OutputBuffer {
 
 /// First pass of glue resolution: mark newlines and glue parts for removal.
 ///
-/// For each `Glue` part, find the nearest preceding `Newline` (skipping
-/// whitespace-only text, tags, checkpoints, and already-removed parts)
-/// and mark both the newline and the glue for removal.
+/// For each `Glue` part, walk back to the nearest visible content part and
+/// mark every not-yet-removed `Newline` on the way for removal, then the
+/// glue itself. This is ink's `TrimNewlinesFromOutputStream`: the walk
+/// passes over whitespace — whitespace-only text, an empty or
+/// whitespace-only line, a value that renders blank (`""`, `" "`, an empty
+/// list, a final `None`; [`OutputPart::is_visible`]) — and over every
+/// newline in that run, so `a` / `{e}` / `<> b` joins `a` and `b` across
+/// the blank line between them (issue #3535). It stops at visible content
+/// and at a `Tag`: ink's tags are control commands in its output stream,
+/// and the trim stops at the first command it meets.
 fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
     for (i, part) in parts.iter().enumerate() {
         if matches!(part, OutputPart::Glue) {
@@ -1012,34 +1019,10 @@ fn mark_glue_removals(parts: &[OutputPart], remove: &mut [bool]) {
                     continue;
                 }
                 match &parts[j] {
-                    OutputPart::Newline => {
-                        remove[j] = true;
-                        break;
-                    }
-                    OutputPart::Glue
-                    | OutputPart::Checkpoint
-                    | OutputPart::Tag(_)
-                    | OutputPart::Spring
-                    | OutputPart::ElementAttach(..)
-                    | OutputPart::ElementAttachEnd
-                    // B4 (`docs/stdlib-spec.md` §1.6b): a final-`None`
-                    // value renders empty at the display boundary — same
-                    // pass-through treatment as whitespace-only text below,
-                    // consistent with `OutputPart::is_content`.
-                    | OutputPart::ValueRef(Value::OptionVal(None)) => {}
-                    OutputPart::Text(s) if s.trim().is_empty() => {}
-                    // A whitespace-only or empty line-table line is
-                    // whitespace-only text by another name (issue #3507:
-                    // a lifted arm that rendered to `" "` before glue) —
-                    // it is not content and does not block the scan,
-                    // exactly as `is_content` already classifies it.
-                    OutputPart::LineRef { flags, .. }
-                        if flags.contains(brink_format::LineFlags::ALL_WS)
-                            || flags.contains(brink_format::LineFlags::EMPTY) => {}
-                    // Content (Text, LineRef, ValueRef) blocks glue scan.
-                    OutputPart::Text(_) | OutputPart::LineRef { .. } | OutputPart::ValueRef(_) => {
-                        break;
-                    }
+                    OutputPart::Newline => remove[j] = true,
+                    OutputPart::Tag(_) => break,
+                    other if other.is_visible() => break,
+                    _ => {}
                 }
             }
             remove[i] = true;
@@ -1123,7 +1106,13 @@ fn resolve_parts(
                         out.truncate(since_newline);
                     }
                 }
-                OutputPart::Newline => since_newline = out.len(),
+                // A glue that removed several newlines (issue #3535)
+                // removes the whitespace between them too: the line begins
+                // at the first newline of the run, so a later one in the
+                // same whitespace-only stretch does not move it.
+                OutputPart::Newline if !out[since_newline..].trim().is_empty() => {
+                    since_newline = out.len();
+                }
                 _ => {}
             }
             continue;
@@ -1518,7 +1507,11 @@ fn drive_lines(
                         current_text.truncate(since_newline);
                     }
                 }
-                OutputPart::Newline => since_newline = current_text.len(),
+                // See `resolve_parts`: the first newline of a removed
+                // run begins the line (issue #3535).
+                OutputPart::Newline if !current_text[since_newline..].trim().is_empty() => {
+                    since_newline = current_text.len();
+                }
                 _ => {}
             }
             continue;

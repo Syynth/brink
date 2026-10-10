@@ -65,16 +65,16 @@ impl OutputBuffer {
         mark_glue_removals(unread, remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
-        // not in after_glue state) followed by content — VISIBLE content
-        // when the line ending at that newline is itself blank (issue
-        // #3533: ink's lookahead drops a blank line's newline behind a
-        // delivered one and only rewinds to keep it when non-whitespace
-        // follows, so a blank line must not be handed out on the strength
-        // of more blank content after it).
+        // not in after_glue state) followed by VISIBLE content. Blank content
+        // (`""`, an empty list) does not commit it: a later glue still walks
+        // back over that content to the newline (issue #3535), exactly as
+        // ink's lookahead keeps going until non-whitespace extends the
+        // output past the newline (and a blank line is not handed out on
+        // the strength of more blank content after it, issue #3533).
+        // `after_glue` is likewise cleared only by visible content: ink
+        // drops every newline between a glue and the next non-whitespace.
         let mut after_glue = false;
         let mut found_newline = false;
-        let mut line_visible = false;
-        let mut blank_line = false;
 
         for (i, part) in unread.iter().enumerate() {
             if remove[i] {
@@ -83,26 +83,15 @@ impl OutputBuffer {
                 }
                 continue;
             }
-            if part.is_content() {
+            if part.is_visible() {
                 if found_newline {
-                    if !blank_line || part.is_visible() {
-                        return true;
-                    }
-                } else if part.is_visible() {
-                    line_visible = true;
+                    return true;
                 }
                 after_glue = false;
             } else {
                 match part {
-                    OutputPart::Newline if !after_glue => {
-                        if !found_newline {
-                            blank_line = !line_visible;
-                            found_newline = true;
-                        }
-                    }
-                    OutputPart::Glue => {
-                        after_glue = true;
-                    }
+                    OutputPart::Newline if !after_glue => found_newline = true,
+                    OutputPart::Glue => after_glue = true,
                     _ => {}
                 }
             }
@@ -159,12 +148,10 @@ impl OutputBuffer {
             mark_glue_removals(unread, remove);
 
             // Find the split point: the first surviving Newline (not removed,
-            // not in after_glue state) that has content after it — the same
-            // walk as `has_completed_line`, blank-line rule included (#3533).
+            // not in after_glue state) that has visible content after it —
+            // the same walk as `has_completed_line` (#3533, #3535).
             let mut after_glue = false;
             let mut candidate_newline: Option<usize> = None;
-            let mut line_visible = false;
-            let mut blank_line = false;
 
             for (i, part) in unread.iter().enumerate() {
                 if remove[i] {
@@ -173,26 +160,17 @@ impl OutputBuffer {
                     }
                     continue;
                 }
-                if part.is_content() {
+                if part.is_visible() {
                     if candidate_newline.is_some() {
-                        if !blank_line || part.is_visible() {
-                            break;
-                        }
-                    } else if part.is_visible() {
-                        line_visible = true;
+                        break;
                     }
                     after_glue = false;
                 } else {
                     match part {
-                        OutputPart::Newline if !after_glue => {
-                            if candidate_newline.is_none() {
-                                blank_line = !line_visible;
-                                candidate_newline = Some(i);
-                            }
+                        OutputPart::Newline if !after_glue && candidate_newline.is_none() => {
+                            candidate_newline = Some(i);
                         }
-                        OutputPart::Glue => {
-                            after_glue = true;
-                        }
+                        OutputPart::Glue => after_glue = true,
                         _ => {}
                     }
                 }

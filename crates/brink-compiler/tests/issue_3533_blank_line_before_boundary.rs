@@ -111,8 +111,8 @@ fn leading_blank_lines_collapse_to_one() {
 
 /// Blank lines followed by content are all delivered, each on its own —
 /// including across a divert. (The glue row of the same table, `a` /
-/// `{e}` / `<> b`, is #3535's: ink walks the glue back past the blank
-/// line and prints `a b`, brink prints two lines.)
+/// `{e}` / `<> b`, is #3535's: the glue walks back past the blank line and
+/// prints `a b` — `issue_3535_glue_across_blank_line.rs`.)
 #[test]
 fn blank_lines_followed_by_content_are_delivered() {
     assert_eq!(play("a\n{e}\nb\n-> END"), ["a\n", "\n", "b\n", "<end>"]);
