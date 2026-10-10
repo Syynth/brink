@@ -6992,10 +6992,13 @@ mod modes_driven {
             Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
             "every value, not just those matching the literal"
         );
+        let selected = h.read(|cx| editor.read(cx).completion_menu_state().selected);
+        assert_eq!(selected, Some(1), "it opens on the value written, `Vault`");
         let shot = scratch_dir("shot").join(format!("{name}-open.png"));
         h.screenshot(window, &shot);
         eprintln!("value chip menu screenshot: {}", shot.display());
 
+        h.press(window, "up");
         h.press(window, "enter");
         let written = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);

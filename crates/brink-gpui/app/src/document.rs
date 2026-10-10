@@ -185,6 +185,7 @@ impl Document {
 
                 let origin = cx.entity().entity_id();
                 let lsp = state.lsp_mut();
+                lsp.completion_menu.max_width = gpui::px(COMPLETION_MENU_WIDTH);
                 lsp.hover_provider = Some(Rc::new(BrinkHover {
                     project: project.downgrade(),
                     path: path.clone(),
@@ -633,15 +634,34 @@ pub(crate) fn request_inlays(
         cx,
     );
     let editor = editor.clone();
+    // Both as the web draws them (`editor.css`): muted text on a faint
+    // tint of it, which the kit rounds. A chip is the same object a hint
+    // is, there to be clicked rather than read.
+    let muted = cx.theme().muted_foreground;
     let hint_style = gpui::HighlightStyle {
-        color: Some(cx.theme().muted_foreground),
-        background_color: Some(cx.theme().muted.opacity(0.7)),
+        color: Some(muted),
+        background_color: Some(muted.opacity(0.12)),
         ..Default::default()
     };
+    let chip_bg = muted.opacity(0.18);
     let chip_style = gpui::HighlightStyle {
-        color: Some(cx.theme().accent_foreground),
-        background_color: Some(cx.theme().accent),
+        color: Some(muted),
+        background_color: Some(chip_bg),
         ..Default::default()
+    };
+    // An outline in the chip's own colour, five points darker — barely
+    // there, drawn inside it (maintainer, 2026-10-09).
+    let chip_border = gpui::Hsla {
+        l: (chip_bg.l - 0.05).max(0.),
+        ..chip_bg
+    };
+    // A gap outside the rounded background: the kit's inlay has no margin.
+    let gap = |offset: usize| Inlay {
+        offset,
+        text: " ".into(),
+        style: gpui::HighlightStyle::default(),
+        swatch: None,
+        border: None,
     };
     cx.spawn(async move |cx| {
         let Ok(QueryResult::InlayHints(found)) = query.await else {
@@ -649,27 +669,32 @@ pub(crate) fn request_inlays(
         };
         let mut inlays = Vec::new();
         for h in found {
+            let offset = h.offset as usize;
             if h.value_chip {
-                // A gap, then the chip: the inlay has no margin of its own.
+                // After its literal, with a gap either side.
+                inlays.push(gap(offset));
                 inlays.push(Inlay {
-                    offset: h.offset as usize,
-                    text: " ".into(),
-                    style: gpui::HighlightStyle::default(),
-                    swatch: None,
-                });
-                inlays.push(Inlay {
-                    offset: h.offset as usize,
+                    offset,
                     text: format!(" {} \u{25be} ", h.label).into(),
                     style: chip_style,
                     swatch: None,
+                    border: Some(chip_border),
                 });
+                inlays.push(gap(offset));
             } else if hints {
+                // Padded inside its background, and a gap after when the
+                // hint wants one (`mode:` before its argument).
+                let spaced = h.label.ends_with(' ');
                 inlays.push(Inlay {
-                    offset: h.offset as usize,
-                    text: h.label.into(),
+                    offset,
+                    text: format!(" {} ", h.label.trim_end()).into(),
                     style: hint_style,
                     swatch: None,
+                    border: None,
                 });
+                if spaced {
+                    inlays.push(gap(offset));
+                }
             }
         }
         editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
@@ -711,14 +736,21 @@ pub(crate) fn install_value_picker(
                 let _ = editor.update_in(cx, |state, window, cx| {
                     let text = state.value().to_string();
                     let index = LineIndex::new(&text);
-                    let start = values[0]
+                    let range = values[0]
                         .replace
                         .as_ref()
-                        .map_or(offset, |(_, range)| range.start as usize);
+                        .map_or(offset..offset, |(_, r)| r.start as usize..r.end as usize);
+                    // Open on the value already written, as the web marks it.
+                    let written = text.get(range.clone()).unwrap_or_default();
+                    let current = values.iter().position(|v| {
+                        v.replace
+                            .as_ref()
+                            .is_some_and(|(literal, _)| literal == written)
+                    });
                     state.focus(window, cx);
                     state.set_selected_range(offset..offset, cx);
                     let items = values.iter().map(|v| completion_item(v, &index)).collect();
-                    state.present_completion_items(start, "", items, cx);
+                    state.present_completion_items_selected(range.start, "", items, current, cx);
                 });
             })
             .detach();
@@ -1538,6 +1570,9 @@ impl InputHighlighter for BrinkHighlighter {
 /// Hover and completion on an editor over `path` — the half of "a brink
 /// editor" that predates `navigation::install`; the manuscript's sections
 /// call both.
+/// The widest the completion menu grows, in points.
+const COMPLETION_MENU_WIDTH: f32 = 480.;
+
 pub(crate) fn install_language_providers(
     state: &mut EditorState,
     project: &WeakEntity<Project>,
@@ -1545,6 +1580,9 @@ pub(crate) fn install_language_providers(
     origin: gpui::EntityId,
 ) {
     let lsp = state.lsp_mut();
+    // Room for a value's detail beside its label (a host's descriptions run
+    // long); the kit's default truncates them.
+    lsp.completion_menu.max_width = gpui::px(COMPLETION_MENU_WIDTH);
     lsp.hover_provider = Some(Rc::new(BrinkHover {
         project: project.clone(),
         path: path.clone(),
@@ -1847,10 +1885,13 @@ fn completion_item(item: &Completion, index: &LineIndex) -> lsp::CompletionItem 
         ),
         CompletionKind::StdlibFunction => (lsp::CompletionItemKind::FUNCTION, "stdlib".to_owned()),
         CompletionKind::Builtin => (lsp::CompletionItemKind::KEYWORD, "built-in".to_owned()),
-        CompletionKind::Value => (
-            lsp::CompletionItemKind::VALUE,
-            item.detail.clone().unwrap_or_else(|| "value".to_owned()),
-        ),
+        // A value's detail is the host's own text, or nothing: its kind is
+        // plain from where the menu opened.
+        CompletionKind::Value => (lsp::CompletionItemKind::VALUE, String::new()),
+    };
+    let detail = match item.kind {
+        CompletionKind::Value => item.detail.clone(),
+        _ => Some(detail),
     };
     // A value writes its literal over what was typed of it, not its label
     // at the cursor.
@@ -1866,7 +1907,7 @@ fn completion_item(item: &Completion, index: &LineIndex) -> lsp::CompletionItem 
     lsp::CompletionItem {
         label: item.label.clone(),
         kind: Some(kind),
-        detail: Some(detail),
+        detail,
         text_edit,
         ..Default::default()
     }
