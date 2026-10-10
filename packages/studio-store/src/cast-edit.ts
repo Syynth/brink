@@ -70,6 +70,16 @@ function locate(lines: string[]): Located[] {
   return found;
 }
 
+/** A colour as `[cast]` stores it: `#rgb` / `#rrggbb` (any case) to
+ *  lowercase `#rrggbb`, else null — `brink-project-config`'s
+ *  `normalize_color`, so the form accepts exactly what the parser does. */
+export function normalizeCastColor(text: string): string | null {
+  const m = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.exec(text.trim());
+  if (m === null) return null;
+  const digits = (m[1] ?? "").toLowerCase();
+  return `#${digits.length === 3 ? [...digits].map((c) => c + c).join("") : digits}`;
+}
+
 const same = (a: string, b: string): boolean => a.toLowerCase() === b.toLowerCase();
 
 /** The declared speakers, in the order written. */

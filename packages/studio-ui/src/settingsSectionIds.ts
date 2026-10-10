@@ -25,6 +25,7 @@ export const SETTINGS_SECTION_IDS = {
   debugging: "debugging",
   player: "player",
   conventions: "conventions",
+  cast: "cast",
 } as const;
 
 /** Where a door with no preference of its own lands. */
