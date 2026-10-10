@@ -110,3 +110,8 @@ objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std"
 # The completion handler of the grammar model's asynchronous check.
 block2 = "0.6.2"
 
+
+# File and line in a release build's backtraces — the panic log
+# (`shell/src/crash_log.rs`) is only as useful as its frames.
+[profile.release]
+debug = "line-tables-only"

@@ -5,6 +5,7 @@
 //! concrete wiring happens once, at the top.
 
 pub mod commands;
+pub mod crash_log;
 pub mod editor_view;
 pub mod icons;
 pub mod menus;

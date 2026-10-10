@@ -2930,6 +2930,8 @@ fn open_project_window(
 }
 
 fn main() {
+    // First, so a panic anywhere after leaves its message on disk.
+    brink_gpui_shell::crash_log::install();
     // A path on the command line is opened by its door (`landing::anchor_for`):
     // a `.ink`, a `brink.toml`, or a folder.
     let arg = std::env::args().nth(1).map(PathBuf::from);
@@ -4010,6 +4012,57 @@ mod modes_driven {
         assert!(
             centred,
             "the hovered choice and its body sit in the middle: {dbg:?}"
+        );
+
+        // Its bracket runs the whole block: `+ [Left]` down to `-> pick`,
+        // not the choice line alone (decision log 2026-10-09).
+        let line = |needle: &str| {
+            story[..story.find(needle).expect("in the story")]
+                .matches('\n')
+                .count()
+        };
+        assert_eq!(
+            h.read(|cx| manuscript.read(cx).bracket_lines_for_test(cx)),
+            Some((line("+ [Left]"), line("    -> pick"))),
+        );
+    }
+
+    /// A long list of choices takes at most half the Player and scrolls in
+    /// place; the transcript keeps the other half (decision log 2026-10-09).
+    #[test]
+    fn many_choices_take_at_most_half_the_player() {
+        let dir = scratch_dir("many");
+        let mut story = String::from("-> room\n=== room ===\nYou look around the room.\n");
+        for n in 1..=15 {
+            story.push_str(&format!(
+                "+ [Thing {n}]\n    You look at thing {n}.\n    -> room\n"
+            ));
+        }
+        std::fs::write(dir.join("brink.toml"), "[project]\nentry = \"room.ink\"\n")
+            .expect("config");
+        std::fs::write(dir.join("room.ink"), &story).expect("story");
+
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let player = h.read(|cx| studio.read(cx).player.clone());
+        h.dispatch(window, ModeWrite);
+        h.dispatch(window, super::Play);
+        assert!(player_until(&mut h, &player, |p| p.line_count() > 0 && !p.is_busy()));
+        h.update(|cx| player.update(cx, |p, cx| p.skip(cx)));
+        assert!(player_until(&mut h, &player, |p| p.state()
+            == crate::player::SessionState::AwaitingChoice));
+        h.advance(std::time::Duration::from_millis(1500));
+        let shot = scratch_dir("shot").join("many-choices.png");
+        h.screenshot(window, &shot);
+        eprintln!("many choices screenshot: {}", shot.display());
+        let (transcript, window_h) = h.read(|cx| {
+            let height = crate::player::now_line_for_test(cx, window) / 0.4;
+            (player.read(cx).transcript_height(), height)
+        });
+        assert!(
+            transcript > window_h * 0.35,
+            "15 cards leave the transcript its room: {transcript} of {window_h}"
         );
     }
 

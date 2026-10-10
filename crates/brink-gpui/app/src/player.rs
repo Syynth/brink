@@ -541,6 +541,12 @@ impl Player {
             .any(|e| matches!(e, Entry::Line { text, .. } if text.contains(needle)))
     }
 
+    /// The transcript's height as last laid out.
+    #[cfg(test)]
+    pub(crate) fn transcript_height(&self) -> f32 {
+        f32::from(self.list.viewport_bounds().size.height)
+    }
+
     /// Where entry `ix`'s row was laid out, in window coordinates.
     #[cfg(test)]
     pub(crate) fn row_bounds(&self, ix: usize) -> Option<gpui::Bounds<gpui::Pixels>> {
@@ -1537,67 +1543,77 @@ impl Player {
         let knot =
             brink_gpui_shell::theme::hsla(brink_gpui_shell::theme::current(cx).tokens.symbol_knot);
         let busy = self.busy;
-        Some(
-            v_flex()
-                .w_full()
-                .gap(px(8.))
-                .px_4()
-                .pt(px(8.))
-                .pb(px(10.))
-                .children(self.choices.iter().enumerate().map(|(n, choice)| {
-                    let index = choice.index;
-                    let card = h_flex()
-                        .id(("play-choice", index))
-                        .w_full()
-                        .h(px(40.))
-                        .px(px(12.))
-                        .gap(px(12.))
-                        .items_center()
-                        .rounded(px(10.))
-                        .border_1()
-                        .border_color(border)
-                        .bg(card)
-                        .when_some(choice.source.clone(), |el, loc| {
-                            el.on_hover(Self::hover_listener(loc, true, cx))
-                        })
-                        .text_color(fg)
-                        .when(!busy, |el| {
-                            el.cursor_pointer()
-                                .hover(move |s| s.border_color(knot))
-                                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
-                                    this.choose(index, cx);
-                                }))
-                        })
-                        .child(Self::choice_mark(choice.sticky, 22., knot))
-                        .child(
-                            div()
-                                .flex_1()
-                                .min_w_0()
-                                .truncate()
-                                .child(choice.text.trim().to_owned()),
+        // At most half the Player (decision log 2026-10-09): a long list of
+        // choices scrolls in place rather than squeezing out the transcript.
+        let cards = v_flex()
+            .w_full()
+            .gap(px(8.))
+            .px_4()
+            .pt(px(8.))
+            .pb(px(10.))
+            .children(self.choices.iter().enumerate().map(|(n, choice)| {
+                let index = choice.index;
+                let card = h_flex()
+                    .id(("play-choice", index))
+                    .w_full()
+                    .h(px(40.))
+                    .px(px(12.))
+                    .gap(px(12.))
+                    .items_center()
+                    .rounded(px(10.))
+                    .border_1()
+                    .border_color(border)
+                    .bg(card)
+                    .when_some(choice.source.clone(), |el, loc| {
+                        el.on_hover(Self::hover_listener(loc, true, cx))
+                    })
+                    .text_color(fg)
+                    .when(!busy, |el| {
+                        el.cursor_pointer()
+                            .hover(move |s| s.border_color(knot))
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                                this.choose(index, cx);
+                            }))
+                    })
+                    .child(Self::choice_mark(choice.sticky, 22., knot))
+                    .child(
+                        div()
+                            .flex_1()
+                            .min_w_0()
+                            .truncate()
+                            .child(choice.text.trim().to_owned()),
+                    )
+                    .child(div().text_xs().text_color(muted).child((n + 1).to_string()));
+                // The web Player's `player-choice-in`: each card slides
+                // in from the left, one after another — while new.
+                match self.choices_at.filter(|at| at.elapsed() < cards_in(n)) {
+                    None => card.into_any_element(),
+                    Some(_) => {
+                        let total = cards_in(n);
+                        let wait = CARD_STAGGER.as_secs_f32() * n.min(STAGGERED_CARDS) as f32
+                            / total.as_secs_f32();
+                        card.with_animation(
+                            ("player-card-in", self.generation as usize * 1_000 + n),
+                            gpui::Animation::new(total),
+                            move |el, delta| {
+                                let t = gpui::ease_out_quint()(
+                                    ((delta - wait) / (1. - wait)).clamp(0., 1.),
+                                );
+                                el.opacity(t).left(px(-CARD_SLIDE * (1. - t)))
+                            },
                         )
-                        .child(div().text_xs().text_color(muted).child((n + 1).to_string()));
-                    // The web Player's `player-choice-in`: each card slides
-                    // in from the left, one after another — while new.
-                    match self.choices_at.filter(|at| at.elapsed() < cards_in(n)) {
-                        None => card.into_any_element(),
-                        Some(_) => {
-                            let total = cards_in(n);
-                            let wait = CARD_STAGGER.as_secs_f32() * n as f32 / total.as_secs_f32();
-                            card.with_animation(
-                                ("player-card-in", self.generation as usize * 1_000 + n),
-                                gpui::Animation::new(total),
-                                move |el, delta| {
-                                    let t = gpui::ease_out_quint()(
-                                        ((delta - wait) / (1. - wait)).clamp(0., 1.),
-                                    );
-                                    el.opacity(t).left(px(-CARD_SLIDE * (1. - t)))
-                                },
-                            )
-                            .into_any_element()
-                        }
+                        .into_any_element()
                     }
-                }))
+                }
+            }));
+        Some(
+            div()
+                .id("player-cards")
+                .w_full()
+                .flex_none()
+                .max_h(gpui::relative(CHOICES_SHARE))
+                .overflow_y_scroll()
+                .child(cards)
                 .into_any_element(),
         )
     }
@@ -2487,10 +2503,15 @@ const CARD_IN: std::time::Duration = std::time::Duration::from_millis(320);
 const CARD_STAGGER: std::time::Duration = std::time::Duration::from_millis(60);
 const CARD_SLIDE: f32 = 10.;
 
-/// How long card `n`'s arrival runs, its stagger included.
+/// How long card `n`'s arrival runs, its stagger included. The stagger
+/// stops growing after a handful of cards, so a long list does not trickle
+/// in for seconds.
 fn cards_in(n: usize) -> std::time::Duration {
-    CARD_IN + CARD_STAGGER * u32::try_from(n).unwrap_or(u32::MAX)
+    CARD_IN + CARD_STAGGER * u32::try_from(n.min(STAGGERED_CARDS)).unwrap_or(0)
 }
+
+/// How many cards slide in one after another; the rest arrive with the last.
+const STAGGERED_CARDS: usize = 8;
 
 /// How many frames a new line may take to be laid out before the list is
 /// scrolled to it outright.
@@ -2507,6 +2528,9 @@ struct NowMove {
     slide: Option<(f32, std::time::Instant)>,
     tries: u8,
 }
+
+/// The most of the Player's height the choice cards may take.
+const CHOICES_SHARE: f32 = 0.5;
 
 /// How many saves each section of the header's saves menu lists.
 const SAVES_IN_MENU: usize = 8;
