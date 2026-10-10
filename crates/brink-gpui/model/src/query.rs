@@ -36,6 +36,12 @@ pub enum QueryKind {
         path: String,
         offset: u32,
     },
+    /// Every value the host manifest offers for the literal argument ending
+    /// at `offset`, unnarrowed — what a value chip opens on.
+    ArgumentValues {
+        path: String,
+        offset: u32,
+    },
     DocumentSymbols {
         path: String,
     },
@@ -525,8 +531,12 @@ pub struct PassageLine {
 pub struct InlayHint {
     pub offset: u32,
     /// Already carries its own `:`; `padding_right` is folded in here so the
-    /// editor does not have to know the convention.
+    /// editor does not have to know the convention. A value chip's is the
+    /// value's bare label.
     pub label: String,
+    /// A value label after a literal argument — drawn as a chip that opens
+    /// the argument's values (`QueryKind::ArgumentValues`), not as a hint.
+    pub value_chip: bool,
 }
 
 /// A call's signature, for parameter hints.
@@ -714,6 +724,12 @@ pub(crate) fn answer(
             Some(items) => QueryResult::Completions(items),
             None => QueryResult::Unavailable,
         },
+        QueryKind::ArgumentValues { path, offset } => {
+            match argument_values_at(session, path, *offset) {
+                Some(items) => QueryResult::Completions(items),
+                None => QueryResult::Unavailable,
+            }
+        }
         QueryKind::DocumentSymbols { path } => match symbols(session, path) {
             Some(found) => QueryResult::DocumentSymbols(found),
             None => QueryResult::Unavailable,
@@ -1183,13 +1199,25 @@ fn inlay_hints(session: &brink_ide::session::IdeSession, path: &str) -> Option<V
     Some(
         hints
             .into_iter()
-            .map(|h| InlayHint {
-                offset: u32::from(h.offset),
-                label: if h.padding_right {
-                    format!("{} ", h.label)
-                } else {
-                    h.label
-                },
+            .map(|h| {
+                let value_chip = matches!(h.kind, brink_ide::inlay_hints::InlayHintKind::Value);
+                InlayHint {
+                    offset: u32::from(h.offset),
+                    label: if value_chip {
+                        // brink-ide decorates it as ` ⟨label⟩` for a text
+                        // inlay; a chip draws its own frame.
+                        h.label
+                            .trim()
+                            .trim_start_matches('\u{27e8}')
+                            .trim_end_matches('\u{27e9}')
+                            .to_owned()
+                    } else if h.padding_right {
+                        format!("{} ", h.label)
+                    } else {
+                        h.label
+                    },
+                    value_chip,
+                }
             })
             .collect(),
     )
@@ -1286,7 +1314,7 @@ fn completions(
     // label shown, the literal written over what was typed of it. A value
     // literal is never a legal `ref` root.
     if matches!(ctx, CompletionContext::FunctionArgs) && ref_root.is_none() {
-        items.extend(argument_values(analysis, source, offset));
+        items.extend(argument_values(analysis, source, offset, true));
     }
     // Punctuation and spaces open the menu only for argument values (`(`,
     // `,`, `"` and a space are triggers for exactly that); everything else
@@ -1368,6 +1396,7 @@ fn argument_values(
     analysis: &brink_analyzer::AnalysisResult,
     source: &str,
     offset: usize,
+    narrow: bool,
 ) -> Vec<Completion> {
     let start = source[..offset]
         .char_indices()
@@ -1388,7 +1417,8 @@ fn argument_values(
     brink_ide::signature::argument_value_completions(analysis, source, offset, None)
         .into_iter()
         .filter(|v| {
-            v.label.to_lowercase().starts_with(&typed)
+            !narrow
+                || v.label.to_lowercase().starts_with(&typed)
                 || v.value.trim_matches('"').to_lowercase().starts_with(&typed)
         })
         .map(|v| Completion {
@@ -1398,6 +1428,20 @@ fn argument_values(
             replace: Some((v.value, range.clone())),
         })
         .collect()
+}
+
+/// Every value for the literal argument ending at `offset` — a value
+/// chip's picker. The whole literal is what a pick replaces.
+fn argument_values_at(
+    session: &brink_ide::session::IdeSession,
+    path: &str,
+    offset: u32,
+) -> Option<Vec<Completion>> {
+    let id = session.file_id(path)?;
+    let analysis = session.analysis()?;
+    let source = session.source(id)?;
+    let offset = clamp_offset(source, offset) as usize;
+    Some(argument_values(analysis, source, offset, false))
 }
 
 /// Lift the selected lines into a new knot or function.

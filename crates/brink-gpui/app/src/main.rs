@@ -6844,11 +6844,123 @@ mod modes_driven {
         h.press(window, "enter");
         let written = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
-            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9"))
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9\n-> END"))
         });
         assert!(
             written,
             "the literal replaces what was typed: {:?}",
+            h.read(|cx| editor.read(cx).value().to_string())
+        );
+    }
+
+    /// A literal argument the host manifest labels carries a value chip;
+    /// clicking it opens every value for that argument, and picking one
+    /// replaces the literal (#3645, the value-list half).
+    #[test]
+    fn a_value_chip_opens_the_arguments_values() {
+        let dir = scratch_dir("value-chip");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\n\n[host]\nmanifest = \"host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            dir.join("host.json"),
+            r#"{
+  "externals": [{ "name": "set_switch", "params": [{ "name": "id", "ty": "switch_id" }] }],
+  "types": [{
+    "name": "switch_id", "base": "int",
+    "values": { "source": "static", "items": [
+      { "value": "5", "label": "HarborGate", "detail": "Switch #5" },
+      { "value": "9", "label": "Vault" }
+    ] }
+  }]
+}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            dir.join("story.ink"),
+            "EXTERNAL set_switch(id)\n-> start\n=== start ===\n~ set_switch(9)\n-> END\n",
+        )
+        .expect("story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+
+        // The frame without inlays, then with them: the chip is what changed.
+        h.update(|cx| editor.update(cx, |state, cx| state.set_inlays(Vec::new(), cx)));
+        let bare = h.capture(window);
+        h.update(|cx| {
+            crate::document::request_inlays(&project, "story.ink", &editor, false, cx);
+        });
+        let mut chip = None;
+        let found = h.settle_until(PINS_WAIT, |h| {
+            let now = h.capture(window);
+            let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+            for (x, y, p) in now.enumerate_pixels() {
+                if bare.get_pixel(x, y) != p {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+            if x0 <= x1 {
+                chip = Some((x0, y0, x1, y1));
+            }
+            chip.is_some()
+        });
+        assert!(found, "no chip was drawn");
+        let (x0, y0, x1, y1) = chip.expect("found above");
+        let shot = scratch_dir("shot").join("value-chip.png");
+        h.screenshot(window, &shot);
+        eprintln!("value chip screenshot: {}", shot.display());
+
+        // The capture is 2x; a click is in window points.
+        #[expect(clippy::cast_precision_loss, reason = "screen pixels")]
+        let (x, y) = ((x0 + x1) as f32 / 4. + 4., (y0 + y1) as f32 / 4.);
+        h.click_with(window, x, y, gpui::Modifiers::default());
+        let menu = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx).completion_menu_state();
+                state.open.then(|| {
+                    state
+                        .items
+                        .iter()
+                        .map(|i| i.label.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+        let opened = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some()
+        });
+        assert!(opened, "clicking the chip never opened the values");
+        assert_eq!(
+            menu(&mut h),
+            Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
+            "every value, not just those matching the literal"
+        );
+        let shot = scratch_dir("shot").join("value-chip-open.png");
+        h.screenshot(window, &shot);
+        eprintln!("value chip menu screenshot: {}", shot.display());
+
+        h.press(window, "enter");
+        let written = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(5)\n"))
+        });
+        assert!(
+            written,
+            "the pick replaces the literal: {:?}",
             h.read(|cx| editor.read(cx).value().to_string())
         );
     }

@@ -859,7 +859,7 @@ impl ContinuousView {
     }
 
     /// Re-read every section's knot and stitch lines for its gutter's ▶,
-    /// and its fold candidates.
+    /// its fold candidates and its value chips.
     fn refresh_play_lines(&mut self, cx: &mut Context<Self>) {
         let editors: Vec<(String, Entity<EditorState>)> = self
             .editors
@@ -874,6 +874,7 @@ impl ContinuousView {
             if let Some(cell) = self.folds.borrow().get(&path).cloned() {
                 crate::document::request_folds(&self.project, &path, &editor, &cell, cx);
             }
+            crate::document::request_inlays(&self.project, &path, &editor, false, cx);
         }
     }
 
@@ -1651,6 +1652,7 @@ impl ContinuousView {
             // sink: a target is shown by scrolling the manuscript to it.
             let origin = cx.entity().entity_id();
             crate::document::install_language_providers(&mut state, &weak, key.clone(), origin);
+            crate::document::install_value_picker(&mut state, weak.clone(), key.clone(), cx);
             let navigate: crate::navigation::Navigate = Rc::new(move |path, span, _window, cx| {
                 let _ = manuscript.update(cx, |this, cx| this.reveal_span(path, span, cx));
             });
@@ -1670,6 +1672,8 @@ impl ContinuousView {
         if let Some(cell) = folds.borrow().get(path).cloned() {
             crate::document::request_folds(project, path, &state, &cell, cx);
         }
+        // Its value chips; the manuscript is prose, so no parameter hints.
+        crate::document::request_inlays(project, path, &state, false, cx);
         // A fold or an unfold changes the rows the section shows, and its
         // height has to follow; watched as a count, so a caret blink or a
         // keystroke that moves no row costs the manuscript nothing.

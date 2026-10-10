@@ -200,6 +200,7 @@ impl Document {
                     path: path.clone(),
                     origin,
                 }));
+                install_value_picker(&mut state, project.downgrade(), path.clone(), cx);
                 // Navigation shows a target by raising an event: a tab is
                 // the host's to open, not the document's.
                 let me = this_document.clone();
@@ -605,43 +606,123 @@ impl Document {
         // computing them for every file on every keystroke would be
         // O(project) for the sake of files nobody has open. The config has
         // none to ask for.
-        if self.factory.is_none()
-            || !brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints
-        {
+        if self.factory.is_none() {
             self.editor
                 .update(cx, |state, cx| state.set_inlays(Vec::new(), cx));
             return;
         }
-        let query = self.project.read(cx).query(
-            QueryKind::InlayHints {
-                path: self.path.to_string(),
+        let hints = brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints;
+        request_inlays(&self.project, &self.path, &self.editor, hints, cx);
+    }
+}
+
+/// Ask for `path`'s inlays and put them on `editor`: a value chip on each
+/// literal argument the host manifest labels — always, since it is a
+/// widget — and, when `hints` is on, the parameter and type hints.
+pub(crate) fn request_inlays(
+    project: &Entity<Project>,
+    path: &str,
+    editor: &Entity<EditorState>,
+    hints: bool,
+    cx: &mut App,
+) {
+    let query = project.read(cx).query(
+        QueryKind::InlayHints {
+            path: path.to_owned(),
+        },
+        cx,
+    );
+    let editor = editor.clone();
+    let hint_style = gpui::HighlightStyle {
+        color: Some(cx.theme().muted_foreground),
+        background_color: Some(cx.theme().muted.opacity(0.7)),
+        ..Default::default()
+    };
+    let chip_style = gpui::HighlightStyle {
+        color: Some(cx.theme().accent_foreground),
+        background_color: Some(cx.theme().accent),
+        ..Default::default()
+    };
+    cx.spawn(async move |cx| {
+        let Ok(QueryResult::InlayHints(found)) = query.await else {
+            return;
+        };
+        let mut inlays = Vec::new();
+        for h in found {
+            if h.value_chip {
+                // A gap, then the chip: the inlay has no margin of its own.
+                inlays.push(Inlay {
+                    offset: h.offset as usize,
+                    text: " ".into(),
+                    style: gpui::HighlightStyle::default(),
+                    swatch: None,
+                });
+                inlays.push(Inlay {
+                    offset: h.offset as usize,
+                    text: format!(" {} \u{25be} ", h.label).into(),
+                    style: chip_style,
+                    swatch: None,
+                });
+            } else if hints {
+                inlays.push(Inlay {
+                    offset: h.offset as usize,
+                    text: h.label.into(),
+                    style: hint_style,
+                    swatch: None,
+                });
+            }
+        }
+        editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
+    })
+    .detach();
+}
+
+/// A click on an inlay opens the values the host manifest offers for the
+/// argument it sits on (`QueryKind::ArgumentValues`) in the completion
+/// menu, at that argument; picking one replaces the whole literal. An
+/// argument with no values answers nothing, and the click does nothing.
+pub(crate) fn install_value_picker(
+    state: &mut EditorState,
+    project: WeakEntity<Project>,
+    path: SharedString,
+    cx: &mut Context<EditorState>,
+) {
+    let editor = cx.weak_entity();
+    state.on_inlay_click(move |offset, window, cx| {
+        let Some(project) = project.upgrade() else {
+            return;
+        };
+        let query = project.read(cx).query(
+            QueryKind::ArgumentValues {
+                path: path.to_string(),
+                offset: u32::try_from(offset).unwrap_or(u32::MAX),
             },
             cx,
         );
-        let editor = self.editor.clone();
-        let hint_color = cx.theme().muted_foreground;
-        let hint_bg = cx.theme().muted.opacity(0.7);
-        cx.spawn(async move |_, cx| {
-            let Ok(QueryResult::InlayHints(hints)) = query.await else {
-                return;
-            };
-            let inlays: Vec<Inlay> = hints
-                .into_iter()
-                .map(|h| Inlay {
-                    offset: h.offset as usize,
-                    text: h.label.into(),
-                    style: gpui::HighlightStyle {
-                        color: Some(hint_color),
-                        background_color: Some(hint_bg),
-                        ..Default::default()
-                    },
-                    swatch: None,
-                })
-                .collect();
-            editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
-        })
-        .detach();
-    }
+        let editor = editor.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let Ok(QueryResult::Completions(values)) = query.await else {
+                    return;
+                };
+                if values.is_empty() {
+                    return;
+                }
+                let _ = editor.update_in(cx, |state, window, cx| {
+                    let text = state.value().to_string();
+                    let index = LineIndex::new(&text);
+                    let start = values[0]
+                        .replace
+                        .as_ref()
+                        .map_or(offset, |(_, range)| range.start as usize);
+                    state.focus(window, cx);
+                    state.set_selected_range(offset..offset, cx);
+                    let items = values.iter().map(|v| completion_item(v, &index)).collect();
+                    state.present_completion_items(start, "", items, cx);
+                });
+            })
+            .detach();
+    });
 }
 
 /// Tell the project a file's prose lints, so Problems lists them beside
