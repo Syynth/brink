@@ -561,11 +561,7 @@ impl ProjectConfig {
     /// `None` when the speaker is not in the cast or has no valid colour.
     #[must_use]
     pub fn cast_color(&self, speaker: &str) -> Option<&str> {
-        let speaker = speaker.to_lowercase();
-        self.cast
-            .iter()
-            .find(|m| m.name.to_lowercase() == speaker)
-            .and_then(|m| m.color.as_deref())
+        cast_color(&self.cast, speaker)
     }
 
     /// The effective `[fix]` policy for `code` (`docs/autofix-spec.md` §6,
@@ -1188,6 +1184,17 @@ fn parse_cast_table(
         cast.push(member);
     }
     Ok(cast)
+}
+
+/// The colour `cast` gives `speaker`, matching names ignoring case — the
+/// one matching rule, for callers that keep the cast apart from the rest of
+/// the config (the studios carry it to their Players on its own).
+#[must_use]
+pub fn cast_color<'a>(cast: &'a [CastMember], speaker: &str) -> Option<&'a str> {
+    let speaker = speaker.to_lowercase();
+    cast.iter()
+        .find(|m| m.name.to_lowercase() == speaker)
+        .and_then(|m| m.color.as_deref())
 }
 
 /// A `[cast]` colour as written, normalised to lowercase `#rrggbb`: `#rgb`

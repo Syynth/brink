@@ -165,6 +165,8 @@ pub struct Project {
     entry: Option<String>,
     /// `[project] name`, from the config as last applied.
     name: Option<String>,
+    /// `[cast]`, from the config as last applied.
+    cast: Vec<brink_project_config::CastMember>,
     drafts: BTreeSet<String>,
     /// Per-glob attribution for `[project] drafts`, from the last analysis.
     draft_globs: Vec<DraftGlob>,
@@ -371,6 +373,7 @@ impl Project {
             saved: BTreeMap::new(),
             entry: None,
             name: None,
+            cast: Vec::new(),
             drafts: BTreeSet::new(),
             draft_globs: Vec::new(),
             drafts_known: false,
@@ -439,6 +442,7 @@ impl Project {
                     self.files = opened.files;
                     self.entry = opened.entry;
                     self.name = opened.name;
+                    self.cast = opened.cast;
                     // Read beside the project, never through the session:
                     // `.json` is not a source, and this is presentation.
                     self.binder_order = std::fs::read_to_string(self.root.join(binder_order::PATH))
@@ -481,6 +485,7 @@ impl Project {
                 // The config can move the entry between analyses.
                 self.entry = analyzed.entry;
                 self.name = analyzed.name;
+                self.cast = analyzed.cast;
                 self.warnings = analyzed.config_warnings;
                 self.analyzed = true;
                 self.last_analyze_ms = analyzed.elapsed_ms;
@@ -1177,6 +1182,20 @@ impl Project {
     #[must_use]
     pub fn entry(&self) -> Option<&str> {
         self.entry.as_deref()
+    }
+
+    /// The `[cast]` colour (`#rrggbb`) for `speaker`, matched ignoring case;
+    /// `None` leaves the Player's automatic colour (decision log
+    /// 2026-10-10).
+    #[must_use]
+    pub fn cast_color(&self, speaker: &str) -> Option<&str> {
+        brink_project_config::cast_color(&self.cast, speaker)
+    }
+
+    /// `[cast]` as applied: every declared speaker, in name order.
+    #[must_use]
+    pub fn cast(&self) -> &[brink_project_config::CastMember] {
+        &self.cast
     }
 
     /// What the studio calls this project: its `brink.toml`'s `[project]

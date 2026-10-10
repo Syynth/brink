@@ -3035,6 +3035,35 @@ mod modes_driven {
         h.read(|cx| studio.read(cx).workspace.read(cx).editor_view(cx))
     }
 
+    /// `[cast]` colours a speaker in the Player, matched ignoring case;
+    /// a speaker it does not list keeps the automatic colour.
+    #[test]
+    fn the_player_draws_a_cast_speaker_in_the_cast_colour() {
+        let dir = scratch_dir("cast");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"main.ink\"\n\n[cast.Mara]\ncolor = \"#d97757\"\n",
+        )
+        .expect("writing the config");
+        std::fs::write(dir.join("main.ink"), "Hello.\n-> END\n").expect("writing the story");
+        let mut h = Harness::new();
+        let window = h.open(&dir.join("brink.toml"));
+        let studio = h.studio(window).expect("open");
+        let (mara, jonah, automatic) = h.read(|cx| {
+            let player = studio.read(cx).player.read(cx);
+            (
+                player.speaker_colour("MARA", cx),
+                player.speaker_colour("Jonah", cx),
+                super::player::Player::automatic_colour("Jonah", cx),
+            )
+        });
+        assert_eq!(
+            mara,
+            gpui::Hsla::from(gpui::Rgba::try_from("#d97757").expect("a colour"))
+        );
+        assert_eq!(jonah, automatic, "not in the cast: the automatic colour");
+    }
+
     /// `[project] name` titles the window, an edit to `brink.toml`
     /// renames it live, and removing the key brings the folder back.
     #[test]
