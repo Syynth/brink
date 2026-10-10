@@ -6079,3 +6079,21 @@
 - **SCOPE:** minor/local
 - **WHAT:** The manuscript bracket that marks a hovered Player choice runs the height of the choice's whole block: the choice line and everything downstream of it (the outline's choice scope, trailing blank lines left off), not the choice line alone. A story line's bracket still covers only its own lines.
 - **WHY:** Maintainer: make the choice bracket "the height of the entire container that's downstream of the choice, not just the choice line itself". The block is what picking the choice plays, and the hover already scrolls that same block into view.
+
+## Speaker colours: `[cast]` in brink.toml, one table per speaker, edited in Settings ▸ Cast
+- **WHEN:** 2026-10-10
+- **PROJECT:** brink
+- **SYSTEM:** brink-project-config, brink-gpui, brink-studio
+- **SCOPE:** moderate
+- **WHAT:** An author picks the colour a speaker's cue is drawn in, through a new top-level `[cast]` table in `brink.toml` with one sub-table per speaker:
+  ```toml
+  [cast.Mara]
+  color = "#d97757"
+  ```
+  - **Names are spelled out.** A cast name matches a cue's speaker **ignoring case**, so `Mara` covers a screenplay's `MARA` as well as `@Mara:`. Matching by pattern or regex is wanted later, and the table-per-speaker shape leaves room for it beside the names; it is not built.
+  - **Any colour.** `color` is a hex colour, `#rgb` or `#rrggbb`, normalised to lowercase `#rrggbb`. One colour serves both the light and dark themes.
+  - **A speaker the cast does not list keeps the Player's automatic colour**, so a cast can list only the speakers the author cares about.
+  - **Mistakes warn and never fail.** An entry that is not a table, a colour that is not hex, an unknown key, or two names that differ only in case is a warning on `brink.toml`, and the rest of the config still applies. Only a `cast` that is not a table at all is an error, as for every section.
+  - **Surfaces:** the Player in the native (gpui) studio and in the web and desktop studios, plus the web Conventions preview's cue. The editor's highlighting of cue lines does **not** follow the cast colour for now.
+  - **Settings ▸ Project ▸ Cast** edits the table in both the gpui and web studios: a colour picker and a remove button per declared speaker, and a row that adds one. Edits keep the file's comments and key order.
+- **WHY:** The maintainer asked for authored speaker colours (#3504) and chose these options on 2026-10-10. The location is `brink.toml`; `[dialogue]` was ruled out because its one-line form (`dialogue = "dialect.json"`) cannot also hold a sub-table. One table per speaker was chosen over `name = "colour"` pairs so that later per-speaker settings and pattern rows fit without a reshape. Matching ignoring case follows from cue styles that capitalise names. The editor was left alone deliberately, for now.
