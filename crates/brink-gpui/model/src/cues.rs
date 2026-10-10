@@ -30,6 +30,46 @@ pub struct CueLine {
     /// Absolute byte spans of the kind's hidden geometry (the sigils).
     /// Empty for a chain-only kind such as `dialogue`.
     pub hidden: Vec<(u32, u32)>,
+    /// The line's index and its text as analysed: what puts the offsets
+    /// back on a text edited since (`rebase`), where an edit above the line
+    /// has moved it.
+    pub line: u32,
+    pub text: String,
+}
+
+/// `cues`, analysed against an earlier text, placed on `source` as it is
+/// now: each moves to its line's current start, and one whose line no
+/// longer reads as it did — edited, or shifted by a line added or removed
+/// above — is left out until the next analysis rather than styled at the
+/// wrong bytes.
+#[must_use]
+pub fn rebase(cues: &[CueLine], source: &str) -> Vec<CueLine> {
+    let starts: Vec<usize> = std::iter::once(0)
+        .chain(source.match_indices('\n').map(|(i, _)| i + 1))
+        .collect();
+    cues.iter()
+        .filter_map(|cue| {
+            let start = *starts.get(cue.line as usize)?;
+            let end = start + cue.text.len();
+            let rest = source.get(end..)?;
+            let whole = rest.is_empty() || rest.starts_with('\n') || rest.starts_with("\r\n");
+            if source.get(start..end)? != cue.text || !whole {
+                return None;
+            }
+            let shift = i64::try_from(start).ok()? - i64::from(cue.start);
+            let at = |x: u32| u32::try_from(i64::from(x) + shift).ok();
+            Some(CueLine {
+                start: at(cue.start)?,
+                end: at(cue.end)?,
+                hidden: cue
+                    .hidden
+                    .iter()
+                    .map(|(s, e)| Some((at(*s)?, at(*e)?)))
+                    .collect::<Option<_>>()?,
+                ..cue.clone()
+            })
+        })
+        .collect()
 }
 
 /// Every dialect-classified line in `source`, from contexts already
@@ -52,6 +92,8 @@ pub fn from_contexts(source: &str, contexts: &[LineContext]) -> Vec<CueLine> {
         out.push(CueLine {
             start,
             end,
+            line: u32::try_from(i).unwrap_or(u32::MAX),
+            text: line.trim_end_matches(['\n', '\r']).to_owned(),
             kind: dialect.kind.clone(),
             hidden: dialect
                 .hidden_spans
@@ -76,6 +118,54 @@ pub fn cue_lines(session: &IdeSession, id: FileId) -> Vec<CueLine> {
         return Vec::new();
     };
     from_contexts(source, &contexts)
+}
+
+#[cfg(test)]
+mod rebase_tests {
+    use super::{CueLine, rebase};
+
+    fn action(source: &str, line: usize) -> CueLine {
+        let start = source
+            .split_inclusive('\n')
+            .take(line)
+            .map(str::len)
+            .sum::<usize>();
+        let text = source.lines().nth(line).expect("the line").to_owned();
+        let at = |x: usize| u32::try_from(x).expect("small");
+        let marker = start + text.find("> ").expect("a marker");
+        CueLine {
+            start: at(start),
+            end: at(start + text.len()),
+            kind: "action".to_owned(),
+            hidden: vec![(at(marker), at(marker + 2))],
+            line: at(line),
+            text,
+        }
+    }
+
+    /// An edit above a cue line moves its sigil with it; an edit to the
+    /// line itself, or one that moves it to another line, drops it until
+    /// the next analysis rather than fading the wrong bytes.
+    #[test]
+    fn a_cue_follows_an_edit_above_it_and_is_dropped_when_its_line_changes() {
+        let before = "~ f(\"x\")\n    > THE DOOR OPENS\n";
+        let cue = action(before, 1);
+
+        let after = "~ f(\"longer\")\n    > THE DOOR OPENS\n";
+        let moved = rebase(std::slice::from_ref(&cue), after);
+        assert_eq!(moved.len(), 1);
+        let (s, e) = moved[0].hidden[0];
+        assert_eq!(
+            &after[s as usize..e as usize],
+            "> ",
+            "the sigil, not two bytes past it"
+        );
+
+        let edited = "~ f(\"x\")\n    > THE DOOR SLAMS\n";
+        assert!(rebase(std::slice::from_ref(&cue), edited).is_empty());
+        let pushed = "\n~ f(\"x\")\n    > THE DOOR OPENS\n";
+        assert!(rebase(std::slice::from_ref(&cue), pushed).is_empty());
+    }
 }
 
 #[cfg(test)]

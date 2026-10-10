@@ -1439,7 +1439,10 @@ impl InputHighlighter for BrinkHighlighter {
         };
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
         self.muted_lines = muted_lines(&source);
-        self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
+        // Analysed against the text as it was; placed on the text as it is
+        // (an edit above a cue line would otherwise fade the wrong bytes).
+        self.cue_lines =
+            brink_gpui_model::cues::rebase(project.read(cx).cues_for(&self.path), &source);
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
         self.ink = brink_gpui_shell::theme::hsla(tokens.fg);
         self.cue_style = CueStyle {
@@ -2264,6 +2267,8 @@ mod tests {
             end: 9,
             kind: "character".to_owned(),
             hidden: vec![(0, 1), (6, 9)],
+            line: 0,
+            text: String::new(),
         };
         let runs = vec![
             (0..9, gpui::HighlightStyle::default()),
@@ -2300,18 +2305,24 @@ mod tests {
             end: 5,
             kind: "parenthetical".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let dialogue = CueLine {
             start: 6,
             end: 10,
             kind: "dialogue".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let unknown = CueLine {
             start: 11,
             end: 15,
             kind: "scene_heading".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let runs = vec![
             (0..5, gpui::HighlightStyle::default()),
