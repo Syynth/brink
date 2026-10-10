@@ -4,7 +4,7 @@
 
 [provenance]
 source = "probe"
-property = "both_roads_agree"
+property = "probe: #3413 against inkjs"
 oracle-source = "inkjs"
-issue = "#3558"
+issue = "#3413"
 

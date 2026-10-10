@@ -16,22 +16,22 @@
 //! (`tests::incremental_matches_batch_scan`). The reasoning that makes the
 //! incremental form exact:
 //!
-//! - Glue marking removes, for each `Glue`, the nearest preceding
-//!   not-yet-removed `Newline` that no content part separates it from. Within
-//!   a **run** — the parts between two content parts — that is a stack: every
-//!   `Glue` pops the most recent surviving `Newline` of the run, so the
-//!   survivors are always a *prefix* of the run's newlines, and the run's
-//!   first newline survives iff at least one newline of the run survives.
+//! - Glue marking removes, for each `Glue`, every not-yet-removed
+//!   `Newline` back to the nearest visible content part or `Tag` (issue
+//!   #3535: ink's glue walks back over blank lines). Within a **run** — the
+//!   parts between two such stopping points — a `Glue` therefore removes
+//!   all of the run's newlines before it, and every newline after it in the
+//!   run is in `after_glue` state.
 //! - The walk finds the first surviving `Newline` not in `after_glue` state
-//!   (`after_glue` is set by a `Glue` and cleared only by content). A run's
-//!   first newline is therefore the *only* one in that run the walk can ever
-//!   find, and only if no `Glue` of the run preceded it.
-//! - A found newline becomes final the moment content follows it: no later
-//!   `Glue` can reach past that content. Until then it is tentative, and is
-//!   dropped exactly when a `Glue` pops the run's newline count to zero.
-//! - The answer flips to `true` when content follows a found newline —
-//!   visible content, if the line the newline ended was itself blank
-//!   (issue #3533) — and cannot flip back while the cursor stays put.
+//!   (`after_glue` is set by a `Glue` and cleared only by visible content).
+//!   That newline is in the current run until the run ends, and a `Glue`
+//!   later in the same run removes it.
+//! - A found newline becomes final the moment its run ends: no later
+//!   `Glue` can reach past visible content or a `Tag`. Until then it is
+//!   tentative, and is dropped exactly when a `Glue` arrives in its run.
+//! - The answer flips to `true` when visible content follows a found
+//!   newline (blank content does not commit it, #3533 and #3535) and
+//!   cannot flip back while the cursor stays put.
 //!
 //! Anything other than an append to the transcript at or past the cursor —
 //! a cursor move, or `trim_function_end` removing parts — invalidates the
@@ -41,18 +41,16 @@
 
 use super::{OutputBuffer, OutputPart};
 
-/// The walk's candidate newline. `blank` says whether the line the newline
-/// ended held no visible content (the #3533 rule).
+/// The walk's candidate newline.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 enum Found {
     /// No surviving newline yet.
     #[default]
     None,
-    /// The current run's first newline: a `Glue` popping the run's newline
-    /// count to zero removes it.
-    Tentative { blank: bool },
-    /// Content has followed it; no `Glue` can reach it any more.
-    Final { blank: bool },
+    /// In the current run: a `Glue` in the same run removes it.
+    Tentative,
+    /// Its run has ended (a `Tag` followed it); no `Glue` can reach it.
+    Final,
 }
 
 /// Walk state over `transcript[cursor..]`. See the module doc.
@@ -60,14 +58,10 @@ enum Found {
 pub(crate) struct LineCompletion {
     /// The answer: a committed newline exists in the unread transcript.
     completed: bool,
-    /// A `Glue` has been seen since the last content part.
+    /// A `Glue` has been seen since the last visible content part.
     after_glue: bool,
-    /// Visible content has been seen before the found newline.
-    line_visible: bool,
     /// The found newline, if any.
     found: Found,
-    /// Surviving (not glue-popped) newlines in the current run.
-    run_newlines: usize,
 }
 
 impl LineCompletion {
@@ -76,42 +70,24 @@ impl LineCompletion {
         if self.completed {
             return;
         }
-        if part.is_content() {
-            match self.found {
-                Found::Tentative { blank } | Found::Final { blank } => {
-                    if !blank || part.is_visible() {
-                        self.completed = true;
-                    }
-                    self.found = Found::Final { blank };
-                }
-                Found::None => {
-                    if part.is_visible() {
-                        self.line_visible = true;
-                    }
-                }
+        if part.is_visible() {
+            if self.found != Found::None {
+                self.completed = true;
             }
             self.after_glue = false;
-            self.run_newlines = 0;
             return;
         }
         match part {
-            OutputPart::Newline => {
-                self.run_newlines += 1;
-                if !self.after_glue && self.found == Found::None {
-                    self.found = Found::Tentative {
-                        blank: !self.line_visible,
-                    };
-                }
+            OutputPart::Newline if !self.after_glue && self.found == Found::None => {
+                self.found = Found::Tentative;
             }
             OutputPart::Glue => {
                 self.after_glue = true;
-                if self.run_newlines > 0 {
-                    self.run_newlines -= 1;
-                    if self.run_newlines == 0 && matches!(self.found, Found::Tentative { .. }) {
-                        self.found = Found::None;
-                    }
+                if self.found == Found::Tentative {
+                    self.found = Found::None;
                 }
             }
+            OutputPart::Tag(_) if self.found == Found::Tentative => self.found = Found::Final,
             _ => {}
         }
     }
@@ -236,14 +212,16 @@ mod tests {
         }
     }
 
-    /// The four glue shapes the module doc reasons about, spelled out so a
+    /// The glue-run shapes the module doc reasons about, spelled out so a
     /// failure names the shape rather than a proptest seed.
     #[test]
-    fn glue_stack_shapes() {
+    fn glue_run_shapes() {
         let nl = OutputPart::Newline;
         let glue = OutputPart::Glue;
         let a = || OutputPart::Text("a".to_string());
-        let cases: [(&str, Vec<OutputPart>, bool); 6] = [
+        let blank = || OutputPart::ValueRef(Value::String(Arc::from("")));
+        let tag = || OutputPart::Tag("t".to_string());
+        let cases: [(&str, Vec<OutputPart>, bool); 10] = [
             ("plain line", alloc::vec![a(), nl.clone(), a()], true),
             (
                 "glue eats the newline",
@@ -256,12 +234,12 @@ mod tests {
                 false,
             ),
             (
-                "first of two newlines survives one glue",
+                "one glue eats every newline in the run",
                 alloc::vec![a(), nl.clone(), nl.clone(), glue.clone(), a()],
-                true,
+                false,
             ),
             (
-                "a later newline shields the first",
+                "a later newline does not shield the first",
                 alloc::vec![
                     a(),
                     nl.clone(),
@@ -271,11 +249,31 @@ mod tests {
                     glue.clone(),
                     a()
                 ],
+                false,
+            ),
+            (
+                "blank content does not commit the line (#3535)",
+                alloc::vec![a(), nl.clone(), blank()],
+                false,
+            ),
+            (
+                "glue walks back over blank content (#3535)",
+                alloc::vec![a(), nl.clone(), blank(), nl.clone(), glue.clone(), a()],
+                false,
+            ),
+            (
+                "visible content after blank content commits",
+                alloc::vec![a(), nl.clone(), blank(), nl.clone(), a()],
                 true,
             ),
             (
-                "two glues pop both",
-                alloc::vec![a(), nl.clone(), nl.clone(), glue.clone(), glue.clone(), a()],
+                "a tag shields the newline behind it",
+                alloc::vec![a(), nl.clone(), tag(), glue.clone(), a()],
+                true,
+            ),
+            (
+                "a tag alone does not commit",
+                alloc::vec![a(), nl.clone(), tag()],
                 false,
             ),
         ];

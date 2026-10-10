@@ -149,12 +149,17 @@ pub fn try_recognize(
     None
 }
 
-/// Strip leading and trailing `Glue` parts from content and merge interior
-/// `[Text, Glue, Text]` runs into a single `Text`.
+/// Strip leading and trailing `Glue` parts from content and drop interior
+/// glue that cannot do anything, merging `[Text, Glue, Text]` into one
+/// `Text`.
 ///
 /// Returns `(has_leading_glue, stripped_content, has_trailing_glue)`.
-/// Interior glue adjacent to non-text parts (Interpolation, `InlineConditional`,
-/// etc.) is NOT stripped — those prevent recognition.
+/// An interior glue is inert only when visible literal text comes before
+/// it in the interior: the runtime's glue walks back over whitespace and
+/// blank values to the previous line's newline (#3535), and visible text
+/// stops it. Any other interior glue is kept (issue #3695: `{e}<> b`, with
+/// `e` empty, joins the line before), which blocks recognition, so the
+/// line's parts and the glue are emitted as ops.
 pub fn strip_boundary_glue(content: &hir::Content) -> (bool, hir::Content, bool) {
     let parts = &content.parts;
 
@@ -174,35 +179,31 @@ pub fn strip_boundary_glue(content: &hir::Content) -> (bool, hir::Content, bool)
         end -= 1;
     }
 
-    // Merge interior [Text, Glue, Text] runs into single Text.
-    // Interior glue adjacent to non-Text parts is left alone (will prevent recognition).
+    // Drop inert interior glue, merging [Text, Glue, Text] into one Text.
+    // Any other interior glue is kept (it blocks recognition).
     let interior = &parts[start..end];
     let mut merged_parts: Vec<hir::ContentPart> = Vec::with_capacity(interior.len());
     for part in interior {
         match part {
             hir::ContentPart::Glue => {
-                // Check if both the previous and next parts are Text.
-                // At this point we only have the previous part available, so we
-                // check the previous. We'll merge when we see the next Text.
-                if matches!(merged_parts.last(), Some(hir::ContentPart::Text(_))) {
-                    // Tentatively mark as "pending merge" by pushing Glue.
-                    // We'll resolve this when the next part arrives.
-                    merged_parts.push(hir::ContentPart::Glue);
-                } else {
-                    // Glue adjacent to non-Text — keep it (will block recognition).
-                    merged_parts.push(hir::ContentPart::Glue);
-                }
+                // Pending: whether it is inert is settled when the next part
+                // arrives (the `Text` arm below).
+                merged_parts.push(hir::ContentPart::Glue);
             }
             hir::ContentPart::Text(s) => {
-                // If the previous part is Glue and the part before that is Text,
-                // merge all three into one Text.
-                if matches!(merged_parts.last(), Some(hir::ContentPart::Glue)) {
+                // A pending glue with visible text before it is inert: drop it
+                // and merge into the text before when there is one.
+                let inert_glue = matches!(merged_parts.last(), Some(hir::ContentPart::Glue))
+                    && merged_parts
+                        .iter()
+                        .any(|p| matches!(p, hir::ContentPart::Text(t) if !t.trim().is_empty()));
+                if inert_glue {
                     merged_parts.pop(); // remove the Glue
                     if let Some(hir::ContentPart::Text(prev)) = merged_parts.last_mut() {
                         prev.push_str(s);
                     } else {
-                        // Glue was at the start of interior (shouldn't happen after
-                        // boundary stripping, but be safe) — keep as separate text.
+                        // An interpolation sat between the visible text and the
+                        // glue (`x{e}<> b`) — keep this as separate text.
                         merged_parts.push(hir::ContentPart::Text(s.clone()));
                     }
                 } else {
