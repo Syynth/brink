@@ -69,6 +69,7 @@ pub struct FlowInstance {
     /// (#3679). A debug run skips the breakpoint at its starting position
     /// only when it is resuming from exactly this stop; a choice or a host
     /// jump starts a new run, so the breakpoint where it lands holds.
+    #[cfg(feature = "debug-hooks")]
     pub(crate) debug_hold: Option<(u64, u32, usize)>,
 }
 
@@ -154,6 +155,7 @@ impl FlowInstance {
             eval: None,
             enforce_visibility: true,
             pending_fault: None,
+            #[cfg(feature = "debug-hooks")]
             debug_hold: None,
         };
         // All existing construction paths default to the all-`World`
