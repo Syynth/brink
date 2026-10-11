@@ -11,8 +11,8 @@
 //!    and "Fix all safe in this file" when there is at least one.
 //! 2. **Identity**, when the word resolves to a definition: Go to
 //!    Definition, Find References, and Rename '…'… when it can be renamed.
-//! 3. **Context**: Open an `INCLUDE`'s file, Fold / Unfold, Show in TODOs
-//!    Panel on a `TODO:` line.
+//! 3. **Context**: Open an `INCLUDE`'s file, Reveal in Program Explorer,
+//!    Fold / Unfold, Show in TODOs Panel on a `TODO:` line.
 //! 4. **Text**: Cut, Copy, Paste · Select All · Hide / Show Gutters.
 //!
 //! The groups need the worker's answers — what the word resolves to, which
@@ -63,6 +63,19 @@ pub struct ToggleWatch {
     pub name: String,
 }
 
+/// Show the instructions a source line compiled to in the Program
+/// Explorer (#3657, the web's W9 item): the line as its file's path and
+/// byte span, and its 0-based number for a message when nothing compiled
+/// from it.
+#[derive(Clone, PartialEq, Debug, gpui::Action)]
+#[action(namespace = editor_menu, no_json)]
+pub struct RevealInstructions {
+    pub path: String,
+    pub start: u32,
+    pub end: u32,
+    pub line: u32,
+}
+
 /// Fold or unfold the region starting on a 0-based line of the focused
 /// editor.
 #[derive(Clone, PartialEq, Debug, gpui::Action)]
@@ -102,6 +115,10 @@ struct Click {
     offset: usize,
     line: usize,
     line_text: String,
+    /// The file, and the clicked line's byte span in it — what Reveal in
+    /// Program Explorer looks up.
+    path: String,
+    line_span: (usize, usize),
     has_selection: bool,
     fold: Option<bool>,
     todo: bool,
@@ -143,6 +160,8 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
             offset,
             line,
             line_text: text[line_start..line_end].to_owned(),
+            path: site.path.to_string(),
+            line_span: (line_start, line_end),
             has_selection: !state.selected_range().is_empty(),
             fold: state.fold_at(line),
             todo,
@@ -439,6 +458,19 @@ fn text_menu(
             },
         ));
     }
+    // Between the include and the fold, as the web orders them. Not on a
+    // blank line, which compiles to nothing.
+    if !click.line_text.trim().is_empty() {
+        entries.push(item(
+            "Reveal in Program Explorer",
+            RevealInstructions {
+                path: click.path.clone(),
+                start: u32::try_from(click.line_span.0).unwrap_or(u32::MAX),
+                end: u32::try_from(click.line_span.1).unwrap_or(u32::MAX),
+                line: u32::try_from(click.line).unwrap_or(u32::MAX),
+            },
+        ));
+    }
     if let Some(folded) = click.fold {
         entries.push(item(
             if folded { "Unfold" } else { "Fold" },
@@ -513,6 +545,8 @@ mod tests {
             offset: 0,
             line: 3,
             line_text: line_text.to_owned(),
+            path: "story.ink".to_owned(),
+            line_span: (40, 40 + line_text.len()),
             has_selection: false,
             fold: None,
             todo: false,
@@ -522,9 +556,10 @@ mod tests {
         }
     }
 
-    /// Plain prose: no identity, nothing on the line — only text editing.
+    /// Plain prose: no identity, nothing else on the line — its
+    /// instructions, then text editing.
     #[test]
-    fn plain_text_offers_only_the_text_group() {
+    fn plain_text_offers_its_instructions_and_the_text_group() {
         assert_eq!(
             labels(&text_menu(
                 &click("The lamp gutters."),
@@ -534,6 +569,8 @@ mod tests {
                 None
             )),
             [
+                "Reveal in Program Explorer",
+                "─",
                 "(Cut)",
                 "(Copy)",
                 "Paste",
@@ -552,10 +589,17 @@ mod tests {
         let mut c = click("The lamp gutters.");
         c.model_grammar = true;
         let menu = labels(&text_menu(&c, &[], false, None, None));
-        assert_eq!(menu[..2], ["(Check Grammar with Apple Intelligence)", "─"]);
+        assert_eq!(
+            menu[..3],
+            [
+                "Reveal in Program Explorer",
+                "(Check Grammar with Apple Intelligence)",
+                "─"
+            ]
+        );
         c.has_selection = true;
         let menu = labels(&text_menu(&c, &[], false, None, None));
-        assert_eq!(menu[0], "Check Grammar with Apple Intelligence");
+        assert_eq!(menu[1], "Check Grammar with Apple Intelligence");
     }
 
     /// The web's group order: fixes, identity, the line's own, text.
@@ -590,6 +634,7 @@ mod tests {
                 "Break on Write 'gold'",
                 "─",
                 "Open one.ink",
+                "Reveal in Program Explorer",
                 "Fold",
                 "Show in TODOs Panel",
                 "─",
@@ -601,6 +646,33 @@ mod tests {
                 "─",
                 "Hide Gutters"
             ]
+        );
+    }
+
+    /// A blank line compiled to nothing, so it offers no reveal; the item
+    /// carries the line's path and byte span.
+    #[test]
+    fn the_reveal_names_the_line_and_skips_a_blank_one() {
+        let blank = labels(&text_menu(&click("   "), &[], false, None, None));
+        assert!(!blank.iter().any(|l| l.contains("Reveal")), "{blank:?}");
+        let menu = text_menu(&click("The lamp gutters."), &[], false, None, None);
+        let action = match menu.first() {
+            Some(Entry::Item { action, .. }) => Some(action),
+            _ => None,
+        }
+        .expect("the reveal comes first");
+        let reveal = action
+            .as_any()
+            .downcast_ref::<RevealInstructions>()
+            .expect("a reveal");
+        assert_eq!(
+            reveal,
+            &RevealInstructions {
+                path: "story.ink".to_owned(),
+                start: 40,
+                end: 57,
+                line: 3
+            }
         );
     }
 

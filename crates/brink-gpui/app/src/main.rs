@@ -211,6 +211,9 @@ struct Studio {
     /// Compiled Output — the `.inkt` dump, a read-only Code-view tab on
     /// the same terms as the Player: made once, docked on first ask.
     compiled: Entity<CompiledOutputView>,
+    /// The Program tool window's explorer — kept to reveal a source line's
+    /// instructions in it from the editor menu.
+    program: Entity<ProgramExplorer>,
     /// Quick-open while it is up. Made per opening: its items are read
     /// when it opens, so there is nothing to keep alive between times.
     quick_open: Option<(Entity<QuickOpen>, Subscription)>,
@@ -996,6 +999,15 @@ impl Studio {
                 ProgramEvent::OpenCompiledOutput => {
                     this.open_compiled_output(&OpenCompiledOutput, window, cx);
                 }
+                ProgramEvent::NoInstructions { path, line } => {
+                    notify(
+                        Severity::Info,
+                        "program",
+                        format!("No compiled instructions for {path}:{}.", line + 1),
+                        window,
+                        cx,
+                    );
+                }
             },
         );
         let on_problem = cx.subscribe_in(
@@ -1162,6 +1174,7 @@ impl Studio {
             search,
             player,
             compiled,
+            program: program.clone(),
             graph,
             quick_open: None,
             caret: None,
@@ -2830,6 +2843,22 @@ impl Render for Studio {
                 }),
             )
             .on_action(cx.listener(Self::check_grammar))
+            .on_action(cx.listener(
+                |this, action: &editor_menu::RevealInstructions, window, cx| {
+                    this.workspace.update(cx, |workspace, cx| {
+                        workspace.open_tool_window("program", window, cx);
+                    });
+                    this.program.update(cx, |explorer, cx| {
+                        explorer.reveal_source(
+                            &action.path,
+                            action.start,
+                            action.end,
+                            action.line,
+                            cx,
+                        );
+                    });
+                },
+            ))
             .on_action(cx.listener(|this, _: &editor_menu::ShowTodos, window, cx| {
                 this.workspace.update(cx, |workspace, cx| {
                     workspace.open_tool_window("todos", window, cx);
@@ -4243,6 +4272,54 @@ mod modes_driven {
             .expect("writing the config");
         std::fs::write(dir.join("story.ink"), OUTLINE_STORY).expect("writing the story");
         dir
+    }
+
+    /// #3657: Reveal in Program Explorer, on a narrative line, opens the
+    /// Program view on the instructions that line compiled to; on a line
+    /// that compiled to nothing it says so instead.
+    #[test]
+    fn reveal_in_program_explorer_lands_on_the_lines_instructions() {
+        let mut h = Harness::new();
+        let window = h.open(&outline_project());
+        let studio = h.studio(window).expect("open");
+        let text = "Stalls everywhere.";
+        let start = OUTLINE_STORY.find(text).expect("the line");
+        let end = start + text.len();
+        let line = OUTLINE_STORY[..start].matches('\n').count();
+        let reveal =
+            |start: usize, end: usize, line: usize| crate::editor_menu::RevealInstructions {
+                path: "story.ink".to_owned(),
+                start: u32::try_from(start).expect("small"),
+                end: u32::try_from(end).expect("small"),
+                line: u32::try_from(line).expect("small"),
+            };
+        h.dispatch(window, reveal(start, end, line));
+        let landed =
+            |h: &mut Harness| h.read(|cx| studio.read(cx).program.read(cx).highlighted_source());
+        assert!(
+            h.settle_until(std::time::Duration::from_secs(30), |h| landed(h).is_some()),
+            "the Program view landed on an instruction"
+        );
+        let (path, at) = landed(&mut h).expect("just waited for it");
+        assert_eq!(path, "story.ink");
+        assert!(
+            (start..end).contains(&(at as usize)),
+            "the instruction came from the line: {at} not in {start}..{end}"
+        );
+
+        // A blank line compiled to nothing: a notice, not a jump.
+        let blank = OUTLINE_STORY.find("\n\n").expect("a blank line") + 1;
+        let blank_line = OUTLINE_STORY[..blank].matches('\n').count();
+        h.dispatch(window, reveal(blank, blank, blank_line));
+        assert!(
+            h.settle_until(std::time::Duration::from_secs(10), |h| {
+                notices(h).iter().any(|n| {
+                    n == &format!("No compiled instructions for story.ink:{}.", blank_line + 1)
+                })
+            }),
+            "{:?}",
+            notices(&mut h)
+        );
     }
 
     /// W4–W6: the sidebar opens from its toggle, and the caret's place —
