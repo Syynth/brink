@@ -1043,6 +1043,41 @@ fn main() {
         );
     }
 
+    // ── Issue #2992: a struct named inside a generic or function type ──
+
+    /// Goto-definition from `Guest` nested in `Array<Guest>`, `Map<string,
+    /// Guest>` and `fn(Guest): int` reaches the declaration from each. RED
+    /// before #2992: only a bare top-level annotation registered a
+    /// reference, so every one of these found nothing.
+    #[test]
+    fn goto_definition_on_a_struct_nested_in_a_generic_jumps_to_the_declaration() {
+        let src = "\
+struct Guest {
+  name: string
+}
+
+fn first(gs: Array<Guest>, by: Map<string, Guest>, f: fn(Guest): int): int {
+  return 0;
+}
+";
+        let mut session = IdeSession::new();
+        let file_id = session.update_and_analyze("test.brink", src.to_string());
+        let analysis = session.analysis().expect("analysis");
+        for needle in ["Array<Guest", "string, Guest", "fn(Guest"] {
+            let offset = src.find(needle).expect("fixture") + needle.len() - "Guest".len();
+            let pos = TextSize::from(u32::try_from(offset).expect("offset"));
+            let loc = goto_definition(session.db(), analysis, file_id, pos);
+            assert!(loc.is_some(), "no jump target from `{needle}`");
+            let loc = loc.expect("just asserted above");
+            let start: usize = u32::from(loc.range.start()) as usize;
+            assert_eq!(
+                start,
+                src.find("Guest").expect("declaration"),
+                "`{needle}` must jump to the `struct Guest` declaration"
+            );
+        }
+    }
+
     // ── Issue #2272: goto-def/find-references on a struct used only as a
     // parameter/return type ──────────────────────────────────────────────
 

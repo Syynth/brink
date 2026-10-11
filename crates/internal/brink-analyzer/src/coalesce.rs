@@ -589,7 +589,7 @@ fn step_shape(lhs: &Ty, rhs: &Ty) -> CoalesceShape {
 fn coalesce_error_message(err: &CoalesceError) -> String {
     match err {
         CoalesceError::LeftNotOption(ty) => format!(
-            "{}: `or`-coalescing requires an `Option[T]` left-hand side (docs/stdlib-spec.md \
+            "{}: `or`-coalescing requires an `Option<T>` left-hand side (docs/stdlib-spec.md \
              §1.6a) — found `{}`",
             DiagnosticCode::E066.title(),
             ty.display(),

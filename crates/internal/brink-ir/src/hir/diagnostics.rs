@@ -2137,6 +2137,14 @@ pub enum DiagnosticCode {
     /// inklecate lets through and only its runtime rejects is left to
     /// the runtime fault (`RuntimeError::InvalidBuiltinArgument`).
     E196,
+    /// A choice with an explicit but empty `[]` and no text before it (`*
+    /// [] some text`), matching inklecate's "Blank choice" warning (#3480).
+    /// The sibling of `E195`, which owns the case where the whole choice
+    /// is empty and has no divert; this fires whenever that one does not.
+    /// A space inside the brackets is content, as in ink, so `* [ ] text`
+    /// is clean; a comment there is elided, so `* [/* c */] text` is not.
+    /// `Warning`, `[lints]`-overridable: the story still compiles.
+    E197,
 }
 
 impl DiagnosticCode {
@@ -2345,6 +2353,7 @@ impl DiagnosticCode {
         Self::E194,
         Self::E195,
         Self::E196,
+        Self::E197,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2550,6 +2559,7 @@ impl DiagnosticCode {
             Self::E194 => "E194",
             Self::E195 => "E195",
             Self::E196 => "E196",
+            Self::E197 => "E197",
         }
     }
 
@@ -2710,7 +2720,7 @@ impl DiagnosticCode {
             Self::E114 => "protocol impl exceeds its protocol's effect contract",
             Self::E115 => "ill-formed protocol impl registration",
             Self::E116 => {
-                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
+                "an `Option<T>` has no truthiness — test `== none` / `== some(x)` in the condition"
             }
             Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
             Self::E118 => {
@@ -2767,7 +2777,7 @@ impl DiagnosticCode {
                 "the `as` binding must be the entire condition (no `&&`/`||` composition)"
             }
             Self::E146 => "retired (issue #1508) — choice-guard `as` bindings now lower for real",
-            Self::E147 => "the `as` binding requires an `Option[T]` condition",
+            Self::E147 => "the `as` binding requires an `Option<T>` condition",
             Self::E148 => "an `as` binding is immutable and cannot be assigned to",
             Self::E149 => "`remove` is map-only — did you mean `remove_at`?",
             Self::E150 => {
@@ -2886,6 +2896,7 @@ impl DiagnosticCode {
             Self::E194 => "a knot's temp is not visible from its stitches",
             Self::E195 => "choice has neither display text nor a divert",
             Self::E196 => "built-in function called with arguments ink rejects",
+            Self::E197 => "choice has an empty `[]` and no text before it",
         }
     }
 
@@ -2970,7 +2981,9 @@ impl DiagnosticCode {
             // this shape too (`InkParser_Choices.cs`), never rejects it —
             // so `Warning`-tier, `[lints]`-overridable like the rest of
             // this family.
-            | Self::E195 => Severity::Warning,
+            | Self::E195
+            // E197 (#3480): inklecate only warns on a blank `[]` choice.
+            | Self::E197 => Severity::Warning,
             // Issue #1674: the one code whose *default* is the `Info`
             // advisory tier rather than `Warning` — RULED "off or info by
             // default" (a single-shot project should not be nagged) while
@@ -3300,6 +3313,7 @@ impl DiagnosticCode {
             "E194" => Some(Self::E194),
             "E195" => Some(Self::E195),
             "E196" => Some(Self::E196),
+            "E197" => Some(Self::E197),
             _ => None,
         }
     }

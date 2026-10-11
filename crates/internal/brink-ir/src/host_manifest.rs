@@ -235,8 +235,14 @@ pub enum ValueSource {
 pub enum Constraint {
     /// One of a fixed set of string values.
     Enum { values: Vec<String> },
-    /// A string matching a regular expression.
-    Regex { pattern: String },
+    /// A string matching a regular expression. The whole string must match
+    /// (the pattern is anchored at both ends), in the Rust `regex` crate's
+    /// dialect: no lookaround or backreferences. A pattern that does not
+    /// compile is refused when the manifest is read (#3683).
+    Regex {
+        #[serde(deserialize_with = "deserialize_pattern")]
+        pattern: String,
+    },
     /// An integer within an inclusive `[min, max]` range (either end optional).
     Range {
         #[serde(default)]
@@ -244,6 +250,25 @@ pub enum Constraint {
         #[serde(default)]
         max: Option<i64>,
     },
+}
+
+/// Compile a [`Constraint::Regex`] pattern for a whole-string match: `abc`
+/// matches only `abc`, not `xabcx`.
+///
+/// # Errors
+///
+/// The `regex` crate's error when the pattern does not compile.
+pub fn anchored_regex(pattern: &str) -> Result<regex::Regex, regex::Error> {
+    regex::Regex::new(&format!("^(?:{pattern})$"))
+}
+
+/// Read a regex pattern, refusing one that does not compile, so a bad
+/// pattern fails the manifest load instead of passing every value.
+fn deserialize_pattern<'de, D: serde::Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let pattern = String::deserialize(d)?;
+    anchored_regex(&pattern)
+        .map_err(|e| serde::de::Error::custom(format!("invalid regex pattern `{pattern}`: {e}")))?;
+    Ok(pattern)
 }
 
 /// A reference to a type: either a base-type keyword (`string`, `int`,
@@ -424,6 +449,34 @@ mod value_source_tests {
         assert_eq!(items[0].label, "HarborGate");
         assert_eq!(items[0].detail.as_deref(), Some("Switch #5"));
         assert_eq!(items[1].detail, None);
+    }
+
+    /// #3683: a regex pattern that does not compile is refused when the
+    /// manifest is read, naming the pattern; a good one is kept.
+    #[test]
+    fn an_invalid_regex_pattern_fails_the_load() {
+        let manifest = |pattern: &str| {
+            format!(
+                r#"{{ "types": [ {{ "name": "color", "base": "string",
+                    "constraint": {{ "kind": "regex", "pattern": "{pattern}" }} }} ] }}"#
+            )
+        };
+        let err = serde_json::from_str::<super::HostManifest>(&manifest("(unclosed"))
+            .expect_err("an invalid pattern is refused");
+        assert!(
+            err.to_string()
+                .contains("invalid regex pattern `(unclosed`"),
+            "{err}"
+        );
+        assert!(serde_json::from_str::<super::HostManifest>(&manifest("#[0-9a-f]{6}")).is_ok());
+    }
+
+    /// The match is whole-string, not a search.
+    #[test]
+    fn anchored_regex_matches_the_whole_string() {
+        let re = super::anchored_regex("ab|cd").expect("compiles");
+        assert!(re.is_match("ab") && re.is_match("cd"));
+        assert!(!re.is_match("xab") && !re.is_match("abcd"));
     }
 
     #[test]

@@ -936,7 +936,12 @@ pub(super) fn try_claim(
     // branch left a param's capture group unpopulated), reporting a
     // diagnostic against a line that never actually lowered through this
     // handler at all.
-    let (slug, extra_tags) = element_extras(node, file_id, diags);
+    //
+    // Its diagnostics go to a scratch list until the attach-mode decline
+    // below has had its say: a declined claim reports only that decline's
+    // E129, not also an E172 for a tag it never lowered (#2399).
+    let mut extras_diags = Vec::new();
+    let (slug, extra_tags) = element_extras(node, file_id, &mut extras_diags);
 
     // Every field taken from `handler` past this point is copied/cloned out
     // — `handler` (and so the borrow of `elements.handlers` it holds) is
@@ -968,6 +973,7 @@ pub(super) fn try_claim(
     if is_attach && !extra_tags.is_empty() {
         return None;
     }
+    diags.append(&mut extras_diags);
     // Issue #2289: `decl.is_none()` is exactly "this handler was injected
     // from the project's configured conventions module, not declared in
     // this file" (see `ClaimHandler::decl`'s own doc) — copied out now for

@@ -491,12 +491,18 @@ stays lean; (2) the manifest is an explicit `analyze_with_options(files, opts)`
 argument (non-breaking: `analyze(files)` delegates with defaults), not a
 `ProjectDb` input.
 
+**Regex constraints** (#3683) are checked like enum and range ones: a string
+literal argument that does not match raises E042. The match is whole-string
+(the pattern is anchored at both ends, so `ab|cd` accepts `ab` and `cd` but not
+`xab`), in the Rust `regex` crate's dialect: no lookaround or backreferences,
+and its own `\d` and Unicode classes. A JavaScript reader of the same pattern
+should keep to that subset. A pattern that does not compile is refused when
+the manifest is read, as a malformed manifest naming the pattern.
+
 **Deferred to follow-ups:**
 
 - **insert-`EXTERNAL` code-action** — the `brink-ide` code-action query is
   currently source-only; making it manifest-aware is its own pass.
-- **Regex constraint enforcement** — `Constraint::Regex` is stored and surfaced
-  but not checked (no regex dependency at the MVP); enum + range are enforced.
 - **`Warning` severity level** — the flag is `Error`/`Off` at the MVP (the
   shared `Diagnostic` type has no per-instance severity; a `Warning` middle
   ground would need one).

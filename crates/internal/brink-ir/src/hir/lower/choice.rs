@@ -7,14 +7,13 @@ use brink_syntax::ast::{self, AstNode};
 
 use crate::provenance::{KindToken, NodeClass, Provenance};
 use crate::{
-    Block, Choice, Content, ContentPart, DiagnosticCode, Divert, Expr, InfixExpr, InfixOp, Stmt,
-    Tag,
+    Block, Choice, Content, ContentPart, DiagnosticCode, Expr, InfixExpr, InfixOp, Stmt, Tag,
 };
 
 use super::backbone::{BodyChild, classify_body_child};
 use super::content::{ContentAccumulator, DirectBackend, lower_content_node_children, lower_tags};
 use super::context::{LowerScope, LowerSink, Lowered};
-use super::divert::{LowerDivert, lower_divert_target_with_args};
+use super::divert::LowerDivert;
 use super::expr::LowerExpr;
 use super::helpers::{content_ends_with_glue, name_from_ident};
 
@@ -172,30 +171,25 @@ impl LowerChoice for ast::Choice {
             }
         }
 
-        let inline_divert = self.divert().and_then(|d| {
-            let target = d
-                .simple_divert()?
-                .targets()
-                .next()
-                .and_then(|t| lower_divert_target_with_args(&t, scope, sink))?;
-            Some(Divert {
-                ptr: Some(scope.prov(NodeClass::Divert, d.syntax())),
-                target,
-            })
-        });
-
+        // The choice line's own divert runs before the line's newline, in
+        // every form ink allows there: `-> k`, `->->`, `-> t ->` and
+        // `-> a -> b` (#3698). ink ends the line after the divert, so the
+        // newline is dead after `-> k` or `->->`, and after a tunnel call it
+        // comes once the tunnel returns. An empty `* ->` lowers to nothing.
         let tags = Vec::new();
         let has_empty_simple_divert = self.divert().is_some_and(|d| {
             d.simple_divert()
                 .is_some_and(|sd| sd.targets().next().is_none())
         });
-        let skip_divert = inline_divert.is_some() || has_empty_simple_divert;
-        let mut body = lower_choice_body(self, skip_divert, scope, sink);
+        let line_divert = if has_empty_simple_divert {
+            None
+        } else {
+            self.divert().and_then(|d| d.lower_divert(scope, sink).ok())
+        };
+        let mut body = lower_choice_body(self, self.divert().is_some(), scope, sink);
 
         let mut preamble = Vec::new();
-        if let Some(d) = inline_divert {
-            preamble.push(Stmt::Divert(d));
-        }
+        preamble.extend(line_divert);
         preamble.push(Stmt::EndOfLine);
         preamble.append(&mut body.stmts);
         body.stmts = preamble;
@@ -205,8 +199,8 @@ impl LowerChoice for ast::Choice {
         // on the choice line, and no real text in any of its three content
         // regions — matching inklecate's "Choice is completely empty"
         // warning (`InkParser/InkParser_Choices.cs:84-86`; line 90's
-        // "Blank choice" warning, guarded by a different condition on the
-        // `* [] some text` shape, is a deliberate non-goal here).
+        // "Blank choice" warning, on the `* [] some text` shape, is E197
+        // just below).
         //
         // A `(label)` or `{condition}` guard does NOT exempt a choice from
         // this check — the reference's own `emptyContent` computation
@@ -236,6 +230,14 @@ impl LowerChoice for ast::Choice {
             && content_region_is_textless(inner_content.as_ref())
         {
             sink.diagnose(self.syntax().text_range(), DiagnosticCode::E195);
+        } else if bracket_content.as_ref().is_some_and(|b| b.parts.is_empty())
+            && start_content.as_ref().is_none_or(|s| s.parts.is_empty())
+        {
+            // #3480: inklecate's "Blank choice" warning, the line-90
+            // sibling of the one above: an explicit `[]` with nothing in it
+            // and no text before it, whatever follows. Tags, a divert, a
+            // label or a guard do not exempt it (measured with inkjs).
+            sink.diagnose(self.syntax().text_range(), DiagnosticCode::E197);
         }
 
         Ok(Choice {

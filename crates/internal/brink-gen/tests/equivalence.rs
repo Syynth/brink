@@ -88,16 +88,26 @@ type SourcePredicate = fn(&str) -> bool;
 /// `KNOWN_DIVERGENCES` discipline (`inkjs_differential.rs`): a failing story
 /// that matches a predicate is counted and reported, not a failure; one
 /// that matches none is a new finding. Remove an entry with its fix.
-const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[(
-    // An ink VAR respells to a module-private native `var`, which the
-    // host cannot read — item 3 of the trace diverges. Needs a ruling
-    // (emit `pub var`?); until then every story with a global matches.
-    "#3517 ink VAR/LIST respelled as a private native var (host-readable globals)",
-    |src| {
-        src.lines()
-            .any(|l| l.starts_with("VAR ") || l.starts_with("LIST "))
-    },
-)];
+const RESPELL_KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
+    (
+        // An ink VAR respells to a module-private native `var`, which the
+        // host cannot read — item 3 of the trace diverges. Needs a ruling
+        // (emit `pub var`?); until then every story with a global matches.
+        "#3517 ink VAR/LIST respelled as a private native var (host-readable globals)",
+        |src| {
+            src.lines()
+                .any(|l| l.starts_with("VAR ") || l.starts_with("LIST "))
+        },
+    ),
+    (
+        // ink's sticky fallback `+ -> target` respells to native's
+        // once-only `else`: a choice set reached a second time takes the
+        // `+ ->` again in ink and ends the flow in native. Needs a ruling
+        // on native fallback stickiness.
+        "#3701 sticky fallback `+ ->` respelled as native's once-only `else`",
+        |src| src.lines().any(|l| l.trim_start().starts_with("+ ->")),
+    ),
+];
 
 fn fail(msg: String) -> TestCaseError {
     TestCaseError::fail(msg)

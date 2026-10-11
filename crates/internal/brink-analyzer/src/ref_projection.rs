@@ -410,7 +410,7 @@ impl SegmentShapeVisitor<'_> {
                                 "`.{}` is a field-access segment, but the statically-known \
                                  type here is {} — not a STRUCT",
                                 name.text,
-                                ty_label(other),
+                                other.display(),
                             ),
                         );
                         return;
@@ -426,7 +426,7 @@ impl SegmentShapeVisitor<'_> {
                             &format!(
                                 "`[…]` is an indexing segment, but the statically-known type \
                                  here is {} — not an array or map",
-                                ty_label(other),
+                                other.display(),
                             ),
                         );
                         return;
@@ -446,23 +446,6 @@ impl SegmentShapeVisitor<'_> {
             ),
             code: DiagnosticCode::E098,
         });
-    }
-}
-
-fn ty_label(ty: &Ty) -> String {
-    match ty {
-        Ty::Int => "int".to_string(),
-        Ty::Float => "float".to_string(),
-        Ty::Bool => "bool".to_string(),
-        Ty::String => "string".to_string(),
-        Ty::Divert => "divert".to_string(),
-        Ty::List(name) => format!("List<{name}>"),
-        Ty::Array(_) => "Array".to_string(),
-        Ty::Map(_, _) => "Map".to_string(),
-        Ty::Struct(name) => name.clone(),
-        Ty::Fn(..) => "fn".to_string(),
-        Ty::Unknown => "Unknown".to_string(),
-        _ => "?".to_string(),
     }
 }
 
@@ -633,6 +616,22 @@ mod tests {
         let diags = check_strict_src(&src);
         assert_eq!(diags.len(), 1, "{diags:?}");
         assert_eq!(diags[0].code, DiagnosticCode::E098);
+    }
+
+    /// #2755: the message names the type in full, as an annotation spells
+    /// it, rather than `?` or a bare `Map`.
+    #[test]
+    fn e098_names_the_whole_type() {
+        let src = "STRUCT Bag = #{counts: Map<string, int>}\n\
+                   VAR bag: Bag = Bag#{counts: #{\"a\": 1}}\n\
+                   === function heal(ref hp, k) ===\n~ hp = hp + k\n\n\
+                   === main ===\n~ heal(ref bag.counts.hp, 5)\n-> DONE\n";
+        let diags = check_strict_src(src);
+        assert_eq!(diags.len(), 1, "{diags:?}");
+        assert!(
+            diags[0].message.contains("type here is Map<string, int>"),
+            "{diags:?}"
+        );
     }
 
     #[test]

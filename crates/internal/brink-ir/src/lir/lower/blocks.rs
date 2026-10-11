@@ -467,8 +467,8 @@ pub(super) const FIELD_PROJECTION_MUTATOR_ARG: &str = "field-projection mutator 
 
 /// Issue #2185 refusal message for a postfix `++`/`--` whose target is a
 /// record-field projection (`~ a.count++`).
-pub(super) const FIELD_PROJECTION_POSTFIX_TARGET: &str = "field-projection increment/decrement target (`a.count++`) is not supported — copy the field \
-     into a temp, mutate it, and write it back";
+pub(super) const FIELD_PROJECTION_POSTFIX_TARGET: &str = "field-projection increment/decrement target (`a.count++`) is not supported — write \
+     `a.count += 1` (or `-= 1`) instead";
 
 /// Issue #2185 refusal message for the classic-ink *implicit*-by-ref calling
 /// convention handing a record-field projection to a `ref` parameter

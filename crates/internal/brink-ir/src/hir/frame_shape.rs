@@ -422,6 +422,11 @@ impl Analyzer {
             if let Some(e) = &choice.condition {
                 self.record_reads(e, pos);
             }
+            // A choice's `as` binding declares a local at the guard, in scope
+            // for the body, like `walk_if_stmt`'s (#2120).
+            if let Some(binding) = &choice.binding {
+                self.decls.push((binding.text.clone(), pos));
+            }
             for c in [
                 &choice.start_content,
                 &choice.bracket_content,

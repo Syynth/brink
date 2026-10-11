@@ -947,6 +947,27 @@ fn step_impl<R: crate::rng::StoryRng>(
             // return) or a DivertTarget (tunnel onwards override).
             let val = flow.pop_value()?;
 
+            // Only a tunnel frame can be returned from (#166). ink checks
+            // `CanPop(Tunnel)` and names what the top frame expected.
+            let top = flow
+                .current_thread()
+                .call_stack
+                .last()
+                .map(|f| f.frame_type);
+            match top {
+                Some(CallFrameType::Tunnel) => {}
+                Some(CallFrameType::Function | CallFrameType::FunctionEvalFromGame) => {
+                    return Err(RuntimeError::TunnelReturnWithoutTunnel {
+                        expected: "function return statement (~ return)",
+                    });
+                }
+                _ => {
+                    return Err(RuntimeError::TunnelReturnWithoutTunnel {
+                        expected: "end of flow (-> END or choice)",
+                    });
+                }
+            }
+
             // No Thread boundary frames to strip here any more (issue
             // #3561): `<-` pushes none, so the enclosing Tunnel frame a
             // `->->` inside a thread returns through is already on top.

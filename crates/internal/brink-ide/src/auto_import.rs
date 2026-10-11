@@ -20,7 +20,7 @@
 
 use brink_db::compute_relative_path;
 
-use crate::include_block::include_block_span;
+use crate::include_block::{include_block_span, is_header_line};
 use crate::line_convert::TextEdit;
 use crate::session::IdeSession;
 
@@ -143,20 +143,22 @@ fn insertion_byte(hir: &brink_ir::HirFile, source: &str) -> usize {
 }
 
 /// The 0-based line index of the first line that is **not** part of a leading
-/// `//` / `///` comment / blank-line block.
+/// header: `//` / `///` comments, `#@module` directives (#3465) and the blank
+/// lines between them. An INCLUDE inserted here lands after the header.
 fn leading_comment_block_end(source: &str) -> u32 {
-    let mut last_comment_plus_one = 0u32;
+    let mut last_header_plus_one = 0u32;
     for (line, raw) in source.lines().enumerate() {
         let line = u32::try_from(line).unwrap_or(u32::MAX);
-        let t = raw.trim_start();
-        if t.starts_with("//") {
-            last_comment_plus_one = line + 1;
-        } else if !t.is_empty() {
-            // First real, non-comment content terminates the leading block.
-            break;
+        if !raw.trim().is_empty() {
+            if is_header_line(raw) {
+                last_header_plus_one = line + 1;
+            } else {
+                // First real content terminates the leading block.
+                break;
+            }
         }
     }
-    last_comment_plus_one
+    last_header_plus_one
 }
 
 /// Byte offset of the start of 0-based `line`. Lines past the end clamp to the
@@ -225,6 +227,27 @@ mod tests {
         assert_eq!(
             after,
             "// Front matter.\n// Author.\nINCLUDE c.ink\n== hub ==\n"
+        );
+    }
+
+    /// #3465: a module-headed file keeps its `#@module` line first, both
+    /// when it already has an INCLUDE block and when it has none.
+    #[test]
+    fn a_module_header_stays_above_the_include_block() {
+        let src = "#@module town\nINCLUDE a.ink\n== hub ==\n";
+        let hir = hir_of(src);
+        let edit = include_insertion_edit(&hir, src, "c.ink");
+        assert_eq!(
+            applied(src, &edit),
+            "#@module town\nINCLUDE a.ink\nINCLUDE c.ink\n== hub ==\n"
+        );
+
+        let src = "// Front matter.\n#@module town\n\n== hub ==\n";
+        let hir = hir_of(src);
+        let edit = include_insertion_edit(&hir, src, "c.ink");
+        assert_eq!(
+            applied(src, &edit),
+            "// Front matter.\n#@module town\nINCLUDE c.ink\n\n== hub ==\n"
         );
     }
 

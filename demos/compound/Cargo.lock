@@ -1941,6 +1941,7 @@ dependencies = [
  "brink-ir",
  "brink-project-config",
  "brink-syntax",
+ "regex",
  "rowan",
  "serde",
  "tracing",

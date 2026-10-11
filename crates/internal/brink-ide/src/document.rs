@@ -156,6 +156,10 @@ pub fn workspace_symbols<'a>(
         }
     }
 
+    // Both the analyses (brink-lsp keeps them in a map keyed by project
+    // root) and each index's symbols are hash-ordered, so sort by position
+    // for a stable answer (#2208).
+    results.sort_by_key(|s| (s.file.0, s.range.start(), s.range.end()));
     results
 }
 
@@ -167,6 +171,27 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (hir, manifest, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
         document_symbols(&hir, &manifest, src)
+    }
+
+    /// #2208: the answer comes back in source order, whatever order the
+    /// symbol table's hash map yields.
+    #[test]
+    fn workspace_symbols_come_back_in_source_order() {
+        let mut src = String::new();
+        for i in 0..40 {
+            src.push_str("=== knot_");
+            src.push_str(&i.to_string());
+            src.push_str(" ===\ntext\n-> END\n");
+        }
+        let mut session = crate::session::IdeSession::new();
+        session.update_and_analyze("test.ink", src);
+        let analysis = session.analysis().expect("analysis");
+        let found = super::workspace_symbols(std::iter::once(analysis), "knot_");
+        assert_eq!(found.len(), 40);
+        let starts: Vec<_> = found.iter().map(|s| (s.file.0, s.range.start())).collect();
+        let mut sorted = starts.clone();
+        sorted.sort();
+        assert_eq!(starts, sorted);
     }
 
     #[test]
