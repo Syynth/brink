@@ -65,6 +65,11 @@ pub struct FlowInstance {
     /// the next `advance` returns it unless a host jump or choice has
     /// started a new run since.
     pub(crate) pending_fault: Option<(u64, RuntimeError)>,
+    /// Where the last debug verb stopped, as `(run, container, offset)`
+    /// (#3679). A debug run skips the breakpoint at its starting position
+    /// only when it is resuming from exactly this stop; a choice or a host
+    /// jump starts a new run, so the breakpoint where it lands holds.
+    pub(crate) debug_hold: Option<(u64, u32, usize)>,
 }
 
 /// Bookkeeping for an in-progress engine→ink function evaluation.
@@ -149,6 +154,7 @@ impl FlowInstance {
             eval: None,
             enforce_visibility: true,
             pending_fault: None,
+            debug_hold: None,
         };
         // All existing construction paths default to the all-`World`
         // policy (see `docs/scoped-flow-state-spec.md` "The policy") — this
