@@ -680,7 +680,7 @@ fn check_condition(
         file,
         range: expr_anchor(cond).unwrap_or(fallback_range),
         // `DiagnosticCode::E116.title()` already carries the full boilerplate
-        // ("an `Option[T]` has no truthiness — test `== none` / `==
+        // ("an `Option<T>` has no truthiness — test `== none` / `==
         // some(x)`") — this format! supplies only the diagnostic-specific
         // detail beyond that (the F27/spec citation), not a repeat of the
         // same sentence (issue #2774: it used to repeat verbatim right after
@@ -785,7 +785,7 @@ mod tests {
     }
 
     /// Issue #2774: `DiagnosticCode::E116.title()` already carries "an
-    /// `Option[T]` has no truthiness ... test `== none` / `== some(x)`", and
+    /// `Option<T>` has no truthiness ... test `== none` / `== some(x)`", and
     /// `check_condition`'s own `format!` used to repeat that exact phrase
     /// verbatim right after it, doubling the whole message. Reproduces on
     /// this same top-level positive-control fixture as

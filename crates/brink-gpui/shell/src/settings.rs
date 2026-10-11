@@ -177,6 +177,55 @@ pub struct Layout {
     /// `write.structure`, `write.player`), in logical pixels. A pane not
     /// here takes its own default.
     pub panes: BTreeMap<String, f32>,
+    /// Where Write mode's manuscript was scrolled (#3689), under the same
+    /// `scroll_root` rule as the per-file scrolls above.
+    pub manuscript: Option<ManuscriptAnchor>,
+}
+
+/// Where the manuscript is scrolled, said as text rather than pixels: a
+/// continuous view's heights move with wrap width, font size and folds,
+/// so a pixel offset reopens somewhere else (#3689).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ManuscriptAnchor {
+    /// The file at the top of the view, root-relative.
+    pub path: String,
+    /// The byte offset of the line at the top. Unused on the chapter break.
+    pub offset: usize,
+    /// Logical pixels below that line's top — or, on the chapter break,
+    /// below the top of the file's item.
+    pub into: f32,
+    /// The top of the view is in the file's chapter break, above its text.
+    pub on_break: bool,
+}
+
+impl ManuscriptAnchor {
+    fn to_json(&self) -> Value {
+        json!({
+            "path": self.path,
+            "offset": self.offset,
+            "into": self.into,
+            "break": self.on_break,
+        })
+    }
+
+    /// Read leniently: anything malformed reopens at the top, as a first
+    /// run does, rather than somewhere wrong.
+    fn from_json(value: &Value) -> Option<Self> {
+        let path = value.get("path")?.as_str().filter(|p| !p.is_empty())?;
+        let offset = usize::try_from(value.get("offset")?.as_u64()?).ok()?;
+        let into = value
+            .get("into")?
+            .as_f64()
+            .map(|n| n as f32)
+            .filter(|n| n.is_finite() && *n >= 0.)?;
+        let on_break = value.get("break").and_then(Value::as_bool).unwrap_or(false);
+        Some(Self {
+            path: path.to_owned(),
+            offset,
+            into,
+            on_break,
+        })
+    }
 }
 
 /// What the app knows about the open documents when a layout is saved.
@@ -193,6 +242,8 @@ pub struct Documents {
     pub open: Vec<String>,
     /// Which of them is showing.
     pub active: Option<String>,
+    /// Where Write mode's manuscript is scrolled, if it has a place yet.
+    pub manuscript: Option<ManuscriptAnchor>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq)]
@@ -222,6 +273,7 @@ impl Layout {
             "open_files": self.open_files,
             "active_file": self.active_file,
             "panes": self.panes,
+            "manuscript": self.manuscript.as_ref().map(ManuscriptAnchor::to_json),
         })
     }
 
@@ -303,6 +355,9 @@ impl Layout {
                     .collect()
             })
             .unwrap_or_default();
+        let manuscript = value
+            .get("manuscript")
+            .and_then(ManuscriptAnchor::from_json);
         Self {
             docks,
             editor_view,
@@ -311,6 +366,7 @@ impl Layout {
             open_files,
             active_file,
             panes,
+            manuscript,
         }
     }
 }
@@ -784,6 +840,35 @@ mod tests {
         s.layout.scroll.insert("story.ink".to_owned(), -252.0);
         s.layout.scroll.insert("scenes/act1.ink".to_owned(), 0.0);
         assert_eq!(AppSettings::from_json(&s.to_json()), s);
+    }
+
+    /// #3689: Write mode's place round-trips with its project, and a
+    /// malformed one reads as none — the top — rather than somewhere wrong.
+    #[test]
+    fn the_manuscripts_place_round_trips_and_garbage_is_no_place() {
+        let mut s = AppSettings::default();
+        s.layout.scroll_root = Some("/work/harbour".to_owned());
+        s.layout.manuscript = Some(ManuscriptAnchor {
+            path: "acts/one.ink".to_owned(),
+            offset: 1088,
+            into: 7.5,
+            on_break: false,
+        });
+        assert_eq!(AppSettings::from_json(&s.to_json()), s);
+        for bad in [
+            json!({ "path": "", "offset": 3, "into": 0.0 }),
+            json!({ "path": "a.ink", "offset": -1, "into": 0.0 }),
+            json!({ "path": "a.ink", "offset": 3, "into": -4.0 }),
+            json!({ "path": "a.ink", "into": 0.0 }),
+            json!("a.ink"),
+        ] {
+            let value = json!({ "layout": { "manuscript": bad } });
+            assert_eq!(
+                AppSettings::from_json(&value).layout.manuscript,
+                None,
+                "{bad}"
+            );
+        }
     }
 
     #[test]

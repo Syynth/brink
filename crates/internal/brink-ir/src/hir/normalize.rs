@@ -24,8 +24,9 @@
 //!   the shared-inline fragment path would break;
 //! * conditional-bearing and structural-branch (divert/glue/nested) lines
 //!   can never be whole-line variants, so they lift; the once→stopping
-//!   exhausted-branch synthesis stays reachable through exactly these
-//!   lines (e.g. a plain `{!…}` beside an inline conditional), as does
+//!   exhausted-branch synthesis stays reachable through these lines (e.g.
+//!   a plain `{!…}` beside an inline conditional) and through a
+//!   `shuffle|once` combo with text around it (#3413), as does
 //!   [`synthesized_else_branch`] through every lifted no-else conditional;
 //! * a cloned **stateful** alternative shares ONE visit-count state across
 //!   every branch (the #3275 mixed-line ruling) while each clone keeps its
@@ -270,12 +271,14 @@ fn try_lift_inline(
             // exhaustion. Add an extra "exhausted" branch with just prefix+suffix
             // and change to `stopping` so the last branch repeats forever.
             //
-            // This is only valid for plain `once` (sequential). `shuffle | once`
-            // would shuffle the extra branch into the pool — skip the conversion
-            // and fall back to the existing inline sequence lowering for that case.
-            let is_plain_once =
-                seq.kind.contains(SequenceType::ONCE) && !seq.kind.contains(SequenceType::SHUFFLE);
-            let kind = if is_plain_once && (!prefix.is_empty() || !suffix.is_empty()) {
+            // This holds for `shuffle | once` too (#3413): `shuffle stopping`
+            // shuffles all but its last branch and then sticks on it, so with
+            // the extra branch it draws exactly as `shuffle once` did over the
+            // original branches — the extra branch never enters the pool.
+            // (ink compiles `once` the same way: an extra empty element, then
+            // `stopping`.)
+            let is_once = seq.kind.contains(SequenceType::ONCE);
+            let kind = if is_once && (!prefix.is_empty() || !suffix.is_empty()) {
                 let mut exhausted = Block::default();
                 let salt = lift_salt(nonce_of(seq.container_id), seq.branches.len());
                 let (p, s, t) = salted_splice_sources(&prefix, &suffix, tags, salt);
@@ -1166,7 +1169,15 @@ mod tests {
         let Stmt::Sequence(seq) = &hir.root_content.stmts[0] else {
             panic!("expected Sequence");
         };
-        assert_eq!(seq.branches.len(), 3);
+        // The three arms plus the synthesized "exhausted" branch, and the
+        // kind turned `stopping` so that branch repeats once the shuffle
+        // has drawn the other three (#3413).
+        assert_eq!(seq.branches.len(), 4);
+        assert_eq!(seq.kind, SequenceType::SHUFFLE | SequenceType::STOPPING);
+        let Stmt::Content(exhausted) = &seq.branches[3].body.stmts[0] else {
+            panic!("expected Content in the exhausted branch");
+        };
+        assert_eq!(content_text(exhausted), "It's fine");
 
         // Branch 1 (empty) should still get prefix+suffix, seam-collapsed to
         // a single space — issue #1667: `extend_merging_text` now merges

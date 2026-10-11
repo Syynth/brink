@@ -1794,3 +1794,55 @@
   opacity: 0.45;
   cursor: default;
 }
+
+/* Settings ▸ Project ▸ Cast (decision log 2026-10-10): a colour well per
+   speaker, and a row that adds one. */
+.brink-studio .cast-empty,
+.brink-studio .cast-add-problem {
+  margin: 0;
+  font-size: var(--bs-font-small);
+}
+.brink-studio .cast-empty {
+  color: var(--bs-fg-muted);
+}
+.brink-studio .cast-add-problem {
+  color: var(--bs-error);
+}
+.brink-studio .cast-add {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+}
+.brink-studio .cast-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.brink-studio .cast-color {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  background: transparent;
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.brink-studio .cast-add-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 26px;
+  padding: 0 8px;
+  background: transparent;
+  color: var(--bs-fg);
+  border: 1px solid var(--bs-border);
+  border-radius: 4px;
+  font-size: var(--bs-font-body);
+}
+.brink-studio .cast-add-name:focus {
+  outline: none;
+  border-color: var(--bs-accent);
+}
+.brink-studio .cast-add-name[aria-invalid="true"] {
+  border-color: var(--bs-error);
+}

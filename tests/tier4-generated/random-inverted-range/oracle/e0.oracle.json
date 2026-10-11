@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "text": "first line\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "RUNTIME ERROR: 'story.ink' line 3: RANDOM was called with minimum as 5 and maximum as 2. The maximum must be larger"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "lo": 5
+    },
+    "turn_index": 0
+  }
+}

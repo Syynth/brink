@@ -96,3 +96,22 @@ fn an_untagged_flow_still_lowers_clean() {
     let diags = lower("flow market() {\n  Hi.\n}\n");
     assert!(diags.is_empty(), "unexpected diagnostics: {diags:?}");
 }
+
+/// #2399: an attach-mode cue carrying a trailing tag is declined (attach
+/// has no line for the tag to ride on), and the decline's E129 is the only
+/// thing reported. The tag is never lowered, so an `@`-leading one that
+/// would have raised E172 raises nothing of its own.
+#[test]
+fn a_declined_attach_claim_reports_only_its_decline() {
+    let diags = lower(
+        "struct Cue {\n  speaker: string,\n}\n\
+         @[convention(claims = \"^(?<name>[A-Z][A-Z '-]*)$\", attach = Cue, order = 10)]\n\
+         fn cue(name: string): Cue {\n  return Cue { speaker: name };\n}\n\
+         flow main() {\n  @VENDOR #@local\n  You shouldn't be here.\n}\n",
+    );
+    assert_eq!(e129_count(&diags), 1, "{diags:?}");
+    assert!(
+        !diags.iter().any(|d| d.code == DiagnosticCode::E172),
+        "no E172 for a tag the declined claim never lowered: {diags:?}"
+    );
+}

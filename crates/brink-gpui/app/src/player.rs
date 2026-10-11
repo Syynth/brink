@@ -110,6 +110,9 @@ enum Entry {
 
 pub struct Player {
     project: Entity<Project>,
+    /// The `[cast]` last drawn with, so an analysis that changed it (and
+    /// only one that did) repaints the transcript.
+    cast_seen: Vec<brink_project_config::CastMember>,
     entries: Vec<Entry>,
     /// Whether the Player is out (Write mode's pane, or Script's tab). Put
     /// away, following pauses and the manuscript keeps no NOW.
@@ -200,7 +203,15 @@ impl EventEmitter<PanelEvent> for Player {}
 
 impl Player {
     pub fn new(project: Entity<Project>, cx: &mut Context<Self>) -> Self {
-        let on_project = cx.subscribe(&project, |this, _, event: &ProjectEvent, cx| {
+        let on_project = cx.subscribe(&project, |this, project, event: &ProjectEvent, cx| {
+            // An edit to `[cast]` recolours the transcript at once.
+            if let ProjectEvent::Analyzed = event {
+                let cast = project.read(cx).cast();
+                if this.cast_seen.as_slice() != cast {
+                    this.cast_seen = cast.to_vec();
+                    cx.notify();
+                }
+            }
             if let ProjectEvent::SourceChanged { .. } = event {
                 // Editing pauses following: the author is reading their
                 // own text now, and having the editor jump under them
@@ -218,6 +229,7 @@ impl Player {
             .detach();
         let saves = all_saves(project.read(cx).root());
         Self {
+            cast_seen: project.read(cx).cast().to_vec(),
             project,
             entries: Vec::new(),
             arrivals: Vec::new(),
@@ -1164,9 +1176,19 @@ impl Player {
         }
     }
 
-    /// A speaker's colour: a theme colour picked by the name, so it is
-    /// the same speaker in the same colour for the whole session.
-    fn speaker_colour(speaker: &str, cx: &App) -> Hsla {
+    /// A speaker's colour: the one `[cast]` declares for them, else a
+    /// theme colour picked by the name, so it is the same speaker in the
+    /// same colour for the whole session.
+    pub(crate) fn speaker_colour(&self, speaker: &str, cx: &App) -> Hsla {
+        self.project
+            .read(cx)
+            .cast_color(speaker)
+            .and_then(|hex| gpui::Rgba::try_from(hex).ok())
+            .map_or_else(|| Self::automatic_colour(speaker, cx), Into::into)
+    }
+
+    /// The colour a speaker the cast does not list is drawn in.
+    pub(crate) fn automatic_colour(speaker: &str, cx: &App) -> Hsla {
         let t = brink_gpui_shell::theme::current(cx).tokens;
         let slots = [
             t.syn_number,
@@ -1243,7 +1265,7 @@ impl Player {
                 let mut row = row;
                 match &role {
                     Role::Speech { speaker, cue } => {
-                        let colour = Self::speaker_colour(speaker, cx);
+                        let colour = self.speaker_colour(speaker, cx);
                         row = row.child(
                             div()
                                 .absolute()

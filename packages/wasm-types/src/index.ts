@@ -2120,6 +2120,15 @@ export interface Templates {
   entries?: TemplateEntry[];
 }
 
+/** One `[cast]` speaker with a colour (decision log 2026-10-10), as
+ *  `EditorSession::configured_cast` reports it: the name as written in
+ *  `brink.toml`, the colour normalised to lowercase `#rrggbb`. A speaker
+ *  matches a cue's name ignoring case. */
+export interface CastColor {
+  name: string;
+  color: string;
+}
+
 /** A versioned, pure-JSON dialogue dialect. No functions, no `RegExp`
  *  objects — patterns are strings in the portable-regex subset. See
  *  docs/dialect-spec.md. */

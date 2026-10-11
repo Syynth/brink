@@ -122,7 +122,7 @@ pub fn validate_admission(
         // must be a recognized candidate here too, or E121 misfires on
         // every annotated global.
         if let Some(ann) = &v.annotation {
-            c.push_ref(ann.range());
+            c.push_type_refs(ann);
         }
         // File scope — no enclosing knot/stitch (mirrors root content above).
         c.walk_expr(&v.value, "");
@@ -131,7 +131,7 @@ pub fn validate_admission(
         c.check_range(cst.ptr.text_range());
         c.check_range(cst.name.range);
         if let Some(ann) = &cst.annotation {
-            c.push_ref(ann.range());
+            c.push_type_refs(ann);
         }
         c.walk_expr(&cst.value, "");
     }
@@ -149,7 +149,7 @@ pub fn validate_admission(
             c.check_range(f.name.range);
             // Issue #2249: a field's own TM-2 type is now a real
             // `RefKind::Type` reference too.
-            c.push_ref(f.ty.range());
+            c.push_type_refs(&f.ty);
         }
     }
     for e in &hir.externals {
@@ -172,13 +172,13 @@ pub fn validate_admission(
             // `VAR`/`CONST`/struct-field annotation carve-outs above
             // (issue #2249), or E121 misfires on every typed param.
             if let Some(ann) = &param.annotation {
-                c.push_ref(ann.range());
+                c.push_type_refs(ann);
             }
         }
         // Issue #2272: the knot/function-header return-type annotation —
         // same "now a real reference" treatment as a param's just above.
         if let Some(rt) = &knot.return_type {
-            c.push_ref(rt.range());
+            c.push_type_refs(rt);
         }
         c.walk_block(&knot.body, &knot.name.text);
         for stitch in &knot.stitches {
@@ -189,12 +189,12 @@ pub fn validate_admission(
                 // Issue #2272: same param-annotation carve-out as a
                 // knot-level param above.
                 if let Some(ann) = &param.annotation {
-                    c.push_ref(ann.range());
+                    c.push_type_refs(ann);
                 }
             }
             // Issue #2272: a stitch's own return-type annotation.
             if let Some(rt) = &stitch.return_type {
-                c.push_ref(rt.range());
+                c.push_type_refs(rt);
             }
             let prefix = format!("{}.{}", knot.name.text, stitch.name.text);
             c.walk_block(&stitch.body, &prefix);
@@ -253,6 +253,27 @@ impl Collector {
         self.ref_ranges.insert(range);
     }
 
+    /// A type annotation's range, and every type nested in it: the
+    /// `RefKind::Type` references `symbols::project`'s walk registers for
+    /// each named leaf at any depth (#2992) must all be candidates here.
+    fn push_type_refs(&mut self, ty: &brink_ir::TypeExpr) {
+        self.push_ref(ty.range());
+        match ty {
+            brink_ir::TypeExpr::Named { .. } => {}
+            brink_ir::TypeExpr::Generic { args, .. } => {
+                for arg in args {
+                    self.push_type_refs(arg);
+                }
+            }
+            brink_ir::TypeExpr::Fn { params, ret, .. } => {
+                for param in params {
+                    self.push_type_refs(param);
+                }
+                self.push_type_refs(ret);
+            }
+        }
+    }
+
     fn qualify_label(prefix: &str, label: &str) -> String {
         if prefix.is_empty() {
             label.to_string()
@@ -297,7 +318,7 @@ impl Collector {
                 // Issue #2249: `~ temp name: type`'s TM-2 annotation is now
                 // a real `RefKind::Type` reference.
                 if let Some(ann) = &t.annotation {
-                    self.push_ref(ann.range());
+                    self.push_type_refs(ann);
                 }
                 if let Some(e) = &t.value {
                     self.walk_expr(e, prefix);
@@ -504,7 +525,7 @@ impl Collector {
                 // Issue #2249: block-scoped `temp`'s TM-2 annotation, same
                 // as `Stmt::TempDecl`'s.
                 if let Some(ann) = &t.annotation {
-                    self.push_ref(ann.range());
+                    self.push_type_refs(ann);
                 }
                 if let Some(e) = &t.value {
                     self.walk_expr(e, "");
@@ -680,11 +701,11 @@ impl Collector {
                 // just above, or E121 misfires on every typed lambda.
                 for p in &l.params {
                     if let Some(ann) = &p.annotation {
-                        self.push_ref(ann.range());
+                        self.push_type_refs(ann);
                     }
                 }
                 if let Some(rt) = &l.return_type {
-                    self.push_ref(rt.range());
+                    self.push_type_refs(rt);
                 }
                 if let brink_ir::LambdaBody::Block { stmts, .. } = &l.body {
                     for s in stmts {

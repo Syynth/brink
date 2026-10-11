@@ -35,6 +35,7 @@ pub const CATEGORIES: &[(&str, &str)] = &[
     ("E034", "Choices"),
     ("E151", "Choices"),
     ("E195", "Choices"),
+    ("E197", "Choices"),
     // `~` lines and what they evaluate to.
     ("E014", "Logic"),
     ("E030", "Logic"),

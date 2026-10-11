@@ -16,6 +16,9 @@ brink-ir = { workspace = true }
 brink-project-config = { workspace = true }
 brink-format = { workspace = true }
 brink-syntax = { workspace = true }
+# Host-manifest regex constraints (#3683), compiled through
+# `brink_ir::anchored_regex`; already in the tree via brink-ir.
+regex.workspace = true
 rowan.workspace = true
 serde = { workspace = true }
 # `conventions_confinement_diagnostics`'s "pointer resolves to no real

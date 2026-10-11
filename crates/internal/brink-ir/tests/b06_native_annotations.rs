@@ -203,6 +203,19 @@ fn element_and_style_are_recognized_names_not_e111() {
     assert_eq!(codes(&diags), vec![DiagnosticCode::E161]);
 }
 
+/// #2181: the pre-#2164 `@[element(claims = …)]` spelling is still E159,
+/// but the message says where whole-line claiming moved.
+#[test]
+fn a_legacy_element_claims_clause_points_at_convention() {
+    let (_hir, diags) =
+        lower("@[element(claims = \"^(?<name>[A-Z]+)$\")]\nfn cue(name: string) {\n  return;\n}\n");
+    assert_eq!(codes(&diags), vec![DiagnosticCode::E159]);
+    assert!(
+        diags[0].message.contains("@[convention(claims"),
+        "{diags:?}"
+    );
+}
+
 /// A recognized name outside its placement is `E112`: `effects` on anything
 /// that is not a `flow`/`fn` head or with nothing following it at all, and
 /// the file-level-only `was` record anywhere but file level.

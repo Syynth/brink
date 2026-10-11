@@ -670,6 +670,34 @@ fn e042_external_argument_out_of_domain() {
     );
 }
 
+/// #3683: a regex constraint is checked too, as a whole-string match.
+#[test]
+fn e042_external_argument_does_not_match_its_pattern() {
+    let manifest = HostManifest {
+        markup: Vec::new(),
+        externals: vec![manifest_external("tint", &[("c", "color")])],
+        types: vec![SemanticTypeDef {
+            name: "color".to_string(),
+            base: BaseType::String,
+            constraint: Some(Constraint::Regex {
+                pattern: "#[0-9a-fA-F]{6}".to_string(),
+            }),
+            values: None,
+            widget: None,
+        }],
+    };
+    let options = AnalysisOptions {
+        host_manifest: Some(manifest),
+        ..AnalysisOptions::default()
+    };
+    assert_error_at(
+        "EXTERNAL tint(c)\n~ tint(\"#12345\")\nHi\n",
+        options,
+        DiagnosticCode::E042,
+        "tint(\"#12345\")",
+    );
+}
+
 // ─── Directives `#@…` (E044–E050) ────────────────────────────────────
 
 #[test]

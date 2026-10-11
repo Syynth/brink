@@ -332,32 +332,41 @@ impl Projector {
     /// name as an unresolved [`RefKind::Type`] reference (issue #2249): a
     /// struct field's declared type, or a `VAR`/`CONST`/`temp` annotation.
     ///
-    /// Only the `Named` leaf is registered. `Generic`/`Fn` annotations
-    /// (`List<L>`, `fn(T…): R`) never name a struct at their own top level
-    /// — their *head* (`List`, `fn`) is a fixed grammar keyword, never a
-    /// declared symbol — so there is nothing to resolve there; this
-    /// mirrors the two lowering sites this reference kind replaces
-    /// (`lir::lower::structs::record_global_annotation`,
-    /// `lir::lower::context::record_temp_annotation`), which likewise only
-    /// ever matched a bare `TypeExpr::Named`, never descended into a
-    /// generic's args. A future generic-element struct reference (e.g.
-    /// `Array<Cue>`) is out of this issue's scope.
+    /// Every `Named` leaf is registered, at any depth: `Guest` in `Guest`,
+    /// `Array<Guest>`, `Map<K, Guest>` and `fn(Guest): R` alike (#2992),
+    /// the same tree `annotations::check_one`'s E061 walks. A generic's or
+    /// function type's own head (`Array`, `fn`) is a grammar keyword, never
+    /// a declared symbol, so it registers nothing; a leaf that names no
+    /// struct (`int`, a list name) resolves to nothing, as it always has.
     fn walk_type_annotation(
         &mut self,
         ty: &crate::TypeExpr,
         knot: Option<&str>,
         stitch: Option<&str>,
     ) {
-        if let crate::TypeExpr::Named { name, range } = ty {
-            self.push_ref(
-                name.clone(),
-                *range,
-                RefKind::Type,
-                knot,
-                stitch,
-                None,
-                false,
-            );
+        match ty {
+            crate::TypeExpr::Named { name, range } => {
+                self.push_ref(
+                    name.clone(),
+                    *range,
+                    RefKind::Type,
+                    knot,
+                    stitch,
+                    None,
+                    false,
+                );
+            }
+            crate::TypeExpr::Generic { args, .. } => {
+                for arg in args {
+                    self.walk_type_annotation(arg, knot, stitch);
+                }
+            }
+            crate::TypeExpr::Fn { params, ret, .. } => {
+                for param in params {
+                    self.walk_type_annotation(param, knot, stitch);
+                }
+                self.walk_type_annotation(ret, knot, stitch);
+            }
         }
     }
 

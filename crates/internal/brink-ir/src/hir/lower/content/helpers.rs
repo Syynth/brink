@@ -18,16 +18,27 @@ pub fn lower_content_node_children(
 
     let mut parts = Vec::new();
     let mut ws_before = false;
+    // Whether the last node child was TEXT. Two TEXT nodes are adjacent
+    // only when trivia between them was elided — a mid-line comment
+    // (`Choice /* c */ text.`). That is one run of text to ink, which keeps
+    // the whitespace on both sides of the comment verbatim in choice text;
+    // as two parts, each part's edge whitespace became a spring and the
+    // two collapsed to one space (#2975).
+    let mut after_text = false;
     for child in node.children_with_tokens() {
         let rowan::NodeOrToken::Node(child_node) = child else {
             ws_before = child.kind() == SyntaxKind::WHITESPACE;
             continue;
         };
         let ws_before_this = std::mem::take(&mut ws_before);
+        let continues_text =
+            std::mem::replace(&mut after_text, child_node.kind() == SyntaxKind::TEXT);
         match child_node.kind() {
             SyntaxKind::TEXT => {
                 let text = child_node.text().to_string();
-                if !text.is_empty() {
+                if continues_text && let Some(ContentPart::Text(prev)) = parts.last_mut() {
+                    prev.push_str(&text);
+                } else if !text.is_empty() {
                     parts.push(ContentPart::Text(text));
                 }
             }

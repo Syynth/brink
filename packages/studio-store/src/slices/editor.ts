@@ -9,6 +9,7 @@ import type { DialogueDialect, FormGlyphMode, LineInfo } from "@brink-lang/edito
 import type { StudioState } from "../index.js";
 import { clampAppFontSize, clampEditorFontSize } from "@brink-lang/editor";
 import type { KeyHint } from "../types.js";
+import type { CastColor } from "@brink/wasm-types";
 
 export interface EditorSlice {
   cursor: { line: number; col: number };
@@ -21,6 +22,10 @@ export interface EditorSlice {
    *  with the SAME artifact the editor classifies with. */
   projectDialect: DialogueDialect | null;
   setProjectDialect(dialect: DialogueDialect | null): void;
+  /** `[cast]`'s speaker colours (decision log 2026-10-10); the Player
+   *  draws a listed speaker in theirs. */
+  projectCast: CastColor[];
+  setProjectCast(cast: CastColor[]): void;
   /** Inline argument-form glyph mode (Settings; applied live to all editors). */
   formGlyph: FormGlyphMode;
   /** Auto-open the Form on accepting a function completion (Settings). */
@@ -70,6 +75,7 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
   currentLineInfo: null,
   currentLineHints: [],
   projectDialect: null,
+  projectCast: [],
   formGlyph: "off",
   autoOpenForm: false,
   showGutters: true,
@@ -86,6 +92,9 @@ export const createEditorSlice: StateCreator<StudioState, [], [], EditorSlice> =
     set({ currentLineInfo: info, currentLineHints: hints });
   },
 
+  setProjectCast(cast) {
+    set({ projectCast: cast });
+  },
   setProjectDialect(dialect) {
     set({ projectDialect: dialect });
   },

@@ -87,6 +87,7 @@ import type {
   HostManifest,
   ValueItem,
   DialogueDialect,
+  CastColor,
   StepOutcome,
   SessionJournal,
   SessionLine,
@@ -770,6 +771,15 @@ export class EditorSessionHandle {
     const raw = this.session as { configured_warnings?: () => string };
     if (typeof raw.configured_warnings !== "function") return null;
     return JSON.parse(raw.configured_warnings()) as string[];
+  }
+
+  /** `[cast]`'s speaker colours (decision log 2026-10-10); `[]` when the
+   *  project declares none. Feature-detected like the dialect: a stub or an
+   *  older wasm build has no cast, which is the same as an empty one. */
+  getConfiguredCast(): CastColor[] {
+    const raw = this.session as { configured_cast?: () => string };
+    if (typeof raw.configured_cast !== "function") return [];
+    return JSON.parse(raw.configured_cast()) as CastColor[];
   }
 
   getConfiguredDialogueDialect(): DialogueDialect | null {

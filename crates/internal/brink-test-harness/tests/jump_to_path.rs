@@ -266,18 +266,11 @@ fn jump_after_end_reenters_story() {
 /// Jumping into a tunnel target is allowed (matching C#, where
 /// `ChoosePathString` happily enters a tunnel knot); the content plays,
 /// and the `->->` return then has no tunnel frame because the jump reset
-/// the callstack.
-///
-/// Divergence note: at that point the C# runtime raises a story error
-/// ("Found tunnel onwards statement (->->), when expected end of flow" —
-/// `Story.cs` `PopTunnel` handling, gated on `callStack.canPop`), whereas
-/// brink's `TunnelReturn` is currently lenient for *all* frame-less
-/// `->->`s — host jump or not — and completes the flow as `Done`. This
-/// test pins the existing brink behavior; tightening `TunnelReturn` to
-/// error like C# would be a VM-wide change outside the scope of a host
-/// jump API.
+/// the callstack. ink raises "Found tunnel onwards statement (->->), when
+/// expected end of flow" there, and so does brink (#166): the line before
+/// it is delivered first, then the next continue is the error.
 #[test]
-fn jump_into_tunnel_target_completes_on_frameless_return() {
+fn jump_into_tunnel_target_errors_on_frameless_return() {
     let (program, tables) = compile(
         "-> side ->\n\
          Back.\n\
@@ -291,17 +284,17 @@ fn jump_into_tunnel_target_completes_on_frameless_return() {
     // Normal play: the tunnel works.
     assert_eq!(run_to_yield(&mut story), "Side content.\nBack.\n");
 
-    // Host jump into the tunnel knot: content plays; the frameless `->->`
-    // ends the flow (brink leniency — C# would error here).
+    // Host jump into the tunnel knot: content plays, then the frameless
+    // `->->` is an error.
     story.choose_path_string("side").expect("jump into tunnel");
-    let lines = story.continue_maximally().expect("continue");
-    assert!(
-        matches!(lines.last(), Some(Step::Done)),
-        "frameless ->-> completes the flow, got {lines:?}"
-    );
+    let first = story.continue_single().expect("the line before the return");
+    assert_eq!(first.text(), "Side content.\n");
+    let err = story
+        .continue_single()
+        .expect_err("a frameless ->-> is an error");
     assert_eq!(
-        lines.iter().map(Step::text).collect::<String>(),
-        "Side content.\n"
+        err.to_string(),
+        "Found tunnel onwards statement (->->), when expected end of flow (-> END or choice)"
     );
 }
 

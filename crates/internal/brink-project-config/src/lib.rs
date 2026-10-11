@@ -515,6 +515,23 @@ pub struct ProjectConfig {
     /// `brink-environment`'s job (`load_host_manifest`), the one loader
     /// every producer shares.
     pub host_manifest: Option<String>,
+    /// `[cast]`: one entry per speaker the author has declared (decision log
+    /// 2026-10-10), in name order. Look a speaker up with
+    /// [`Self::cast_color`], which matches names ignoring case.
+    pub cast: Vec<CastMember>,
+}
+
+/// One `[cast.<name>]` table: how a speaker is presented. Today only the
+/// colour the Player renders the speaker's cue, rule and spine in.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CastMember {
+    /// The speaker's name as written in `brink.toml`. Matched against a
+    /// cue's speaker ignoring case, so `Mara` covers a screenplay's `MARA`.
+    pub name: String,
+    /// `color`, normalised to lowercase `#rrggbb` by [`normalize_color`].
+    /// `None` when unset or invalid (the latter with a warning); the Player
+    /// then falls back to its automatic colour for the name.
+    pub color: Option<String>,
 }
 
 impl ProjectConfig {
@@ -537,6 +554,14 @@ impl ProjectConfig {
             && self.prose_dictionary.is_empty()
             && self.dialogue.is_none()
             && self.host_manifest.is_none()
+            && self.cast.is_empty()
+    }
+
+    /// The colour `[cast]` gives `speaker`, matching names ignoring case.
+    /// `None` when the speaker is not in the cast or has no valid colour.
+    #[must_use]
+    pub fn cast_color(&self, speaker: &str) -> Option<&str> {
+        cast_color(&self.cast, speaker)
     }
 
     /// The effective `[fix]` policy for `code` (`docs/autofix-spec.md` §6,
@@ -814,6 +839,8 @@ pub fn parse_str_at(
             parse_fix_table(&path, value, &mut config)?;
         } else if key == "host" {
             parse_host_table(&path, value, &mut config, &mut warnings)?;
+        } else if key == "cast" {
+            config.cast = parse_cast_table(&path, value, &mut warnings)?;
         } else {
             warnings.push(ConfigWarning(format!(
                 "unknown top-level key `{key}` in {CONFIG_FILE_NAME} (ignored)"
@@ -1095,6 +1122,103 @@ fn parse_dialogue_element(
 /// (bevy-brink reads the same manifest file for its `effects`). Takes the
 /// raw value and checks its table shape itself, as [`parse_fix_table`]
 /// does, so [`parse_str_at`]'s dispatch stays one line per table.
+/// Parse `[cast]` (decision log 2026-10-10). Everything inside it WARNS
+/// rather than errors: the cast is presentation, and a typo in one colour
+/// must not fail the whole config and take the entry point down with it
+/// (the same call `[prose] dialect` and `indent` make).
+///
+/// # Errors
+/// [`ConfigError::NotATable`] when `cast` itself is not a table, like every
+/// other section.
+fn parse_cast_table(
+    path: &str,
+    value: &Value,
+    warnings: &mut Vec<ConfigWarning>,
+) -> Result<Vec<CastMember>, ConfigError> {
+    let Value::Table(table) = value else {
+        return Err(ConfigError::NotATable {
+            path: path.to_owned(),
+            key: "cast".to_owned(),
+            found: value_type_name(value),
+        });
+    };
+    let mut cast: Vec<CastMember> = Vec::new();
+    for (name, entry) in table {
+        let Value::Table(entry) = entry else {
+            warnings.push(ConfigWarning(format!(
+                "`cast.{name}` in {CONFIG_FILE_NAME} is {} (ignored) — expected a table, e.g. \
+                 `[cast.{name}]` with `color = \"#d97757\"`",
+                value_type_name(entry)
+            )));
+            continue;
+        };
+        if let Some(earlier) = cast
+            .iter()
+            .find(|m| m.name.to_lowercase() == name.to_lowercase())
+        {
+            warnings.push(ConfigWarning(format!(
+                "`cast.{name}` in {CONFIG_FILE_NAME} names the same speaker as `cast.{}` — \
+                 cast names match ignoring case, so this one is ignored",
+                earlier.name
+            )));
+            continue;
+        }
+        let mut member = CastMember {
+            name: name.clone(),
+            color: None,
+        };
+        for (key, value) in entry {
+            match key.as_str() {
+                "color" => match value.as_str().and_then(normalize_color) {
+                    Some(color) => member.color = Some(color),
+                    None => warnings.push(ConfigWarning(format!(
+                        "`cast.{name}.color` in {CONFIG_FILE_NAME} is not a colour (ignored) — \
+                         expected a hex colour such as \"#d97757\" or \"#d75\""
+                    ))),
+                },
+                _ => warnings.push(ConfigWarning(format!(
+                    "unknown key `cast.{name}.{key}` in {CONFIG_FILE_NAME} (ignored)"
+                ))),
+            }
+        }
+        cast.push(member);
+    }
+    Ok(cast)
+}
+
+/// The colour `cast` gives `speaker`, matching names ignoring case — the
+/// one matching rule, for callers that keep the cast apart from the rest of
+/// the config (the studios carry it to their Players on its own).
+#[must_use]
+pub fn cast_color<'a>(cast: &'a [CastMember], speaker: &str) -> Option<&'a str> {
+    let speaker = speaker.to_lowercase();
+    cast.iter()
+        .find(|m| m.name.to_lowercase() == speaker)
+        .and_then(|m| m.color.as_deref())
+}
+
+/// A `[cast]` colour as written, normalised to lowercase `#rrggbb`: `#rgb`
+/// and `#rrggbb` are accepted, case-insensitively; anything else is `None`.
+/// Public so a Settings form can validate what the author types with the
+/// rule the parser applies.
+#[must_use]
+pub fn normalize_color(text: &str) -> Option<String> {
+    let hex = text.trim().strip_prefix('#')?;
+    if !hex.chars().all(|c| c.is_ascii_hexdigit()) {
+        return None;
+    }
+    let hex = hex.to_ascii_lowercase();
+    match hex.len() {
+        6 => Some(format!("#{hex}")),
+        3 => Some(hex.chars().fold(String::from("#"), |mut out, c| {
+            out.push(c);
+            out.push(c);
+            out
+        })),
+        _ => None,
+    }
+}
+
 fn parse_host_table(
     path: &str,
     value: &Value,
@@ -2188,6 +2312,80 @@ mod tests {
     fn unset_entry_leaves_config_empty_by_itself() {
         let (config, _warnings) = parse_str("[project]\ndialect = \"brink\"\n").unwrap();
         assert_eq!(config.entry, None);
+    }
+
+    #[test]
+    fn cast_colours_are_normalised_and_looked_up_ignoring_case() {
+        let (config, warnings) =
+            parse_str("[cast.Mara]\ncolor = \"#D97757\"\n\n[cast.\"Old Tom\"]\ncolor = \"#5bf\"\n")
+                .unwrap();
+        assert!(warnings.is_empty(), "{warnings:?}");
+        assert!(!config.is_empty());
+        assert_eq!(config.cast_color("Mara"), Some("#d97757"));
+        assert_eq!(
+            config.cast_color("MARA"),
+            Some("#d97757"),
+            "screenplay caps"
+        );
+        assert_eq!(
+            config.cast_color("old tom"),
+            Some("#55bbff"),
+            "#rgb expands"
+        );
+        assert_eq!(config.cast_color("Jonah"), None, "not in the cast");
+    }
+
+    #[test]
+    fn a_bad_cast_entry_warns_and_never_fails_the_config() {
+        let (config, warnings) = parse_str(
+            "[project]\nentry = \"main.ink\"\n\n[cast]\nMara = \"#d97757\"\n\n\
+             [cast.Jonah]\ncolor = \"blue\"\nvoice = \"low\"\n\n[cast.TOM]\ncolor = \"#123\"\n\n\
+             [cast.Tom]\ncolor = \"#456\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            config.entry.as_deref(),
+            Some("main.ink"),
+            "the rest still applies"
+        );
+        assert_eq!(
+            config.cast_color("Mara"),
+            None,
+            "a bare string is not an entry"
+        );
+        assert_eq!(config.cast_color("Jonah"), None, "not a hex colour");
+        assert_eq!(
+            config.cast_color("tom"),
+            Some("#112233"),
+            "the first spelling wins"
+        );
+        let text: Vec<&str> = warnings.iter().map(|w| w.0.as_str()).collect();
+        assert_eq!(text.len(), 4, "{text:?}");
+        assert!(
+            text.iter()
+                .any(|w| w.contains("`cast.Mara`") && w.contains("expected a table"))
+        );
+        assert!(text.iter().any(|w| w.contains("`cast.Jonah.color`")));
+        assert!(text.iter().any(|w| w.contains("`cast.Jonah.voice`")));
+        assert!(
+            text.iter()
+                .any(|w| w.contains("`cast.Tom`") && w.contains("`cast.TOM`"))
+        );
+    }
+
+    #[test]
+    fn a_cast_that_is_not_a_table_is_an_error_like_every_section() {
+        let err = parse_str("cast = \"Mara\"\n").unwrap_err();
+        assert!(matches!(err, ConfigError::NotATable { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn colours_normalise_or_refuse() {
+        assert_eq!(normalize_color("#ABCDEF").as_deref(), Some("#abcdef"));
+        assert_eq!(normalize_color(" #abc ").as_deref(), Some("#aabbcc"));
+        for bad in ["abcdef", "#abcd", "#ggg", "red", "", "#", "#abcdef00"] {
+            assert_eq!(normalize_color(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

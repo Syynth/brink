@@ -47,6 +47,23 @@ pub enum ProgramEvent {
     /// The panel raises it rather than opening the tab itself — a tab is
     /// the host's to open, as it is for a navigation.
     OpenCompiledOutput,
+    /// "Reveal in Program Explorer" found nothing compiled from the line:
+    /// a comment, a blank, or code that folded away. The host says so.
+    NoInstructions {
+        path: String,
+        line: u32,
+    },
+}
+
+/// A "Reveal in Program Explorer" waiting for a program to land in: the
+/// source line, as the file's path and the line's byte span (0-based
+/// `line` only for the message).
+#[derive(Debug, Clone)]
+struct Reveal {
+    path: String,
+    start: u32,
+    end: u32,
+    line: u32,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,6 +234,8 @@ pub struct ProgramExplorer {
     generation: u64,
     focus: FocusHandle,
     tab: TabSlot,
+    /// A reveal asked for before the program it needs had landed.
+    pending_reveal: Option<Reveal>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -247,7 +266,72 @@ impl ProgramExplorer {
             generation: 0,
             focus: cx.focus_handle(),
             tab: TabSlot::default(),
+            pending_reveal: None,
             _subscriptions: vec![on_project],
+        }
+    }
+
+    /// "Reveal in Program Explorer" (#3657): show the instructions the
+    /// source line `[start, end)` of `path` compiled to — the Disasm view,
+    /// the container holding them opened, the first of them highlighted
+    /// and scrolled to. No running story is needed: every instruction
+    /// already carries its provenance. With no program yet, the reveal
+    /// waits for the one this asks for.
+    pub fn reveal_source(
+        &mut self,
+        path: &str,
+        start: u32,
+        end: u32,
+        line: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let reveal = Reveal {
+            path: path.to_owned(),
+            start,
+            end,
+            line,
+        };
+        if self.program().is_some() && !self.stale && !self.busy {
+            self.apply_reveal(&reveal, cx);
+        } else {
+            self.pending_reveal = Some(reveal);
+            if !self.busy {
+                self.refresh(cx);
+            }
+        }
+    }
+
+    fn apply_reveal(&mut self, reveal: &Reveal, cx: &mut Context<Self>) {
+        let Some(target) = self
+            .program()
+            .and_then(|program| first_instruction_on(&program.model, reveal))
+        else {
+            cx.emit(ProgramEvent::NoInstructions {
+                path: reveal.path.clone(),
+                line: reveal.line,
+            });
+            return;
+        };
+        self.view = View::Disasm;
+        self.expanded.insert(target.group.clone());
+        self.relayout();
+        self.highlight = self.items.iter().position(|item| {
+            matches!(item, Item::Instr { container, offset, .. }
+                if *container == target.container && *offset == target.offset)
+        });
+        if let Some(ix) = self.highlight {
+            self.scroll.scroll_to_item(ix, ScrollStrategy::Center);
+        }
+        cx.notify();
+    }
+
+    /// The source start of the instruction row under the highlight, as
+    /// `(path, byte)` — where a reveal landed, for tests.
+    #[cfg(test)]
+    pub(crate) fn highlighted_source(&self) -> Option<(String, u32)> {
+        match self.items.get(self.highlight?)? {
+            Item::Instr { src: Some(src), .. } => Some((src.path.clone(), src.start)),
+            _ => None,
         }
     }
 
@@ -294,6 +378,9 @@ impl ProgramExplorer {
                 if let Ok(QueryResult::Program(report)) = result {
                     this.report = Some(*report);
                     this.relayout();
+                }
+                if let Some(reveal) = this.pending_reveal.take() {
+                    this.apply_reveal(&reveal, cx);
                 }
                 cx.notify();
             });
@@ -1304,6 +1391,73 @@ fn layout_disasm(
         push(&mut items, knot, 0, expanded, executing);
     }
     items
+}
+
+/// Where a reveal lands: the instruction, and the Disasm group to open.
+struct RevealTarget {
+    group: String,
+    container: u32,
+    offset: u32,
+}
+
+/// The instruction a source line's reveal lands on: of those whose
+/// provenance STARTS on the line, the textually earliest (the runtime's
+/// `resolve_source_line` rule); failing that, the earliest one whose range
+/// covers part of the line — a construct that began on a line above.
+fn first_instruction_on(model: &ProgramModel, reveal: &Reveal) -> Option<RevealTarget> {
+    fn walk<'m>(
+        node: &'m KnotNodeJs,
+        out: &mut Vec<(String, u32, &'m brink_ide::program_model::DisasmLineJs)>,
+    ) {
+        let key = format!("disasm:{}", node.path);
+        out.extend(
+            node.disasm
+                .iter()
+                .map(|d| (key.clone(), node.container_idx, d)),
+        );
+        for anon in &node.anon {
+            let key = format!("disasm:{}.{}", node.path, anon.label);
+            out.extend(
+                anon.disasm
+                    .iter()
+                    .map(|d| (key.clone(), anon.container_idx, d)),
+            );
+        }
+        for child in &node.children {
+            walk(child, out);
+        }
+    }
+    let mut all = Vec::new();
+    for knot in &model.knots {
+        walk(knot, &mut all);
+    }
+    fn on_file<'d>(
+        d: &'d brink_ide::program_model::DisasmLineJs,
+        path: &str,
+    ) -> Option<&'d brink_ide::program_model::DisasmSrcJs> {
+        d.src.as_ref().filter(|s| s.file == path)
+    }
+    let starts_here = all
+        .iter()
+        .filter_map(|(g, c, d)| {
+            let s = on_file(d, &reveal.path)?;
+            (s.start >= reveal.start && s.start < reveal.end).then_some((s.start, g, *c, d.offset))
+        })
+        .min_by_key(|(start, ..)| *start);
+    let covers = || {
+        all.iter()
+            .filter_map(|(g, c, d)| {
+                let s = on_file(d, &reveal.path)?;
+                (s.start < reveal.end && s.end > reveal.start).then_some((s.start, g, *c, d.offset))
+            })
+            .min_by_key(|(start, ..)| *start)
+    };
+    let (_, group, container, offset) = starts_here.or_else(covers)?;
+    Some(RevealTarget {
+        group: group.clone(),
+        container,
+        offset,
+    })
 }
 
 /// What a jump is looking for once the rows have been rebuilt.

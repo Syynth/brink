@@ -837,6 +837,8 @@ export async function mountStudio(
       documentsForConfig?.refreshDialectFromProject();
       // The Player folds lines into runs with the same artifact (#3389).
       store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
+      // `[cast]` recolours the Player's speakers live (decision log 2026-10-10).
+      store.getState().setProjectCast(project.getConfiguredCast());
       // #3391/#3671: the config's CURRENT state as Problems rows on
       // brink.toml — every warning (an unresolvable [dialogue] is an
       // error; a manifest that cannot be loaded, an unknown key, a bad
@@ -857,6 +859,7 @@ export async function mountStudio(
   });
   await project.initialize();
   store.getState().setProjectDialect(project.getConfiguredDialogueDialect());
+  store.getState().setProjectCast(project.getConfiguredCast());
   perfMark("studio.projectInitialized");
   // The perf bridge: the session planes the probe module itself can't
   // reach. Feature-detected throughout — injected sessions/mocks predate

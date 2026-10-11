@@ -844,6 +844,7 @@ dependencies = [
  "brink-ir",
  "brink-project-config",
  "brink-syntax",
+ "regex",
  "rowan",
  "serde",
  "tracing",
@@ -4023,7 +4024,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=e8ab2cc90c27f90f101cfa3ff60db651307b101c#e8ab2cc90c27f90f101cfa3ff60db651307b101c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=50242146c7a8e2e38c1554421752b80d2c61bb64#50242146c7a8e2e38c1554421752b80d2c61bb64"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4059,7 +4060,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=e8ab2cc90c27f90f101cfa3ff60db651307b101c#e8ab2cc90c27f90f101cfa3ff60db651307b101c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=50242146c7a8e2e38c1554421752b80d2c61bb64#50242146c7a8e2e38c1554421752b80d2c61bb64"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4104,7 +4105,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=e8ab2cc90c27f90f101cfa3ff60db651307b101c#e8ab2cc90c27f90f101cfa3ff60db651307b101c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=50242146c7a8e2e38c1554421752b80d2c61bb64#50242146c7a8e2e38c1554421752b80d2c61bb64"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4115,7 +4116,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=e8ab2cc90c27f90f101cfa3ff60db651307b101c#e8ab2cc90c27f90f101cfa3ff60db651307b101c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=50242146c7a8e2e38c1554421752b80d2c61bb64#50242146c7a8e2e38c1554421752b80d2c61bb64"
 dependencies = [
  "anyhow",
  "gpui-pre",

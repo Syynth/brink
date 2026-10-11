@@ -261,6 +261,14 @@ export {
   setTomlStringArray,
   tomlTableKeys,
 } from "./toml-edit.js";
+// `[cast]` edits (decision log 2026-10-10) — the Cast settings section.
+export {
+  castEntries,
+  normalizeCastColor,
+  removeCastMember,
+  setCastColor,
+  type CastEntry,
+} from "./cast-edit.js";
 export {
   CONVENTIONS_MARKER,
   findDialogueSection,

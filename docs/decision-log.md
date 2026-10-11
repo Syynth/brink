@@ -6095,3 +6095,21 @@
 - **SCOPE:** moderate
 - **WHAT:** Narrows the desktop shell's "never reads or watches outside the project folder" rule (2026-10-09, `[host] manifest` entry) for exactly one file: the host manifest `brink.toml`'s `[host] manifest` names. The shell may read and watch it wherever it is (e.g. `../build/host-manifest.json`), provided it is a `.json` file that parses as a host manifest. Anything else outside the folder is still refused, and a file that stops being a valid manifest is dropped with a warning on `brink.toml`. The native studio follows the same file the same way (#3687).
 - **WHY:** Maintainer: "if a host-manifest.json is valid, can't we safely watch it, if it stays a json file, etc.?" A host generates its manifest into its own build folder, a sibling of the ink folder, and the pickers should follow it without a reopen.
+
+## Speaker colours: `[cast]` in brink.toml, one table per speaker, edited in Settings ▸ Cast
+- **WHEN:** 2026-10-10
+- **PROJECT:** brink
+- **SYSTEM:** brink-project-config, brink-gpui, brink-studio
+- **SCOPE:** moderate
+- **WHAT:** An author picks the colour a speaker's cue is drawn in, through a new top-level `[cast]` table in `brink.toml` with one sub-table per speaker:
+  ```toml
+  [cast.Mara]
+  color = "#d97757"
+  ```
+  - **Names are spelled out.** A cast name matches a cue's speaker **ignoring case**, so `Mara` covers a screenplay's `MARA` as well as `@Mara:`. Matching by pattern or regex is wanted later, and the table-per-speaker shape leaves room for it beside the names; it is not built.
+  - **Any colour.** `color` is a hex colour, `#rgb` or `#rrggbb`, normalised to lowercase `#rrggbb`. One colour serves both the light and dark themes.
+  - **A speaker the cast does not list keeps the Player's automatic colour**, so a cast can list only the speakers the author cares about.
+  - **Mistakes warn and never fail.** An entry that is not a table, a colour that is not hex, an unknown key, or two names that differ only in case is a warning on `brink.toml`, and the rest of the config still applies. Only a `cast` that is not a table at all is an error, as for every section.
+  - **Surfaces:** the Player in the native (gpui) studio and in the web and desktop studios, plus the web Conventions preview's cue. The editor's highlighting of cue lines does **not** follow the cast colour for now.
+  - **Settings ▸ Project ▸ Cast** edits the table in both the gpui and web studios: a colour picker and a remove button per declared speaker, and a row that adds one. Edits keep the file's comments and key order.
+- **WHY:** The maintainer asked for authored speaker colours (#3504) and chose these options on 2026-10-10. The location is `brink.toml`; `[dialogue]` was ruled out because its one-line form (`dialogue = "dialect.json"`) cannot also hold a sub-table. One table per speaker was chosen over `name = "colour"` pairs so that later per-speaker settings and pattern rows fit without a reshape. Matching ignoring case follows from cue styles that capitalise names. The editor was left alone deliberately, for now.

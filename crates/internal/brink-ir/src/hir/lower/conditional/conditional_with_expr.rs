@@ -75,6 +75,25 @@ fn lower_conditional_with_expr(
 
     // Multiline branches: `{x: - 1: ... - 2: ... }`
     if let Some(ml_branches) = cond.multiline_branches() {
+        // `{x:` with an empty then-branch and a lone `- else:` (issue
+        // #3510) is an `if` whose true branch is empty, not a switch on `x`
+        // with only a default: the then-branch has no node of its own, so
+        // the else arm is the only branch the parser saw. ink inserts the
+        // empty true branch for exactly this shape; so does this.
+        let mut arms = ml_branches.branches();
+        if let (Some(only), None) = (arms.next(), arms.next())
+            && only.is_else()
+        {
+            branches.push(CondBranch {
+                ptr: implicit_then_arm_span(&ml_branches, &only, scope),
+                condition: Some(condition.clone()),
+                binding: None,
+                body: Block::default(),
+                container_id: None,
+            });
+        }
+
+        let implied_then = !branches.is_empty();
         let all_have_conditions = ml_branches
             .branches()
             .all(|b| b.is_else() || b.condition().is_some());
@@ -99,7 +118,11 @@ fn lower_conditional_with_expr(
             });
         }
 
-        let kind = if all_have_conditions {
+        let kind = if implied_then {
+            // The implied arm already holds the condition; the else arm
+            // keeps none.
+            CondKind::InitialCondition
+        } else if all_have_conditions {
             CondKind::Switch(condition.clone())
         } else {
             if let Some(first_no_cond) = branches.iter_mut().find(|b| b.condition.is_none()) {
@@ -185,6 +208,26 @@ fn lower_branchless_body(
         kind: CondKind::InitialCondition,
         branches,
     }
+}
+
+/// The span of the empty then-arm a lone `- else:` implies (issue #3510):
+/// from the start of the branch list to the start of the else arm —
+/// zero-width when nothing precedes the `- else:`. Synthetic like
+/// [`branchless_first_arm_span`]'s, and for the same reason: no node covers
+/// an arm the source never wrote. It sits inside the construct and ends
+/// where the else arm begins, so the two stay disjoint.
+fn implicit_then_arm_span(
+    branches: &ast::MultilineBranchesCond,
+    else_arm: &ast::MultilineBranchCond,
+    scope: &LowerScope,
+) -> Provenance {
+    let start = branches.syntax().text_range().start();
+    let end = else_arm.syntax().text_range().start().max(start);
+    Provenance::new(
+        scope.file_id,
+        rowan::TextRange::new(start, end),
+        KindToken::synthetic(NodeClass::ConditionalBranch),
+    )
 }
 
 /// The branchless-body implicit first arm's own span (issue #404

@@ -10,6 +10,8 @@
  */
 import { DialectParser, runsOf, type DialogueDialect, type EmittedSegment } from "@brink-lang/editor";
 import type { TranscriptLine } from "@brink/studio-store";
+import type { CastColor } from "@brink/wasm-types";
+import type { CSSProperties } from "react";
 
 /** One rendered row: the transcript line plus how the dialect read it. */
 export interface PlayerRow {
@@ -127,6 +129,21 @@ export function foldPlayerRuns(
  *  when BOTH know where they came from. */
 function pathBreak(a: TranscriptLine, b: TranscriptLine): boolean {
   return a.path !== undefined && b.path !== undefined && a.path !== b.path;
+}
+
+/** The colour `[cast]` gives `speaker`, matching names ignoring case like
+ *  `brink-project-config`'s `cast_color` (decision log 2026-10-10), or
+ *  null for a speaker the cast does not list. */
+export function castColor(cast: readonly CastColor[], speaker: string): string | null {
+  const name = speaker.toLowerCase();
+  return cast.find((member) => member.name.toLowerCase() === name)?.color ?? null;
+}
+
+/** The inline style that draws a speaker element in a cast colour: it
+ *  overrides the `--speaker-color` the palette class sets, on the element
+ *  itself. Undefined (the palette colour stands) when there is none. */
+export function speakerStyle(color: string | null): CSSProperties | undefined {
+  return color === null ? undefined : ({ "--speaker-color": color } as CSSProperties);
 }
 
 /** Deterministic speaker colour: a stable palette index from the name, so

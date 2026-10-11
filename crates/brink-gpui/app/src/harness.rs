@@ -152,8 +152,16 @@ impl Harness {
     }
 
     /// Change something on the app, then settle.
+    ///
+    /// Runs inside gpui's update cycle, so the effects `f` queues — a
+    /// global's observers, an entity's notifications and events — are
+    /// flushed before this returns (#3663). `HeadlessAppContext::update`
+    /// hands over `&mut App` without one, and nothing flushed what it
+    /// queued until the next real update came along; `AsyncApp::update`
+    /// is the public road to `App::update`.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> R {
-        let r = self.app().update(f);
+        let async_cx = self.app().update(|cx| cx.to_async());
+        let r = async_cx.update(f);
         self.settle();
         r
     }
@@ -574,10 +582,10 @@ mod tests {
     use super::{Harness, scratch_project};
 
     /// The leak canary: a project window opened and closed leaves nothing
-    /// behind. Ignored while #3628 (one code editor per closed window) is
-    /// open; un-ignore it with the fix so the check guards from then on.
+    /// behind. It caught #3628: gpui-kit's document-colors task held its
+    /// editor strongly while stored on that editor, so one code editor
+    /// outlived every closed window.
     #[test]
-    #[ignore = "#3628: a closed window still leaks one code editor"]
     fn a_closed_window_frees_everything() {
         let mut h = Harness::new().check_leaks();
         let window = h.open(&scratch_project(
@@ -585,6 +593,27 @@ mod tests {
         ));
         h.dispatch(window, CloseWindow);
         assert!(!h.is_open(window));
+    }
+
+    /// #3663: a global set through `update` reaches its observers before
+    /// `update` returns, without waiting for some later update cycle.
+    #[test]
+    fn update_flushes_what_it_queues() {
+        struct Marker(u32);
+        impl gpui::Global for Marker {}
+
+        let mut h = Harness::new();
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        h.update(|cx| cx.set_global(Marker(0)));
+        let observer = {
+            let seen = std::rc::Rc::clone(&seen);
+            h.update(move |cx| {
+                cx.observe_global::<Marker>(move |cx| seen.set(cx.global::<Marker>().0))
+            })
+        };
+        h.update(|cx| cx.set_global(Marker(7)));
+        assert_eq!(seen.get(), 7, "the observer ran inside the update");
+        drop(observer);
     }
 
     /// The harness itself: keystrokes reach the real editor the way a

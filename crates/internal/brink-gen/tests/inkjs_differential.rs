@@ -50,7 +50,7 @@ const CASES: u32 = 32;
 /// (the run then finds nothing to count) once the issue is fixed. #3507 and
 /// #3508, the first run's two findings, are fixed; of the functions tier's
 /// six (2026-09-04), #3519, #3522, #3523 and #3525 are fixed and the rest
-/// are listed below.
+/// are listed below. #3535 (glue across a blank line) is fixed too.
 ///
 /// The cost is stated plainly: a story that matches a predicate could fail
 /// for a DIFFERENT reason and be counted here — so keep predicates narrow,
@@ -64,10 +64,6 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // its output is one fragment, and the newline inside it never becomes
     // a line boundary.
     ("#3524", function_printing_several_lines),
-    // Glue somewhere in the story and a line that can render empty (a
-    // list interpolation): ink's glue reaches across the blank line to
-    // join the lines either side of it, brink's stops at it.
-    ("#3535", glue_and_a_possibly_empty_line),
     // A shuffle sequence: its seed is the sequence container's path hash,
     // and brink's container paths are not inklecate's, so the two pick
     // different permutations.
@@ -79,51 +75,6 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
 /// `tests/tier2/sequences/I107-shuffle-stack-muddying` 0/2.
 fn uses_a_shuffle(src: &str) -> bool {
     src.contains("{~")
-}
-
-/// A story that both uses glue and has a line made only of `{…}` groups
-/// while a `LIST` exists to make those groups render empty — a list value
-/// is the only thing the generator can print as nothing, and a whole line
-/// of them is a blank line the glue has to reach across.
-fn glue_and_a_possibly_empty_line(src: &str) -> bool {
-    if !src.contains("<>") || !src.lines().any(|l| l.trim_start().starts_with("LIST ")) {
-        return false;
-    }
-    src.lines().any(|line| is_all_interpolations(line.trim()))
-}
-
-/// Is `line` nothing but `{…}` groups (with an optional trailing `<>`)?
-/// Groups nest, so the scan counts braces rather than looking for the
-/// first `}` — `{false:a}{LIST_MAX(l)}` is two groups, and CI found that
-/// exact shape when the predicate only admitted one.
-fn is_all_interpolations(line: &str) -> bool {
-    let mut rest = line.strip_suffix("<>").unwrap_or(line).trim_end();
-    if rest.is_empty() {
-        return false;
-    }
-    while !rest.is_empty() {
-        if !rest.starts_with('{') {
-            return false;
-        }
-        let mut depth = 0usize;
-        let mut end = None;
-        for (i, c) in rest.char_indices() {
-            match c {
-                '{' => depth += 1,
-                '}' => {
-                    depth -= 1;
-                    if depth == 0 {
-                        end = Some(i + 1);
-                        break;
-                    }
-                }
-                _ => {}
-            }
-        }
-        let Some(end) = end else { return false };
-        rest = rest[end..].trim_start();
-    }
-    true
 }
 
 /// A content line with content (text or an earlier `{…}`) before a

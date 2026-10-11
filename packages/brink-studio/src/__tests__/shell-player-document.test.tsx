@@ -349,6 +349,8 @@ describe("PlayerPane as a document view", () => {
     };
     store.setState({
       projectDialect: dialect,
+      // `[cast]` (decision log 2026-10-10): `Mara` colours the `MARA` cue.
+      projectCast: [{ name: "Mara", color: "#d97757" }],
       sessionStatus: "awaiting-choice",
       sessionText: [],
       sessionLines: [
@@ -372,6 +374,12 @@ describe("PlayerPane as a document view", () => {
     const run = el.querySelector(".player-run")!;
     expect(run.className).toMatch(/speaker-\d/);
     expect(run.querySelector(".player-run-cue")?.textContent).toBe("MARA");
+    // The cast colour wins over the palette's, on the run's rule and on the
+    // cue alike: each sets the variable on itself.
+    expect((run as HTMLElement).style.getPropertyValue("--speaker-color")).toBe("#d97757");
+    expect(
+      (run.querySelector(".player-run-cue") as HTMLElement).style.getPropertyValue("--speaker-color"),
+    ).toBe("#d97757");
     // Action row is the dimmed kind; narration is a plain kind-line row.
     expect(el.querySelector(".player-line-row.dialect-action p")?.textContent).toBe("> She listens.");
     // The echo: ring with the sticky glyph, textual "> " dropped.

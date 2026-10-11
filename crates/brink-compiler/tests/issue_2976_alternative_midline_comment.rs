@@ -124,30 +124,17 @@ fn block_comment_in_last_branch_prints_intact() {
 }
 
 /// A comment sitting between two interpolations in the same branch must
-/// also not fragment the alternative. Unlike `content.rs`'s/`choice.rs`'s
-/// `L_BRACE` arms (and unlike this file's other tests, which do exercise
-/// this fix's `skip_comment_tokens` retry), `inline::branch_content`'s own
-/// `L_BRACE` arm was left as a bare, unconditional `p.skip_ws()` — see
-/// `parser/tests/inline/midline_comment.rs`'s
-/// `block_comment_between_interpolations_in_branch` for why. That call
-/// already consumed any trivia between two adjacent `{...}` elements
-/// without stalling, comment or not, so this path never hit the
-/// zero-progress bug this issue fixes, and the pre-existing whitespace
-/// output for it is unaffected here (the whitespace is swallowed as bare
-/// trivia with no `TEXT` node at all, so no space survives between the
-/// interpolations' output at all -- a different, pre-existing, unrelated
-/// quirk from #2975's comment-elision double-space collapse). This test
-/// pins that it keeps producing zero diagnostics and its existing output,
-/// not that comment elision here goes through this fix's retry.
+/// also not fragment the alternative, and the whitespace around it is
+/// text, as ink prints it: `A B` (#2982 — `inline::branch_content` used to
+/// swallow whitespace before a `{` as bare trivia, printing `AB`).
 #[test]
 fn block_comment_between_interpolations_in_branch_prints_intact() {
     let src = "VAR a = \"A\"\nVAR b = \"B\"\n{ {a} /* c */ {b} | fallback }\n";
     let out = collect_output(src);
     assert_eq!(
-        out, "AB\n",
+        out, "A B\n",
         "expected the comment elided with no fragmentation between the two \
-         interpolations (pre-existing bare-skip_ws whitespace handling for \
-         this path, unaffected by this fix)"
+         interpolations, and the space between them kept"
     );
 }
 

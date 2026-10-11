@@ -53,6 +53,8 @@ pub struct ProjectSettings {
     /// it does not hold them, and applies the config again when one changes
     /// (decision log 2026-10-09, #3671).
     pub config_reads: Vec<String>,
+    /// `[cast]` (decision log 2026-10-10): the Player's per-speaker colours.
+    pub cast: Vec<brink_project_config::CastMember>,
 }
 
 impl IdeSession {
@@ -151,6 +153,7 @@ impl IdeSession {
         self.settings
             .prose_dictionary
             .clone_from(&config.prose_dictionary);
+        self.settings.cast.clone_from(&config.cast);
 
         let mut warnings: Vec<String> = Vec::new();
         self.apply_dialogue_config(config, config_dir, read_file, &mut warnings);

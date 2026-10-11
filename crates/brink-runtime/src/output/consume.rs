@@ -65,16 +65,16 @@ impl OutputBuffer {
         mark_glue_removals(unread, remove);
 
         // Walk and find a committed newline: a surviving Newline (not removed,
-        // not in after_glue state) followed by content — VISIBLE content
-        // when the line ending at that newline is itself blank (issue
-        // #3533: ink's lookahead drops a blank line's newline behind a
-        // delivered one and only rewinds to keep it when non-whitespace
-        // follows, so a blank line must not be handed out on the strength
-        // of more blank content after it).
+        // not in after_glue state) followed by VISIBLE content. Blank content
+        // (`""`, an empty list) does not commit it: a later glue still walks
+        // back over that content to the newline (issue #3535), exactly as
+        // ink's lookahead keeps going until non-whitespace extends the
+        // output past the newline (and a blank line is not handed out on
+        // the strength of more blank content after it, issue #3533).
+        // `after_glue` is likewise cleared only by visible content: ink
+        // drops every newline between a glue and the next non-whitespace.
         let mut after_glue = false;
         let mut found_newline = false;
-        let mut line_visible = false;
-        let mut blank_line = false;
 
         for (i, part) in unread.iter().enumerate() {
             if remove[i] {
@@ -83,26 +83,15 @@ impl OutputBuffer {
                 }
                 continue;
             }
-            if part.is_content() {
+            if part.is_visible() {
                 if found_newline {
-                    if !blank_line || part.is_visible() {
-                        return true;
-                    }
-                } else if part.is_visible() {
-                    line_visible = true;
+                    return true;
                 }
                 after_glue = false;
             } else {
                 match part {
-                    OutputPart::Newline if !after_glue => {
-                        if !found_newline {
-                            blank_line = !line_visible;
-                            found_newline = true;
-                        }
-                    }
-                    OutputPart::Glue => {
-                        after_glue = true;
-                    }
+                    OutputPart::Newline if !after_glue => found_newline = true,
+                    OutputPart::Glue => after_glue = true,
                     _ => {}
                 }
             }
@@ -159,12 +148,10 @@ impl OutputBuffer {
             mark_glue_removals(unread, remove);
 
             // Find the split point: the first surviving Newline (not removed,
-            // not in after_glue state) that has content after it — the same
-            // walk as `has_completed_line`, blank-line rule included (#3533).
+            // not in after_glue state) that has visible content after it —
+            // the same walk as `has_completed_line` (#3533, #3535).
             let mut after_glue = false;
             let mut candidate_newline: Option<usize> = None;
-            let mut line_visible = false;
-            let mut blank_line = false;
 
             for (i, part) in unread.iter().enumerate() {
                 if remove[i] {
@@ -173,26 +160,17 @@ impl OutputBuffer {
                     }
                     continue;
                 }
-                if part.is_content() {
+                if part.is_visible() {
                     if candidate_newline.is_some() {
-                        if !blank_line || part.is_visible() {
-                            break;
-                        }
-                    } else if part.is_visible() {
-                        line_visible = true;
+                        break;
                     }
                     after_glue = false;
                 } else {
                     match part {
-                        OutputPart::Newline if !after_glue => {
-                            if candidate_newline.is_none() {
-                                blank_line = !line_visible;
-                                candidate_newline = Some(i);
-                            }
+                        OutputPart::Newline if !after_glue && candidate_newline.is_none() => {
+                            candidate_newline = Some(i);
                         }
-                        OutputPart::Glue => {
-                            after_glue = true;
-                        }
+                        OutputPart::Glue => after_glue = true,
                         _ => {}
                     }
                 }
@@ -237,6 +215,88 @@ impl OutputBuffer {
             // it reflects any `ElementAttachEnd` that immediately followed it
             // too). Carry that forward for whatever line the next call
             // resolves, whether or not this one is suppressed.
+            self.pending_element = next_element;
+            if suppressed {
+                continue;
+            }
+            text.push('\n');
+            return Some((text, tags, element, source));
+        }
+    }
+
+    /// The line ink would still deliver when the VM faults: the first
+    /// newline that survived glue, whether or not visible content has
+    /// followed it yet.
+    ///
+    /// ink evaluates past a finished line inside the same `Continue`, to
+    /// see whether glue reaches back over its newline. A fault in that
+    /// lookahead is rolled back with the state snapshot taken at the
+    /// newline: the finished line is delivered, and the fault happens
+    /// again on the next `Continue`. [`Self::take_first_line`] will not
+    /// hand this line out, since it waits for visible content to commit
+    /// the newline; at a fault nothing more is coming, so the newline is
+    /// as final as it will get. Content after it is the line the fault
+    /// interrupted, and ink drops it.
+    ///
+    /// Reads the transcript even while a capture is open: a fault inside
+    /// a function called from an interpolation leaves its capture
+    /// unclosed, but the line before it is already in the transcript.
+    ///
+    /// Returns `None` when no newline survives (a fault mid-line, or after
+    /// glue that swallowed the newline), which delivers nothing.
+    pub(crate) fn take_line_before_fault(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Option<ResolvedLine> {
+        loop {
+            let unread = &self.transcript[self.cursor..];
+            if unread.is_empty() {
+                return None;
+            }
+            let remove = &mut self.line_scan;
+            remove.clear();
+            remove.resize(unread.len(), false);
+            mark_glue_removals(unread, remove);
+
+            let mut after_glue = false;
+            let mut split: Option<usize> = None;
+            for (i, part) in unread.iter().enumerate() {
+                if remove[i] {
+                    if matches!(part, OutputPart::Glue) {
+                        after_glue = true;
+                    }
+                    continue;
+                }
+                if part.is_visible() {
+                    after_glue = false;
+                } else {
+                    match part {
+                        OutputPart::Newline if !after_glue => {
+                            split = Some(i);
+                            break;
+                        }
+                        OutputPart::Glue => after_glue = true,
+                        _ => {}
+                    }
+                }
+            }
+            let split_at = split?;
+
+            let slice = &self.transcript[self.cursor..=self.cursor + split_at];
+            let ((mut text, tags, suppressed, element, source), next_element) =
+                resolve_first_line_annotated(
+                    slice,
+                    &self.line_scan[..=split_at],
+                    self.pending_element.clone(),
+                    program,
+                    line_tables,
+                    resolver,
+                    &self.fragments,
+                );
+            self.cursor += split_at + 1;
+            self.rescan_completion();
             self.pending_element = next_element;
             if suppressed {
                 continue;

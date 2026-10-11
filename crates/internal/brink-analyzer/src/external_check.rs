@@ -627,15 +627,28 @@ pub fn check_call_sites(
     if name_to_meta.is_empty() {
         return diags;
     }
+    let mut regexes = BTreeMap::new();
     for &(file_id, hir) in files {
         let mut checker = CallSiteChecker {
             file_id,
             name_to_meta,
-            diags: &mut diags,
+            out: Out {
+                diags: &mut diags,
+                regexes: &mut regexes,
+            },
         };
         brink_ir::hir::visit::visit(hir, &mut checker);
     }
     diags
+}
+
+/// Where the call-site checks write: the diagnostics, and each regex
+/// constraint's pattern compiled once for the whole pass (#3683). A pattern
+/// that does not compile is `None`; the manifest loader refuses those, so it
+/// only arises from a manifest built in code.
+struct Out<'a> {
+    diags: &'a mut Vec<Diagnostic>,
+    regexes: &'a mut BTreeMap<String, Option<regex::Regex>>,
 }
 
 /// Visits every call site in a file via the shared HIR visitor, checking each
@@ -643,7 +656,7 @@ pub fn check_call_sites(
 struct CallSiteChecker<'a, 'm> {
     file_id: FileId,
     name_to_meta: &'m BTreeMap<&'m str, &'m SymbolMeta>,
-    diags: &'a mut Vec<Diagnostic>,
+    out: Out<'a>,
 }
 
 impl HirVisitor for CallSiteChecker<'_, '_> {
@@ -653,7 +666,7 @@ impl HirVisitor for CallSiteChecker<'_, '_> {
 
     fn enter_expr(&mut self, expr: &Expr) {
         if let Expr::Call(path, args) = expr {
-            check_call(self.file_id, path, args, self.name_to_meta, self.diags);
+            check_call(self.file_id, path, args, self.name_to_meta, &mut self.out);
         }
     }
 }
@@ -663,7 +676,7 @@ fn check_call(
     path: &Path,
     args: &[Expr],
     name_to_meta: &BTreeMap<&str, &SymbolMeta>,
-    diags: &mut Vec<Diagnostic>,
+    out: &mut Out<'_>,
 ) {
     let name = path
         .segments
@@ -681,7 +694,7 @@ fn check_call(
         let Some(ty) = &param.ty else {
             continue; // untyped param — nothing to check
         };
-        check_literal_arg(file, path, &name, arg, ty, diags);
+        check_literal_arg(file, path, &name, arg, ty, out);
     }
 }
 
@@ -693,12 +706,12 @@ fn check_literal_arg(
     call: &str,
     arg: &Expr,
     ty: &ResolvedType,
-    diags: &mut Vec<Diagnostic>,
+    out: &mut Out<'_>,
 ) {
     if let (Some(lit), Some(expected)) = (literal_base(arg), ty.base)
         && !compatible(lit, expected)
     {
-        diags.push(Diagnostic {
+        out.diags.push(Diagnostic {
             file,
             range: path.range,
             message: format!(
@@ -712,7 +725,7 @@ fn check_literal_arg(
         return;
     }
     if let Some(constraint) = &ty.constraint {
-        check_constraint(file, path, call, &ty.name, arg, constraint, diags);
+        check_constraint(file, path, call, &ty.name, arg, constraint, out);
     }
 }
 
@@ -758,29 +771,31 @@ fn check_constraint(
     type_name: &str,
     arg: &Expr,
     constraint: &Constraint,
-    diags: &mut Vec<Diagnostic>,
+    out: &mut Out<'_>,
 ) {
+    let not_valid = || Diagnostic {
+        file,
+        range: path.range,
+        message: format!(
+            "{}: `{}` is not a valid `{type_name}` value for `{call}`",
+            DiagnosticCode::E042.title(),
+            plain_string_value(arg).unwrap_or_default(),
+        ),
+        code: DiagnosticCode::E042,
+    };
     match constraint {
         Constraint::Enum { values } => {
             if let Some(s) = plain_string_value(arg)
                 && !values.iter().any(|v| v == s)
             {
-                diags.push(Diagnostic {
-                    file,
-                    range: path.range,
-                    message: format!(
-                        "{}: `{s}` is not a valid `{type_name}` value for `{call}`",
-                        DiagnosticCode::E042.title(),
-                    ),
-                    code: DiagnosticCode::E042,
-                });
+                out.diags.push(not_valid());
             }
         }
         Constraint::Range { min, max } => {
             if let Some(v) = numeric_value(arg)
                 && (min.is_some_and(|m| v < m as f64) || max.is_some_and(|m| v > m as f64))
             {
-                diags.push(Diagnostic {
+                out.diags.push(Diagnostic {
                     file,
                     range: path.range,
                     message: format!(
@@ -791,9 +806,19 @@ fn check_constraint(
                 });
             }
         }
-        // Regex enforcement is deferred (no regex dependency at the MVP); the
-        // pattern is still surfaced to the IDE via SymbolMeta.
-        Constraint::Regex { .. } => {}
+        // A whole-string match (#3683), the pattern compiled once per pass.
+        Constraint::Regex { pattern } => {
+            let Some(s) = plain_string_value(arg) else {
+                return;
+            };
+            let re = out
+                .regexes
+                .entry(pattern.clone())
+                .or_insert_with(|| brink_ir::anchored_regex(pattern).ok());
+            if re.as_ref().is_some_and(|re| !re.is_match(s)) {
+                out.diags.push(not_valid());
+            }
+        }
     }
 }
 
@@ -1661,6 +1686,34 @@ mod tests {
         assert_eq!(bad[0].code, DiagnosticCode::E042);
         let ok = run_call_check("give", vec![string_lit("sword")], &meta);
         assert!(ok.is_empty(), "valid enum value: {ok:?}");
+    }
+
+    /// #3683: a regex constraint is a whole-string match, worded like the
+    /// enum violation.
+    #[test]
+    fn regex_violation_emits_e042() {
+        let meta = typed_meta(ResolvedType {
+            name: "color".to_string(),
+            base: Some(BaseType::String),
+            constraint: Some(Constraint::Regex {
+                pattern: "#[0-9a-fA-F]{6}".into(),
+            }),
+            values: None,
+            widget: None,
+        });
+        for bad_value in ["red", "#12345", "x#123456x"] {
+            let bad = run_call_check("tint", vec![string_lit(bad_value)], &meta);
+            assert_eq!(bad.len(), 1, "{bad_value}: {bad:?}");
+            assert_eq!(bad[0].code, DiagnosticCode::E042);
+            assert!(
+                bad[0].message.contains(&format!(
+                    "`{bad_value}` is not a valid `color` value for `tint`"
+                )),
+                "{bad:?}"
+            );
+        }
+        let ok = run_call_check("tint", vec![string_lit("#a0B1c2")], &meta);
+        assert!(ok.is_empty(), "matching value: {ok:?}");
     }
 
     #[test]

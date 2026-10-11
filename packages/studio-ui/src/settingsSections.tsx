@@ -31,6 +31,7 @@ import { DraftSettings } from "./DraftSettings.js";
 import { KeymapSettings } from "./KeymapSettings.js";
 import { PlayerReadingAidsSection, PlayerReadingSection } from "./PlayerStyling.js";
 import { ConventionsSettings } from "./ConventionsSettings.js";
+import { CastSettings } from "./CastSettings.js";
 import { SETTINGS_SECTION_IDS } from "./settingsSectionIds.js";
 import { SettingsGroup } from "./SettingsRow.js";
 
@@ -137,6 +138,14 @@ export function settingsSections(groupId: string): SettingsSection[] {
         "screenplay preset at-cue brink.toml run",
       icon: SETTINGS_ICONS.diagnostics,
       body: <ConventionsSettings />,
+    },
+    {
+      id: SETTINGS_SECTION_IDS.cast,
+      scope: "project",
+      title: "Cast",
+      keywords: "cast speaker speakers character characters colour color cue player name brink.toml",
+      icon: SETTINGS_ICONS.diagnostics,
+      body: <CastSettings />,
     },
     {
       id: SETTINGS_SECTION_IDS.player,

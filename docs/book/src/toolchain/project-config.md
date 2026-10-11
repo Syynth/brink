@@ -62,6 +62,9 @@ E033 = "auto"   # promote a Suggested fixer to batch (fix-all, on-save) for
 E014 = "off"    # never offer this code's fixer here
                 # absent ⇒ "ask": offered per click only (Suggested) /
                 # already batchable (Safe)
+
+[cast.Mara]             # one table per speaker — see "Cast" below
+color = "#d97757"       # the colour the Player draws Mara's lines in
 ```
 
 `[project] elements` is a deprecated alias for `conventions` (issue #2180):
@@ -86,6 +89,37 @@ guarantee: a `brink.toml` written against a newer schema still compiles with
 an older `brink` binary, just with a warning about the keys it didn't
 understand.
 
+
+## Cast
+
+`[cast]` lists speakers by name, one table each, and sets how the Player
+presents them. Today that is one key, `color`: the colour a speaker's cue,
+rule and spine segment are drawn in, in the native, desktop and web
+studios alike (decision log 2026-10-10).
+
+```toml
+[cast.Mara]
+color = "#d97757"
+
+[cast."Old Tom"]        # quote a name with spaces
+color = "#5bf"          # #rgb or #rrggbb, any case
+```
+
+- **Names match ignoring case.** `Mara` covers a screenplay's `MARA` cue
+  as well as `@Mara:`. Two entries that differ only in case name the same
+  speaker; the first, in name order, wins and the other is a warning.
+- **One colour serves both themes.** Pick one that reads on light and dark
+  backgrounds.
+- **A speaker not in the cast** keeps the automatic colour the Player picks
+  from their name, so a cast list can start with just the speakers you care
+  about.
+- **Mistakes warn, never fail.** An entry that is not a table, a `color`
+  that is not a hex colour, or an unknown key is reported and ignored; the
+  rest of `brink.toml` still applies. Only a `cast` that is not a table at
+  all is an error, as for every section.
+
+Settings ▸ Project ▸ Cast edits the same table, keeping comments and key
+order. Matching speakers by pattern is planned but not yet supported.
 
 ## Drafts
 

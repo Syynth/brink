@@ -25,6 +25,7 @@ export { App } from "./App.js";
 export {
   foldPlayerRuns,
   speakerPaletteIndex,
+  castColor,
   type PlayerGroup,
   type PlayerRow,
 } from "./player-runs.js";
@@ -46,6 +47,7 @@ export { LintSettings } from "./LintSettings.js";
 export { FormattingSettings } from "./FormattingSettings.js";
 export { ProseSettings } from "./ProseSettings.js";
 export { DraftSettings } from "./DraftSettings.js";
+export { CastSettings } from "./CastSettings.js";
 export { PlayerReadingSection, PlayerReadingAidsSection, CURATED_FONTS } from "./PlayerStyling.js";
 export { ConventionsSettings } from "./ConventionsSettings.js";
 export { renderRowBody } from "./PlayerPane.js";

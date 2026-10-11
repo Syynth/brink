@@ -728,6 +728,22 @@ fn parse_element(
             ok = false;
             continue;
         };
+        // The pre-#2164 spelling: whole-line claiming moved to its own
+        // annotation, so say where rather than a bare "malformed" (#2181).
+        if key.text() == CONVENTION_CLAIMS {
+            diags.push(Diagnostic {
+                file: file_id,
+                range,
+                message: format!(
+                    "{}: `claims` moved out of `@[element(…)]`; write \
+                     `@[convention(claims = \"…\", order = N)]` for a whole-line claim, \
+                     or `@[element(args = \"…\")]` for a called element",
+                    DiagnosticCode::E159.title(),
+                ),
+                code: DiagnosticCode::E159,
+            });
+            return None;
+        }
         if key.text() == ELEMENT_BLOCK {
             // A flag, not a `key = "value"` pair: no `eq_value`, no nested
             // clause. `!block` guards the duplicate-`block` case the same

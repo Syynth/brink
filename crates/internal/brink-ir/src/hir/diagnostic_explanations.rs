@@ -112,6 +112,21 @@ Both producers are wired inside `strict::check`, which `strict_diagnostics` (`cr
 `effective_severity` (`strict.rs`) additionally hard-codes E063 to `Severity::Error` whenever `types == Strict` — but since both producers on this page already require `types == Strict` to run at all, in practice every E063 diagnostic either of them reports is `Error`; `DiagnosticCode::E063`'s own declared base severity (`Warning`) never actually surfaces for these two producers as currently wired."#,
     ),
     (
+        DiagnosticCode::E074,
+        r"A write can reach one level into a record: `p.hp = 5`, `p.hp += 1`,
+`p.items[0] = x` where `p.items` is the whole root. It cannot reach two:
+`p.a.b = v`, `p.a[i].b = v`, `p.field[i] = v`. Those are refused here rather
+than lowered, because the only lowering available would write the value onto
+the record root instead of the field, silently replacing the whole record.
+
+The same refusal covers the postfix form on a field (`p.count++`,
+`p.count--`), which would misroute the same way. The compound assignment
+`p.count += 1` is the supported spelling of that write.
+
+It is an `Error`. The boundary is permanent for chained writes
+(`docs/typed-mode-spec.md` §6), not a gap waiting to be filled.",
+    ),
+    (
         DiagnosticCode::E082,
         r#"A block-scoped `temp` — one declared inside a `~ { … }` multi-line logic block, or inside the block a `while`/`for`/`if` opens (`docs/t1b-surface-spec.md` §2) — is visible only for the rest of *that* block. Once the block's closing `}` (or, for `for`/`while`/`if`, the end of the construct it desugars into) is reached, the name goes out of scope, exactly like a local variable leaving a `{ … }` scope in a C-family language. This is a **brink-extension (T1b) construct**: it exists under `--dialect brink` (or `[project] dialect = "brink"` in `brink.toml`); under the default `strict-ink` dialect, `~ { … }` itself is rejected first, by [E051](E051.md), so E082 can never fire there.
 
@@ -671,5 +686,57 @@ about being empty; it is supposed to be."#,
     (
         DiagnosticCode::E110,
         r"`#@effects(…)` was the original tag-channel spelling of a knot/stitch's effects assertion. The `@[effects(…)]` annotation is the final NS-A2 form (`docs/stdlib-spec.md` §9.2, ruled 2026-07-18), and the two spellings are **not** interchangeable text: `#@effects(…)` keeps the legacy **colon** argument grammar (`reads: gold, hp`) frozen forever, while `@[effects(…)]` uses the amended **paren-clause** grammar (`reads(gold, hp)`, 2026-07-19). The tag spelling still parses — nothing about the assertion's meaning changes — but every new definition should use the annotation spelling, and this warning is how an existing `#@effects(…)` site is found.",
+    ),
+    (
+        DiagnosticCode::E196,
+        r#"The check runs during LIR lowering, once per call to a classic built-in
+(`TURNS_SINCE`, `READ_COUNT`, `RANDOM`, `SEED_RANDOM`, `FLOOR`, `LIST_COUNT`
+and the rest), where each argument is already resolved. It refuses:
+
+- **the wrong number of arguments**, for any of them. `RANDOM(1)`,
+  `FLOOR(1, 2)` and `CHOICE_COUNT(1)` are all refused.
+- **`TURNS_SINCE` or `READ_COUNT` given a bare knot, stitch or label
+  name.** `TURNS_SINCE(k)` reads `k`'s visit count, an int, where
+  `TURNS_SINCE(-> k)` was meant. A variable or parameter holding a divert
+  target is fine; that is the case inklecate means by "only makes sense
+  for variable targets".
+- **`TURNS_SINCE` or `READ_COUNT` given a literal** (`TURNS_SINCE(3)`,
+  `READ_COUNT("k")`).
+- **`RANDOM` or `SEED_RANDOM` given a literal number that is not an
+  int**: a float (`RANDOM(1, 2.5)`, `SEED_RANDOM(-1.5)`) or a bool, which
+  ink's parser reads as a number too (`RANDOM(true, 2)`).
+
+It is an `Error` and cannot be lowered through `[lints]`. Every one of
+these shapes also fails at runtime: a missing argument underflows the value
+stack, a spare one is taken by whatever reads the stack next, and the rest
+are `RuntimeError::InvalidBuiltinArgument` faults. So there is no working
+program for a project to opt into, which is what the compat-deny tier
+requires.
+
+Arguments inklecate lets through but its runtime rejects are left to the
+runtime fault rather than refused here, so brink is never stricter than
+inklecate at compile time: `RANDOM("a", 3)`, `RANDOM(5, 2)`, and a
+variable holding an int passed to `TURNS_SINCE`."#,
+    ),
+    (
+        DiagnosticCode::E197,
+        r"The check runs once per choice line, during HIR lowering, right after the
+E195 check and on the same evidence: the choice's own line. It fires when
+the choice has an explicit `[]` with nothing inside it, and no text before
+the brackets. Text after the brackets does not save it: `* [] some text`
+fires, because the choice offers the player a blank option.
+
+It never fires together with E195. When the whole choice is empty and has
+no divert (`* []`), that is E195's case. Everything else with a blank `[]`
+is this one, including a choice that does have a divert (`* [] -> knot`)
+or a tag (`* [] #tag`), and a `(label)` or `{condition}` guard does not
+exempt it either. All of that matches inklecate, measured shape by shape.
+
+Inside the brackets, a space is content, as it is in ink: `* [ ] text` is
+clean. A comment is not: it is elided before the check, so
+`* [/* note */] text` fires.
+
+It is a `Warning`, overridable through `[lints]`: the story still compiles
+and plays, as it does in inklecate.",
     ),
 ];
