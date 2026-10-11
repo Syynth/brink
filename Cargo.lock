@@ -2144,6 +2144,7 @@ dependencies = [
  "brink-syntax",
  "brink-syntax-native",
  "proptest",
+ "regex",
  "rowan",
  "serde",
  "tracing",
