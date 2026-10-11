@@ -310,19 +310,19 @@ fn collect(
 ) -> Option<CallWidgetSite> {
     // Resolve the callee symbol by name (the most-params callable wins, so a
     // partially-typed call still maps onto the full signature).
-    let ids = analysis.index.by_name.get(callee_name)?;
-    let info = ids
+    // The external over a same-named ink fallback (`callee_named`); among
+    // the rest, the one with the most params.
+    let most = analysis
+        .index
+        .by_name
+        .get(callee_name)?
         .iter()
         .filter_map(|id| analysis.index.symbols.get(id))
-        .filter(|info| {
-            matches!(
-                info.kind,
-                brink_ir::SymbolKind::Knot
-                    | brink_ir::SymbolKind::Stitch
-                    | brink_ir::SymbolKind::External
-            )
-        })
-        .max_by_key(|info| info.params.len())?;
+        .map(|info| info.params.len())
+        .max()?;
+    let info = crate::signature::callee_named(analysis, callee_name, |info| {
+        info.kind == brink_ir::SymbolKind::External || info.params.len() == most
+    })?;
     if info.params.is_empty() {
         return None;
     }

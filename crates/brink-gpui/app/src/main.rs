@@ -224,7 +224,7 @@ struct Studio {
     caret: Option<Subscription>,
     /// The filesystem watch, held for the window's lifetime: dropping the
     /// task stops the pump and the watcher with it.
-    _watching: gpui::Task<()>,
+    _watching: watch::Watching,
     /// Where this window is in closing (see [`closing`]).
     close: CloseState,
     _subscriptions: Vec<Subscription>,
@@ -4836,6 +4836,72 @@ mod modes_driven {
         assert!(not_a_source, "the config's file, never a story source");
     }
 
+    /// A host manifest outside the project root — in a build folder beside
+    /// it — is followed on disk like one inside (#3687): written after the
+    /// project opened, then rewritten, through the real watcher.
+    #[test]
+    fn a_host_manifest_outside_the_root_is_followed_on_disk() {
+        let mut h = Harness::new();
+        let base = scratch_dir("host-manifest-outside");
+        let root = base.join("ink");
+        std::fs::create_dir_all(&root).expect("ink");
+        std::fs::create_dir_all(base.join("build")).expect("build");
+        std::fs::write(
+            root.join("brink.toml"),
+            "[project]\ndialect = \"brink\"\nentry = \"story.brink\"\n\n[host]\nmanifest = \"../build/host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            root.join("story.brink"),
+            "flow a() {\n  <shake power=\"9\">whoa</shake>\n}\n",
+        )
+        .expect("story");
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let codes = |h: &mut Harness| {
+            h.read(|cx| {
+                project
+                    .read(cx)
+                    .diagnostics_for("story.brink")
+                    .iter()
+                    .map(|d| d.code.clone())
+                    .collect::<Vec<_>>()
+            })
+        };
+        let wait = std::time::Duration::from_secs(30);
+        let ready = h.settle_until(wait, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        assert!(
+            !codes(&mut h).contains(&"E164".to_owned()),
+            "freeform until then"
+        );
+
+        // The host writes it: a vocabulary without `<shake>`.
+        std::fs::write(
+            base.join("build/host.json"),
+            r#"{ "markup": [{ "name": "b" }] }"#,
+        )
+        .expect("manifest");
+        let applied = h.settle_until(wait, |h| {
+            h.advance(std::time::Duration::from_millis(250));
+            codes(h).contains(&"E164".to_owned())
+        });
+        assert!(applied, "the new manifest applies: {:?}", codes(&mut h));
+
+        // And rewrites it: now `<shake>` is declared.
+        std::fs::write(
+            base.join("build/host.json"),
+            r#"{ "markup": [{ "name": "b" }, { "name": "shake" }] }"#,
+        )
+        .expect("rewrite");
+        let followed = h.settle_until(wait, |h| {
+            h.advance(std::time::Duration::from_millis(250));
+            !codes(h).contains(&"E164".to_owned())
+        });
+        assert!(followed, "the rewrite applies too: {:?}", codes(&mut h));
+    }
+
     /// The grammar setting reaches the checker and both kinds of editor,
     /// with no edit to prompt them: the manuscript drops the grammar it was
     /// keeping by text when grammar goes off, and a Script tab brings it
@@ -7055,6 +7121,278 @@ mod modes_driven {
         // A few more rounds of analysis and prose, against the final text.
         h.advance(std::time::Duration::from_millis(500));
         h.capture(window);
+    }
+
+    /// An external's argument offers the values the host manifest named
+    /// in `brink.toml` gives its type: `(` opens the menu on them, typing
+    /// narrows it, and picking one writes its literal, not its label.
+    #[test]
+    fn an_argument_offers_the_host_manifests_values() {
+        let dir = scratch_dir("argument-values");
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\n\n[host]\nmanifest = \"host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            dir.join("host.json"),
+            r#"{
+  "externals": [{ "name": "set_switch", "params": [{ "name": "id", "ty": "switch_id" }] }],
+  "types": [{
+    "name": "switch_id", "base": "int",
+    "values": { "source": "static", "items": [
+      { "value": "5", "label": "HarborGate", "detail": "Switch #5" },
+      { "value": "9", "label": "Vault" }
+    ] }
+  }]
+}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            dir.join("story.ink"),
+            "EXTERNAL set_switch(id)\n-> start\n=== start ===\n~ set_switch\n-> END\n",
+        )
+        .expect("story");
+        let mut h = Harness::new();
+        let window = h.open(&dir);
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        // The caret at the end of `~ set_switch`.
+        h.app_window(window, |window, cx| {
+            editor.update(cx, |state, cx| {
+                state.focus(window, cx);
+                state.set_cursor_position(gpui_component::input::Position::new(3, 12), window, cx);
+            });
+        });
+        let menu = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx).completion_menu_state();
+                state.open.then(|| {
+                    state
+                        .items
+                        .iter()
+                        .map(|i| i.label.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+        h.type_text(window, "(");
+        let opened = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some()
+        });
+        assert!(opened, "`(` never opened the menu");
+        assert_eq!(
+            menu(&mut h),
+            Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
+            "the values alone, labelled"
+        );
+        let shot = scratch_dir("shot").join("argument-values.png");
+        h.screenshot(window, &shot);
+        eprintln!("argument values screenshot: {}", shot.display());
+
+        h.type_text(window, "Va");
+        let narrowed = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some_and(|items| items.first().is_some_and(|l| l == "Vault"))
+        });
+        assert!(narrowed, "typing narrows to `Vault`: {:?}", menu(&mut h));
+        h.press(window, "enter");
+        let written = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9\n-> END"))
+        });
+        assert!(
+            written,
+            "the literal replaces what was typed: {:?}",
+            h.read(|cx| editor.read(cx).value().to_string())
+        );
+    }
+
+    /// A project whose one external takes a host-manifest type with two
+    /// labelled values, called once with `9` (`Vault`).
+    fn value_chip_project(what: &str) -> std::path::PathBuf {
+        let dir = scratch_dir(what);
+        std::fs::write(
+            dir.join("brink.toml"),
+            "[project]\nentry = \"story.ink\"\n\n[host]\nmanifest = \"host.json\"\n",
+        )
+        .expect("config");
+        std::fs::write(
+            dir.join("host.json"),
+            r#"{
+  "externals": [{ "name": "set_switch", "params": [{ "name": "id", "ty": "switch_id" }] }],
+  "types": [{
+    "name": "switch_id", "base": "int",
+    "values": { "source": "static", "items": [
+      { "value": "5", "label": "HarborGate", "detail": "The harbour gate, east pier — opens at dawn" },
+      { "value": "9", "label": "Vault" }
+    ] }
+  }]
+}"#,
+        )
+        .expect("manifest");
+        std::fs::write(
+            dir.join("story.ink"),
+            "EXTERNAL set_switch(id)\n-> start\n=== start ===\n~ set_switch(9)\n-> END\n",
+        )
+        .expect("story");
+        dir
+    }
+
+    /// A literal argument the host manifest labels carries a value chip;
+    /// clicking it opens every value for that argument, and picking one
+    /// replaces the literal (#3645, the value-list half).
+    #[test]
+    fn a_value_chip_opens_the_arguments_values() {
+        let mut h = Harness::new();
+        let window = h.open(&value_chip_project("value-chip"));
+        let studio = h.studio(window).expect("open");
+        let project = h.read(|cx| studio.read(cx).project.clone());
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeScript);
+        h.capture(window);
+        let editor = h.read(|cx| {
+            let s = studio.read(cx);
+            let document = s.code.read(cx).active_document().cloned().expect("open");
+            document.read(cx).editor().clone()
+        });
+        pick_through_the_value_chip(&mut h, window, &project, &editor, "value-chip");
+    }
+
+    /// The same chip in Write's manuscript.
+    #[test]
+    fn a_value_chip_works_in_the_manuscript() {
+        let mut h = Harness::new();
+        let window = h.open(&value_chip_project("value-chip-write"));
+        let studio = h.studio(window).expect("open");
+        let (project, manuscript) = h.read(|cx| {
+            (
+                studio.read(cx).project.clone(),
+                studio.read(cx).manuscript.clone(),
+            )
+        });
+        let ready = h.settle_until(PINS_WAIT, |h| h.read(|cx| project.read(cx).has_analyzed()));
+        assert!(ready, "the project never analyzed");
+        h.dispatch(window, ModeWrite);
+        let mounted = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| manuscript.read(cx).editor_for_test("story.ink").is_some())
+        });
+        assert!(mounted, "the manuscript never mounted the file");
+        let editor = h
+            .read(|cx| manuscript.read(cx).editor_for_test("story.ink"))
+            .expect("mounted");
+        pick_through_the_value_chip(&mut h, window, &project, &editor, "value-chip-write");
+    }
+
+    /// Find the chip as what the inlays add to the frame, click it, and pick
+    /// the first value.
+    fn pick_through_the_value_chip(
+        h: &mut Harness,
+        window: gpui::AnyWindowHandle,
+        project: &gpui::Entity<crate::project::Project>,
+        editor: &gpui::Entity<gpui_component::input::EditorState>,
+        name: &str,
+    ) {
+        // The frame without inlays, then with them: the chip is what changed.
+        h.update(|cx| editor.update(cx, |state, cx| state.set_inlays(Vec::new(), cx)));
+        let bare = h.capture(window);
+        h.update(|cx| {
+            crate::document::request_inlays(project, "story.ink", editor, false, cx);
+        });
+        let mut chip = None;
+        let found = h.settle_until(PINS_WAIT, |h| {
+            let now = h.capture(window);
+            let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+            for (x, y, p) in now.enumerate_pixels() {
+                if bare.get_pixel(x, y) != p {
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+                }
+            }
+            if x0 <= x1 {
+                chip = Some((x0, y0, x1, y1));
+            }
+            chip.is_some()
+        });
+        assert!(found, "no chip was drawn");
+        let (x0, y0, x1, y1) = chip.expect("found above");
+        let shot = scratch_dir("shot").join(format!("{name}.png"));
+        h.screenshot(window, &shot);
+        eprintln!("value chip screenshot: {}", shot.display());
+
+        // The capture is 2x; a click is in window points.
+        #[expect(clippy::cast_precision_loss, reason = "screen pixels")]
+        let (x, y) = ((x0 + x1) as f32 / 4. + 4., (y0 + y1) as f32 / 4.);
+        let caret_before = h.read(|cx| editor.read(cx).cursor());
+        // A real click: press, a hair of movement, release. Nothing between
+        // the press and the release may drag the caret off the literal.
+        h.mouse_down(window, x, y);
+        h.drag(window, x + 3., y);
+        h.mouse_up(window, x + 3., y);
+        let menu = |h: &mut Harness| {
+            h.read(|cx| {
+                let state = editor.read(cx).completion_menu_state();
+                state.open.then(|| {
+                    state
+                        .items
+                        .iter()
+                        .map(|i| i.label.clone())
+                        .collect::<Vec<_>>()
+                })
+            })
+        };
+        let opened = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            menu(h).is_some()
+        });
+        assert!(opened, "clicking the chip never opened the values");
+        assert_eq!(
+            menu(h),
+            Some(vec!["HarborGate".to_owned(), "Vault".to_owned()]),
+            "every value, not just those matching the literal"
+        );
+        assert_eq!(
+            h.read(|cx| editor.read(cx).cursor()),
+            caret_before,
+            "the chip opens its menu without moving the caret"
+        );
+        // The menu hangs from the literal's start, and stays there frame to
+        // frame: the click must not leave it to follow anything else.
+        let (anchor, literal) = h.read(|cx| {
+            let state = editor.read(cx);
+            let text = state.value().to_string();
+            let at = text.find("set_switch(9").expect("the call") + "set_switch(".len();
+            (state.completion_menu_state().anchor, at)
+        });
+        assert_eq!(anchor, Some(literal), "anchored at the literal");
+        let selected = h.read(|cx| editor.read(cx).completion_menu_state().selected);
+        assert_eq!(selected, Some(1), "it opens on the value written, `Vault`");
+        let shot = scratch_dir("shot").join(format!("{name}-open.png"));
+        h.screenshot(window, &shot);
+        eprintln!("value chip menu screenshot: {}", shot.display());
+
+        h.press(window, "up");
+        h.press(window, "enter");
+        let written = h.settle_until(PINS_WAIT, |h| {
+            h.capture(window);
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(5)\n"))
+        });
+        assert!(
+            written,
+            "the pick replaces the literal: {:?}",
+            h.read(|cx| editor.read(cx).value().to_string())
+        );
     }
 
     /// The editor menu's Fold and Unfold reach the editor they were asked

@@ -185,6 +185,7 @@ impl Document {
 
                 let origin = cx.entity().entity_id();
                 let lsp = state.lsp_mut();
+                lsp.completion_menu.max_width = gpui::px(COMPLETION_MENU_WIDTH);
                 lsp.hover_provider = Some(Rc::new(BrinkHover {
                     project: project.downgrade(),
                     path: path.clone(),
@@ -200,6 +201,7 @@ impl Document {
                     path: path.clone(),
                     origin,
                 }));
+                install_value_picker(&mut state, project.downgrade(), path.clone(), cx);
                 // Navigation shows a target by raising an event: a tab is
                 // the host's to open, not the document's.
                 let me = this_document.clone();
@@ -605,43 +607,162 @@ impl Document {
         // computing them for every file on every keystroke would be
         // O(project) for the sake of files nobody has open. The config has
         // none to ask for.
-        if self.factory.is_none()
-            || !brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints
-        {
+        if self.factory.is_none() {
             self.editor
                 .update(cx, |state, cx| state.set_inlays(Vec::new(), cx));
             return;
         }
-        let query = self.project.read(cx).query(
-            QueryKind::InlayHints {
-                path: self.path.to_string(),
+        let hints = brink_gpui_shell::settings::AppSettings::get(cx).show_inlay_hints;
+        request_inlays(&self.project, &self.path, &self.editor, hints, cx);
+    }
+}
+
+/// Ask for `path`'s inlays and put them on `editor`: a value chip on each
+/// literal argument the host manifest labels — always, since it is a
+/// widget — and, when `hints` is on, the parameter and type hints.
+pub(crate) fn request_inlays(
+    project: &Entity<Project>,
+    path: &str,
+    editor: &Entity<EditorState>,
+    hints: bool,
+    cx: &mut App,
+) {
+    let query = project.read(cx).query(
+        QueryKind::InlayHints {
+            path: path.to_owned(),
+        },
+        cx,
+    );
+    let editor = editor.clone();
+    // Both as the web draws them (`editor.css`): muted text on a faint
+    // tint of it, which the kit rounds. A chip is the same object a hint
+    // is, there to be clicked rather than read.
+    let muted = cx.theme().muted_foreground;
+    let hint_style = gpui::HighlightStyle {
+        color: Some(muted),
+        background_color: Some(muted.opacity(0.12)),
+        ..Default::default()
+    };
+    let chip_bg = muted.opacity(0.18);
+    let chip_style = gpui::HighlightStyle {
+        color: Some(muted),
+        background_color: Some(chip_bg),
+        ..Default::default()
+    };
+    // An outline in the chip's own colour, five points darker — barely
+    // there, drawn inside it (maintainer, 2026-10-09).
+    let chip_border = gpui::Hsla {
+        l: (chip_bg.l - 0.05).max(0.),
+        ..chip_bg
+    };
+    // A gap outside the rounded background: the kit's inlay has no margin.
+    let gap = |offset: usize| Inlay {
+        offset,
+        text: " ".into(),
+        style: gpui::HighlightStyle::default(),
+        swatch: None,
+        border: None,
+    };
+    cx.spawn(async move |cx| {
+        let Ok(QueryResult::InlayHints(found)) = query.await else {
+            return;
+        };
+        let mut inlays = Vec::new();
+        for h in found {
+            let offset = h.offset as usize;
+            if h.value_chip {
+                // After its literal, with a gap either side.
+                inlays.push(gap(offset));
+                inlays.push(Inlay {
+                    offset,
+                    text: format!(" {} \u{25be} ", h.label).into(),
+                    style: chip_style,
+                    swatch: None,
+                    border: Some(chip_border),
+                });
+                inlays.push(gap(offset));
+            } else if hints {
+                // Padded inside its background, and a gap after when the
+                // hint wants one (`mode:` before its argument).
+                let spaced = h.label.ends_with(' ');
+                inlays.push(Inlay {
+                    offset,
+                    text: format!(" {} ", h.label.trim_end()).into(),
+                    style: hint_style,
+                    swatch: None,
+                    border: None,
+                });
+                if spaced {
+                    inlays.push(gap(offset));
+                }
+            }
+        }
+        editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
+    })
+    .detach();
+}
+
+/// A click on an inlay opens the values the host manifest offers for the
+/// argument it sits on (`QueryKind::ArgumentValues`) in the completion
+/// menu, at that argument; picking one replaces the whole literal. An
+/// argument with no values answers nothing, and the click does nothing.
+pub(crate) fn install_value_picker(
+    state: &mut EditorState,
+    project: WeakEntity<Project>,
+    path: SharedString,
+    cx: &mut Context<EditorState>,
+) {
+    let editor = cx.weak_entity();
+    state.on_inlay_click(move |offset, window, cx| {
+        let Some(project) = project.upgrade() else {
+            return;
+        };
+        let query = project.read(cx).query(
+            QueryKind::ArgumentValues {
+                path: path.to_string(),
+                offset: u32::try_from(offset).unwrap_or(u32::MAX),
             },
             cx,
         );
-        let editor = self.editor.clone();
-        let hint_color = cx.theme().muted_foreground;
-        let hint_bg = cx.theme().muted.opacity(0.7);
-        cx.spawn(async move |_, cx| {
-            let Ok(QueryResult::InlayHints(hints)) = query.await else {
-                return;
-            };
-            let inlays: Vec<Inlay> = hints
-                .into_iter()
-                .map(|h| Inlay {
-                    offset: h.offset as usize,
-                    text: h.label.into(),
-                    style: gpui::HighlightStyle {
-                        color: Some(hint_color),
-                        background_color: Some(hint_bg),
-                        ..Default::default()
-                    },
-                    swatch: None,
-                })
-                .collect();
-            editor.update(cx, |state, cx| state.set_inlays(inlays, cx));
-        })
-        .detach();
-    }
+        let editor = editor.clone();
+        window
+            .spawn(cx, async move |cx| {
+                let Ok(QueryResult::Completions(values)) = query.await else {
+                    return;
+                };
+                if values.is_empty() {
+                    return;
+                }
+                let _ = editor.update_in(cx, |state, window, cx| {
+                    let text = state.value().to_string();
+                    let index = LineIndex::new(&text);
+                    let range = values[0]
+                        .replace
+                        .as_ref()
+                        .map_or(offset..offset, |(_, r)| r.start as usize..r.end as usize);
+                    // Open on the value already written, as the web marks it.
+                    let written = text.get(range.clone()).unwrap_or_default();
+                    let current = values.iter().position(|v| {
+                        v.replace
+                            .as_ref()
+                            .is_some_and(|(literal, _)| literal == written)
+                    });
+                    // Hung from the literal's start — under the text a pick
+                    // replaces — and the caret left where the author had it.
+                    state.focus(window, cx);
+                    let items = values.iter().map(|v| completion_item(v, &index)).collect();
+                    state.present_completion_items_anchored(
+                        range.start,
+                        "",
+                        items,
+                        current,
+                        Some(range.start),
+                        cx,
+                    );
+                });
+            })
+            .detach();
+    });
 }
 
 /// Tell the project a file's prose lints, so Problems lists them beside
@@ -1326,7 +1447,10 @@ impl InputHighlighter for BrinkHighlighter {
         };
         self.todo_lines = todo_lines(&source, &self.cache.todo_ranges());
         self.muted_lines = muted_lines(&source);
-        self.cue_lines = project.read(cx).cues_for(&self.path).to_vec();
+        // Analysed against the text as it was; placed on the text as it is
+        // (an edit above a cue line would otherwise fade the wrong bytes).
+        self.cue_lines =
+            brink_gpui_model::cues::rebase(project.read(cx).cues_for(&self.path), &source);
         let tokens = brink_gpui_shell::theme::current(cx).tokens;
         self.ink = brink_gpui_shell::theme::hsla(tokens.fg);
         self.cue_style = CueStyle {
@@ -1457,6 +1581,9 @@ impl InputHighlighter for BrinkHighlighter {
 /// Hover and completion on an editor over `path` — the half of "a brink
 /// editor" that predates `navigation::install`; the manuscript's sections
 /// call both.
+/// The widest the completion menu grows, in points.
+const COMPLETION_MENU_WIDTH: f32 = 480.;
+
 pub(crate) fn install_language_providers(
     state: &mut EditorState,
     project: &WeakEntity<Project>,
@@ -1464,6 +1591,9 @@ pub(crate) fn install_language_providers(
     origin: gpui::EntityId,
 ) {
     let lsp = state.lsp_mut();
+    // Room for a value's detail beside its label (a host's descriptions run
+    // long); the kit's default truncates them.
+    lsp.completion_menu.max_width = gpui::px(COMPLETION_MENU_WIDTH);
     lsp.hover_provider = Some(Rc::new(BrinkHover {
         project: project.clone(),
         path: path.clone(),
@@ -1682,21 +1812,30 @@ impl CompletionProvider for BrinkCompletion {
             },
             cx,
         );
+        let text = text.to_string();
         cx.background_spawn(async move {
             let QueryResult::Completions(items) = query.await? else {
                 return Ok(lsp::CompletionResponse::Array(Vec::new()));
             };
+            let index = LineIndex::new(&text);
             Ok(lsp::CompletionResponse::Array(
-                items.iter().map(completion_item).collect(),
+                items
+                    .iter()
+                    .map(|item| completion_item(item, &index))
+                    .collect(),
             ))
         })
     }
 
+    /// Identifier characters, `.`, `>` and `@` as ever; and `(`, `,`, `"`
+    /// and whitespace, which open the menu only where an argument has
+    /// values in the host manifest (the query answers nothing elsewhere).
     fn is_completion_trigger(&self, _offset: usize, new_text: &str, _cx: &mut App) -> bool {
-        new_text
-            .chars()
-            .last()
-            .is_some_and(|c| c.is_alphanumeric() || matches!(c, '_' | '.' | '>' | '@'))
+        new_text.chars().last().is_some_and(|c| {
+            c.is_alphanumeric()
+                || c.is_whitespace()
+                || matches!(c, '_' | '.' | '>' | '@' | '(' | ',' | '"')
+        })
     }
 }
 
@@ -1739,7 +1878,7 @@ pub(crate) fn position(index: &LineIndex, offset: u32) -> lsp::Position {
 
 /// The one place brink's kinds are mapped onto LSP's, so the two vocabularies
 /// meet exactly once.
-fn completion_item(item: &Completion) -> lsp::CompletionItem {
+fn completion_item(item: &Completion, index: &LineIndex) -> lsp::CompletionItem {
     use brink_ir::SymbolKind as K;
     let (kind, detail) = match item.kind {
         CompletionKind::Symbol(symbol) => (
@@ -1757,11 +1896,30 @@ fn completion_item(item: &Completion) -> lsp::CompletionItem {
         ),
         CompletionKind::StdlibFunction => (lsp::CompletionItemKind::FUNCTION, "stdlib".to_owned()),
         CompletionKind::Builtin => (lsp::CompletionItemKind::KEYWORD, "built-in".to_owned()),
+        // A value's detail is the host's own text, or nothing: its kind is
+        // plain from where the menu opened.
+        CompletionKind::Value => (lsp::CompletionItemKind::VALUE, String::new()),
     };
+    let detail = match item.kind {
+        CompletionKind::Value => item.detail.clone(),
+        _ => Some(detail),
+    };
+    // A value writes its literal over what was typed of it, not its label
+    // at the cursor.
+    let text_edit = item.replace.as_ref().map(|(new_text, range)| {
+        lsp::CompletionTextEdit::Edit(lsp::TextEdit {
+            range: lsp::Range {
+                start: position(index, range.start),
+                end: position(index, range.end),
+            },
+            new_text: new_text.clone(),
+        })
+    });
     lsp::CompletionItem {
         label: item.label.clone(),
         kind: Some(kind),
-        detail: Some(detail),
+        detail,
+        text_edit,
         ..Default::default()
     }
 }
@@ -2117,6 +2275,8 @@ mod tests {
             end: 9,
             kind: "character".to_owned(),
             hidden: vec![(0, 1), (6, 9)],
+            line: 0,
+            text: String::new(),
         };
         let runs = vec![
             (0..9, gpui::HighlightStyle::default()),
@@ -2153,18 +2313,24 @@ mod tests {
             end: 5,
             kind: "parenthetical".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let dialogue = CueLine {
             start: 6,
             end: 10,
             kind: "dialogue".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let unknown = CueLine {
             start: 11,
             end: 15,
             kind: "scene_heading".to_owned(),
             hidden: vec![],
+            line: 0,
+            text: String::new(),
         };
         let runs = vec![
             (0..5, gpui::HighlightStyle::default()),

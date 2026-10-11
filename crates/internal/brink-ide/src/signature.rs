@@ -26,15 +26,7 @@ pub fn signature_help(
     let (func_name, active_param) = find_call_context(source, byte_offset)?;
 
     // Look up the function in the symbol index
-    let info = analysis.index.symbols.values().find(|info| {
-        matches!(
-            info.kind,
-            brink_ir::SymbolKind::Knot
-                | brink_ir::SymbolKind::Stitch
-                | brink_ir::SymbolKind::External
-        ) && info.name == func_name
-            && !info.params.is_empty()
-    })?;
+    let info = callee_named(analysis, &func_name, |info| !info.params.is_empty())?;
 
     // Host-manifest enrichment: typed params / return / doc for externals.
     let meta = analysis.symbol_meta.get(&info.id);
@@ -140,6 +132,34 @@ pub fn signature_help_with_dialect(
     })
 }
 
+/// The callable a call to `name` resolves to for tooling, among those
+/// `accept` allows: a knot, stitch or `EXTERNAL`, and an `EXTERNAL` before
+/// an ink function of the same name. Ink lets an external carry such a
+/// function as its fallback, and the host manifest's types and values
+/// belong to the external — the fallback has none, so picking it would
+/// lose them. Otherwise the index's own order, so the answer is stable.
+pub(crate) fn callee_named<'a>(
+    analysis: &'a AnalysisResult,
+    name: &str,
+    accept: impl Fn(&brink_ir::SymbolInfo) -> bool,
+) -> Option<&'a brink_ir::SymbolInfo> {
+    analysis
+        .index
+        .by_name
+        .get(name)?
+        .iter()
+        .filter_map(|id| analysis.index.symbols.get(id))
+        .filter(|info| {
+            matches!(
+                info.kind,
+                brink_ir::SymbolKind::Knot
+                    | brink_ir::SymbolKind::Stitch
+                    | brink_ir::SymbolKind::External
+            ) && accept(info)
+        })
+        .min_by_key(|info| info.kind != brink_ir::SymbolKind::External)
+}
+
 /// One pickable value for an argument (Tier 3 static value source, #174).
 pub struct ArgumentValueCompletion {
     /// The literal inserted into source (e.g. `"5"`).
@@ -153,7 +173,9 @@ pub struct ArgumentValueCompletion {
 /// Pickable values for the argument at `byte_offset` (#174): if the cursor is
 /// inside a call whose active parameter has a value source, return its labelled
 /// items — `static` items from the manifest, or `host` items from the pushed
-/// cache (`host_values`, empty/`None` when no host is attached). Empty for a
+/// cache (`host_values`, empty/`None` when no host is attached). A type with
+/// no value source but an `enum` constraint offers the enum's members, as
+/// string literals — the same closed set E042 checks against. Empty for a
 /// non-value param. Reuses the same call-site → semantic-type join point as
 /// [`signature_help`].
 #[must_use]
@@ -166,15 +188,7 @@ pub fn argument_value_completions(
     let Some((func_name, active_param)) = find_call_context(source, byte_offset) else {
         return Vec::new();
     };
-    let Some(info) = analysis.index.symbols.values().find(|info| {
-        matches!(
-            info.kind,
-            brink_ir::SymbolKind::Knot
-                | brink_ir::SymbolKind::Stitch
-                | brink_ir::SymbolKind::External
-        ) && info.name == func_name
-            && !info.params.is_empty()
-    }) else {
+    let Some(info) = callee_named(analysis, &func_name, |info| !info.params.is_empty()) else {
         return Vec::new();
     };
     let Some(rt) = analysis
@@ -185,8 +199,16 @@ pub fn argument_value_completions(
     else {
         return Vec::new();
     };
+    // A string type's items may be written bare (`rain`) — the value-label
+    // hint already matches them against the quoted literal — so what is
+    // written is quoted, whichever way the host wrote it.
+    let is_string = rt.base == Some(brink_ir::BaseType::String);
     let to_completion = |it: &brink_ir::ValueItem| ArgumentValueCompletion {
-        value: it.value.clone(),
+        value: if is_string && !it.value.starts_with('"') {
+            format!("\"{}\"", it.value)
+        } else {
+            it.value.clone()
+        },
         label: it.label.clone(),
         detail: it.detail.clone(),
     };
@@ -195,7 +217,20 @@ pub fn argument_value_completions(
         Some(brink_ir::ValueSource::Host) => host_values
             .and_then(|hv| hv.get(&rt.name))
             .map_or_else(Vec::new, |items| items.iter().map(to_completion).collect()),
-        None => Vec::new(),
+        None => match &rt.constraint {
+            // A member holding a double quote can't be written as a plain
+            // literal, so it is left out rather than offered broken.
+            Some(brink_ir::Constraint::Enum { values }) => values
+                .iter()
+                .filter(|v| !v.contains('"'))
+                .map(|v| ArgumentValueCompletion {
+                    value: format!("\"{v}\""),
+                    label: v.clone(),
+                    detail: None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        },
     }
 }
 
@@ -309,6 +344,174 @@ mod tests {
         // Cursor in the second arg slot (on: bool — no value source) → empty.
         let on_offset = src.find("true").expect("second arg");
         assert!(super::argument_value_completions(analysis, src, on_offset, None).is_empty());
+    }
+
+    /// A type with an `enum` constraint and no value source offers the
+    /// enum's members — the closed set E042 checks — as string literals.
+    #[test]
+    fn argument_value_completions_for_an_enum_constraint() {
+        use brink_ir::{
+            BaseType, Constraint, ExternalKind, HostManifest, ManifestExternal, ManifestParam,
+            SemanticTypeDef, TypeRef,
+        };
+
+        let src = "EXTERNAL face(dir)\n~ face(\"north\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "face".into(),
+                params: vec![ManifestParam {
+                    name: "dir".into(),
+                    ty: TypeRef("direction".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Effect,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "direction".into(),
+                base: BaseType::String,
+                constraint: Some(Constraint::Enum {
+                    values: vec!["north".into(), "south".into(), "say \"hi\"".into()],
+                }),
+                values: None,
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("face(\"").expect("call") + "face(".len();
+        let values = super::argument_value_completions(analysis, src, offset, None);
+        let got: Vec<(&str, &str)> = values
+            .iter()
+            .map(|v| (v.label.as_str(), v.value.as_str()))
+            .collect();
+        assert_eq!(
+            got,
+            [("north", "\"north\""), ("south", "\"south\"")],
+            "the members, quoted; one with a quote in it is left out"
+        );
+    }
+
+    /// A string type's static items written bare complete as quoted
+    /// literals; one already quoted is left as it is.
+    #[test]
+    fn a_string_types_values_complete_quoted() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL set_weather(kind)\n~ set_weather(\"rain\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        let item = |value: &str, label: &str| ValueItem {
+            value: value.into(),
+            label: label.into(),
+            detail: None,
+        };
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_weather".into(),
+                params: vec![ManifestParam {
+                    name: "kind".into(),
+                    ty: TypeRef("weather".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Presentation,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "weather".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![item("rain", "Rain"), item("\"fog\"", "Fog")],
+                }),
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("weather(\"").expect("call") + "weather(".len();
+        let values: Vec<String> = super::argument_value_completions(analysis, src, offset, None)
+            .into_iter()
+            .map(|v| v.value)
+            .collect();
+        assert_eq!(values, ["\"rain\"", "\"fog\""]);
+    }
+
+    /// An `EXTERNAL` with an ink fallback function of the same name is
+    /// still described by the host manifest: signature help, argument
+    /// values and the value-label hint all read the external's types, not
+    /// the fallback's (which has none).
+    #[test]
+    fn an_external_with_an_ink_fallback_keeps_its_manifest_types() {
+        use brink_ir::{
+            BaseType, ExternalKind, HostManifest, ManifestExternal, ManifestParam, SemanticTypeDef,
+            TypeRef, ValueItem, ValueSource,
+        };
+
+        let src = "EXTERNAL set_weather(kind)\n=== function set_weather(kind)\n~ return\n=== start ===\n~ set_weather(\"rain\")\n-> END\n";
+        let mut session = IdeSession::new();
+        session.update_and_analyze("test.ink", src.to_string());
+        session.set_host_manifest(HostManifest {
+            markup: Vec::new(),
+            externals: vec![ManifestExternal {
+                name: "set_weather".into(),
+                params: vec![ManifestParam {
+                    name: "kind".into(),
+                    ty: TypeRef("weather".into()),
+                }],
+                returns: TypeRef::default(),
+                kind: ExternalKind::Presentation,
+                doc: None,
+                widgets: vec![],
+                path: Vec::new(),
+            }],
+            types: vec![SemanticTypeDef {
+                name: "weather".into(),
+                base: BaseType::String,
+                constraint: None,
+                values: Some(ValueSource::Static {
+                    items: vec![ValueItem {
+                        value: "rain".into(),
+                        label: "Rain".into(),
+                        detail: None,
+                    }],
+                }),
+                widget: None,
+            }],
+        });
+        let analysis = session.analysis().expect("analysis");
+        let offset = src.find("~ set_weather(\"").expect("call") + "~ set_weather(".len();
+
+        let sig = super::signature_help(analysis, src, offset).expect("a signature");
+        assert!(
+            sig.label.contains("kind: weather"),
+            "the external's type: {}",
+            sig.label
+        );
+        let values = super::argument_value_completions(analysis, src, offset, None);
+        assert_eq!(values.len(), 1, "the external's values");
+
+        let id = session.file_id("test.ink").expect("file");
+        let root = session.syntax_root(id).expect("root");
+        let whole = rowan::TextRange::new(
+            0.into(),
+            rowan::TextSize::from(u32::try_from(src.len()).expect("small")),
+        );
+        let hints = crate::inlay_hints::inlay_hints(&root, analysis, session.db(), id, whole, None);
+        assert!(
+            hints.iter().any(|h| h.label.contains("Rain")),
+            "the value label: {:?}",
+            hints.iter().map(|h| &h.label).collect::<Vec<_>>()
+        );
     }
 
     #[test]
