@@ -68,7 +68,26 @@ const KNOWN_DIVERGENCES: &[(&str, SourcePredicate)] = &[
     // and brink's container paths are not inklecate's, so the two pick
     // different permutations.
     ("#3538", uses_a_shuffle),
+    // A choice whose condition calls a function, in a story with a tunnel
+    // return: the call's output ends its line when the tunnel returns
+    // through the invisible fallback, where ink keeps the line open.
+    ("#3698", choice_condition_calls_a_function_with_a_tunnel),
 ];
+
+/// A `*`/`+` choice line whose `{…}` condition makes a call, in a story
+/// that returns from a tunnel (`->->`) somewhere (#3698).
+fn choice_condition_calls_a_function_with_a_tunnel(src: &str) -> bool {
+    let calls_in_condition = src.lines().any(|line| {
+        let line = line.trim_start();
+        (line.starts_with('*') || line.starts_with('+'))
+            && line.find('{').is_some_and(|open| {
+                line[open..]
+                    .find('}')
+                    .is_some_and(|close| line[open..open + close].contains('('))
+            })
+    });
+    calls_in_condition && src.contains("->->")
+}
 
 /// A `{~…}` shuffle anywhere in the story (#3538). Predates this tier:
 /// `tests/tier2/conditional/shuffle` is 0/1 against the C# oracle and
