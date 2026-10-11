@@ -90,8 +90,5 @@ fn a_thread_on_a_choice_line_runs_before_the_newline() {
 /// The form that already worked keeps working.
 #[test]
 fn a_plain_divert_still_glues_to_its_target() {
-    assert_eq!(
-        lines("+ hi -> k\n=== k\nthere\n-> END\n"),
-        ["hi there\n"]
-    );
+    assert_eq!(lines("+ hi -> k\n=== k\nthere\n-> END\n"), ["hi there\n"]);
 }
