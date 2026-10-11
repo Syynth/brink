@@ -111,6 +111,13 @@ pub enum RuntimeError {
     #[error("{0}")]
     InvalidBuiltinArgument(String),
 
+    /// A `->->` ran with no tunnel frame to return from: the top frame is
+    /// the root (a knot reached by a plain divert or a host jump) or a
+    /// function. ink raises this rather than ending the flow (#166);
+    /// `expected` names what the top frame wanted instead, in ink's words.
+    #[error("Found tunnel onwards statement (->->), when expected {expected}")]
+    TunnelReturnWithoutTunnel { expected: &'static str },
+
     #[error("division by zero")]
     DivisionByZero,
 

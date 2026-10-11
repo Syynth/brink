@@ -9,4 +9,3 @@ oracle-source = "inkjs"
 issue = "#166"
 
 [source]
-expected_mismatch = "#166"
