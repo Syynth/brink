@@ -253,6 +253,10 @@ pub struct ContinuousView {
     /// Frames a reveal may wait for its section to lay out, so it can land
     /// on the line's true place (`apply_pending_reveal`).
     reveal_retries: u8,
+    /// A remembered place to put back (#3689), once its file is in the
+    /// list and its section has laid out — `apply_pending_anchor`.
+    pending_anchor: Option<brink_gpui_shell::settings::ManuscriptAnchor>,
+    anchor_retries: u8,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -367,6 +371,8 @@ impl ContinuousView {
             trail: Rc::default(),
             folds: Rc::default(),
             reveal_retries: 0,
+            pending_anchor: None,
+            anchor_retries: 0,
             _subscriptions: vec![watch],
         }
     }
@@ -392,6 +398,15 @@ impl ContinuousView {
     /// the theme's colours) and the row height is re-measured, so nothing
     /// the author is holding moves.
     fn restyle(&mut self, cx: &mut Context<Self>) {
+        // The place, read while the sections still hold the old layout
+        // (#3689): a new font size re-wraps and re-heights every row, and
+        // the list's pixel offset would then point at another line.
+        if self.pending_anchor.is_none()
+            && let Some(place) = self.anchor(cx)
+        {
+            self.pending_anchor = Some(place);
+            self.anchor_retries = REVEAL_TRIES;
+        }
         // The gutter's red is the theme's.
         self.refresh_gutters(cx);
         let project = self.project.downgrade();
@@ -430,7 +445,29 @@ impl ContinuousView {
         let Some((editor, _)) = self.editors.borrow().get(path).cloned() else {
             return;
         };
-        if origin != Some(editor.entity_id()) {
+        // The place, read before the text moves (#3689): the item's height
+        // is about to be dropped, which puts the list at the item's top, so
+        // a change in the file at the top of the view would otherwise throw
+        // the author back to its chapter break.
+        let at_top =
+            self.files.get(self.list.logical_scroll_top().item_ix) == Some(&path.to_owned());
+        let mut place = if at_top { self.anchor(cx) } else { None };
+        let external = origin != Some(editor.entity_id());
+        if external
+            && let Some(place) = place.as_mut()
+            && !place.on_break
+        {
+            // A change from elsewhere arrives in the old text's terms: the
+            // line at the top moves by what was inserted and removed above
+            // it, and a line swallowed by the change lands where it was.
+            let grown = delta.inserted.len() as isize - delta.removed.len() as isize;
+            if delta.range.end <= place.offset {
+                place.offset = place.offset.saturating_add_signed(grown);
+            } else if delta.range.start < place.offset {
+                place.offset = delta.range.start;
+            }
+        }
+        if external {
             let fallback = self
                 .project
                 .read(cx)
@@ -457,9 +494,13 @@ impl ContinuousView {
         if let Some(section) = self.editors.borrow_mut().get_mut(path) {
             section.1 = height;
         }
-        // Drop the list's cached height for this one item; the scroll
-        // position survives, which `reset` would not give.
+        // Drop the list's cached height for this one item. `splice` keeps
+        // every other item's place but zeroes the offset inside this one,
+        // so the place read above is put back.
         self.list.splice(index..index + 1, 1);
+        if let Some(place) = place {
+            self.restore_anchor(place, cx);
+        }
         cx.notify();
     }
 
@@ -619,6 +660,122 @@ impl ContinuousView {
             // sidebar and the title bar's knot › stitch follow from here.
             self.follow_caret(path, editor, cx);
         }
+        cx.notify();
+    }
+
+    /// Where the view is scrolled, as text (#3689): the file at the top,
+    /// the line there and how far into it. Read from the laid-out section
+    /// at the top, so it says what the author is looking at however the
+    /// heights above it later change.
+    pub fn anchor(&self, cx: &App) -> Option<brink_gpui_shell::settings::ManuscriptAnchor> {
+        // A remembered place not yet put back — a session spent in Script
+        // mode never lays the manuscript out — is still the place.
+        if let Some(pending) = &self.pending_anchor {
+            return Some(pending.clone());
+        }
+        let top = self.list.logical_scroll_top();
+        let path = self.files.get(top.item_ix)?.clone();
+        let into_item = f32::from(top.offset_in_item);
+        let into_text = into_item - (self.lead(top.item_ix) + SEPARATOR_HEIGHT);
+        if into_text <= 0. {
+            return Some(brink_gpui_shell::settings::ManuscriptAnchor {
+                path,
+                offset: 0,
+                into: into_item.max(0.),
+                on_break: true,
+            });
+        }
+        let (editor, _) = self.editors.borrow().get(&path).cloned()?;
+        let state = editor.read(cx);
+        let len = state.value().len();
+        let offset = crate::sticky_lines::line_at(state, px(into_text), 0..len)?;
+        let line_top = crate::sticky_lines::content_top(state, offset)?;
+        Some(brink_gpui_shell::settings::ManuscriptAnchor {
+            path,
+            offset,
+            into: (into_text - f32::from(line_top)).max(0.),
+            on_break: false,
+        })
+    }
+
+    /// Put the view back on a remembered place (#3689) — on the next frames,
+    /// once the file is listed and its section has laid out.
+    pub fn restore_anchor(
+        &mut self,
+        anchor: brink_gpui_shell::settings::ManuscriptAnchor,
+        cx: &mut Context<Self>,
+    ) {
+        self.pending_anchor = Some(anchor);
+        self.anchor_retries = REVEAL_TRIES;
+        cx.notify();
+    }
+
+    fn apply_pending_anchor(&mut self, cx: &mut Context<Self>) {
+        let Some(anchor) = self.pending_anchor.clone() else {
+            return;
+        };
+        // A restyle in flight: the sections still report the old row
+        // height, so a place computed now would land on the old layout.
+        if self.stale_line_height.is_some() || self.measured_line_height.is_none() {
+            cx.notify();
+            return;
+        }
+        // The project's files have not arrived yet: keep waiting, without
+        // spending a try — this is a restore at open.
+        if self.files.is_empty() {
+            return;
+        }
+        let Some(index) = self.files.iter().position(|f| *f == anchor.path) else {
+            // The file has gone: the top is as good a place as any.
+            self.pending_anchor = None;
+            return;
+        };
+        if anchor.on_break {
+            self.pending_anchor = None;
+            self.list.scroll_to(gpui::ListOffset {
+                item_ix: index,
+                offset_in_item: px(anchor.into),
+            });
+            cx.notify();
+            return;
+        }
+        let line_height = self
+            .measured_line_height
+            .unwrap_or_else(|| f32::from(cx.theme().mono_font_size) * LINE_HEIGHT_FACTOR);
+        let y = self
+            .editors
+            .borrow()
+            .get(&anchor.path)
+            .and_then(|(editor, _)| {
+                let state = editor.read(cx);
+                state.line_height()?;
+                let text = state.value();
+                let at = anchor.offset.min(text.len());
+                let line = text
+                    .get(..at)
+                    .map_or(0, |before| before.matches('\n').count());
+                Some(state.display_row_of_buffer_line(line) as f32 * line_height)
+            });
+        let Some(y) = y else {
+            // Not laid out yet: bring the file on screen so it mounts, and
+            // place the line once it has.
+            if self.anchor_retries > 0 {
+                self.anchor_retries -= 1;
+                self.list.scroll_to(gpui::ListOffset {
+                    item_ix: index,
+                    offset_in_item: px(0.),
+                });
+                cx.notify();
+            } else {
+                self.pending_anchor = None;
+            }
+            return;
+        };
+        self.pending_anchor = None;
+        self.list.scroll_to(gpui::ListOffset {
+            item_ix: index,
+            offset_in_item: px(self.lead(index) + SEPARATOR_HEIGHT + y + anchor.into),
+        });
         cx.notify();
     }
 
@@ -1849,6 +2006,7 @@ impl Render for ContinuousView {
         self.adopt_measured_line_height(cx);
         self.remeasure_sections(cx);
         self.apply_pending_reveal(cx);
+        self.apply_pending_anchor(cx);
         if let Some(path) = self.pending_focus.clone()
             && let Some((editor, _)) = self.editors.borrow().get(&path).cloned()
         {

@@ -1019,12 +1019,11 @@ fn step_impl<R: crate::rng::StoryRng>(
         // ── Intrinsics ──────────────────────────────────────────────
         Opcode::VisitCount => {
             let val = flow.pop_value()?;
-            if let Value::DivertTarget(id) = val {
-                let count = context.visit_count(id);
-                flow.value_stack.push(Value::Int(count.cast_signed()));
-            } else {
-                flow.value_stack.push(Value::Int(0));
-            }
+            let Value::DivertTarget(id) = val else {
+                return Err(not_a_divert_target(&val, program));
+            };
+            let count = context.visit_count(id);
+            flow.value_stack.push(Value::Int(count.cast_signed()));
         }
         Opcode::CurrentVisitCount => {
             // The current container's visit count was already incremented
@@ -1066,14 +1065,13 @@ fn step_impl<R: crate::rng::StoryRng>(
         }
         Opcode::TurnsSince => {
             let val = flow.pop_value()?;
-            let result = if let Value::DivertTarget(id) = val {
-                if let Some(last_turn) = context.turn_count(id) {
-                    #[expect(clippy::cast_possible_wrap)]
-                    let delta = (context.turn_index() - last_turn) as i32;
-                    delta
-                } else {
-                    -1
-                }
+            let Value::DivertTarget(id) = val else {
+                return Err(not_a_divert_target(&val, program));
+            };
+            let result = if let Some(last_turn) = context.turn_count(id) {
+                #[expect(clippy::cast_possible_wrap)]
+                let delta = (context.turn_index() - last_turn) as i32;
+                delta
             } else {
                 -1
             };
@@ -1093,48 +1091,44 @@ fn step_impl<R: crate::rng::StoryRng>(
             // write the brink draw verbs record.
             guard_comparator_write(flow, "advanced the RNG state (a draw is a write)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
-            // Reference pops max first, then min.
+            // Reference pops max first, then min, and checks min first.
+            // Both must be ints: a float, string or anything else is the
+            // reference's hard error, not a value to coerce (#3364).
             let max_val = flow.pop_value()?;
             let min_val = flow.pop_value()?;
-            let max_i = match max_val {
-                Value::Int(n) => n,
-                Value::Float(f) => {
-                    #[expect(clippy::cast_possible_truncation)]
-                    {
-                        f as i32
-                    }
-                }
-                _ => 1,
+            let Value::Int(min_i) = min_val else {
+                return Err(RuntimeError::InvalidBuiltinArgument(
+                    "Invalid value for minimum parameter of RANDOM(min, max)".to_owned(),
+                ));
             };
-            let min_i = match min_val {
-                Value::Int(n) => n,
-                Value::Float(f) => {
-                    #[expect(clippy::cast_possible_truncation)]
-                    {
-                        f as i32
-                    }
-                }
-                _ => 0,
+            let Value::Int(max_i) = max_val else {
+                return Err(RuntimeError::InvalidBuiltinArgument(
+                    "Invalid value for maximum parameter of RANDOM(min, max)".to_owned(),
+                ));
             };
-            // +1 because RANDOM is inclusive of both min and max.
+            // +1 because RANDOM is inclusive of both min and max. The
+            // reference computes this in a wrapping 32-bit int too, so a
+            // range wider than an int reads as non-positive there as here.
             let range = max_i.wrapping_sub(min_i).wrapping_add(1);
-            let result = if range <= 0 {
-                min_i
-            } else {
-                let result_seed = context.rng_seed().wrapping_add(context.previous_random());
-                let next_random = context.next_random::<R>(result_seed);
-                context.set_previous_random(next_random);
-                (next_random % range) + min_i
-            };
-            flow.value_stack.push(Value::Int(result));
+            if range <= 0 {
+                return Err(RuntimeError::InvalidBuiltinArgument(format!(
+                    "RANDOM was called with minimum as {min_i} and maximum as {max_i}. \
+                     The maximum must be larger"
+                )));
+            }
+            let result_seed = context.rng_seed().wrapping_add(context.previous_random());
+            let next_random = context.next_random::<R>(result_seed);
+            context.set_previous_random(next_random);
+            flow.value_stack
+                .push(Value::Int((next_random % range) + min_i));
         }
         Opcode::SeedRandom => {
             guard_comparator_write(flow, "reseeded the RNG (the RNG cell is world state)")?;
             note_effect_write(flow, program, DefinitionId::RNG_CELL);
-            let seed_val = flow.pop_value()?;
-            let seed = match seed_val {
-                Value::Int(n) => n,
-                _ => 0,
+            let Value::Int(seed) = flow.pop_value()? else {
+                return Err(RuntimeError::InvalidBuiltinArgument(
+                    "Invalid value passed to SEED_RANDOM".to_owned(),
+                ));
             };
             context.set_rng_seed(seed);
             context.set_previous_random(0);
@@ -3583,6 +3577,24 @@ fn handle_shuffle_sequence<R: crate::rng::StoryRng>(
     let pos = current_position(flow)?;
     let path_hash = program.container(pos.container_idx).path_hash;
     handle_shuffle_with_hash::<R>(flow, context, path_hash)
+}
+
+/// `TURNS_SINCE`/`READ_COUNT` on something that is not a divert target:
+/// the reference's hard error, worded as it words it (#3363). An int gets
+/// its hint, since passing `knot` (a read count) where `-> knot` was meant
+/// is the usual way to get here.
+fn not_a_divert_target(val: &Value, program: &Program) -> RuntimeError {
+    let mut message = format!(
+        "TURNS_SINCE / READ_COUNT expected a divert target (knot, stitch, label name), but saw {}",
+        value_ops::stringify(val, program)
+    );
+    if matches!(val, Value::Int(_)) {
+        message.push_str(
+            ". Did you accidentally pass a read count ('knot_name') instead of a target \
+             ('-> knot_name')?",
+        );
+    }
+    RuntimeError::InvalidBuiltinArgument(message)
 }
 
 /// The shuffle-selection core, parameterized by the seeding `path_hash` —

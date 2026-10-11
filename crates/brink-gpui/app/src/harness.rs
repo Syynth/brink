@@ -152,8 +152,16 @@ impl Harness {
     }
 
     /// Change something on the app, then settle.
+    ///
+    /// Runs inside gpui's update cycle, so the effects `f` queues — a
+    /// global's observers, an entity's notifications and events — are
+    /// flushed before this returns (#3663). `HeadlessAppContext::update`
+    /// hands over `&mut App` without one, and nothing flushed what it
+    /// queued until the next real update came along; `AsyncApp::update`
+    /// is the public road to `App::update`.
     pub fn update<R>(&mut self, f: impl FnOnce(&mut App) -> R) -> R {
-        let r = self.app().update(f);
+        let async_cx = self.app().update(|cx| cx.to_async());
+        let r = async_cx.update(f);
         self.settle();
         r
     }
@@ -568,6 +576,27 @@ mod tests {
         ));
         h.dispatch(window, CloseWindow);
         assert!(!h.is_open(window));
+    }
+
+    /// #3663: a global set through `update` reaches its observers before
+    /// `update` returns, without waiting for some later update cycle.
+    #[test]
+    fn update_flushes_what_it_queues() {
+        struct Marker(u32);
+        impl gpui::Global for Marker {}
+
+        let mut h = Harness::new();
+        let seen = std::rc::Rc::new(std::cell::Cell::new(0_u32));
+        h.update(|cx| cx.set_global(Marker(0)));
+        let observer = {
+            let seen = std::rc::Rc::clone(&seen);
+            h.update(move |cx| {
+                cx.observe_global::<Marker>(move |cx| seen.set(cx.global::<Marker>().0))
+            })
+        };
+        h.update(|cx| cx.set_global(Marker(7)));
+        assert_eq!(seen.get(), 7, "the observer ran inside the update");
+        drop(observer);
     }
 
     /// The harness itself: keystrokes reach the real editor the way a

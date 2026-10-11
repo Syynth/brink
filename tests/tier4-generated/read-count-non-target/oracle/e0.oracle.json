@@ -1,0 +1,22 @@
+{
+  "steps": [
+    {
+      "text": "first line\n",
+      "tags": [],
+      "outcome": "Continue",
+      "variable_changes": {},
+      "visit_changes": {},
+      "turn_index": 0
+    }
+  ],
+  "outcome": {
+    "Error": "RUNTIME ERROR: 'story.ink' line 3: TURNS_SINCE / READ_COUNT expected a divert target (knot, stitch, label name), but saw k"
+  },
+  "choice_path": [],
+  "initial_state": {
+    "variables": {
+      "s": "k"
+    },
+    "turn_index": 0
+  }
+}

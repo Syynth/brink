@@ -146,20 +146,15 @@ fn block_comment_in_inline_conditional_branch() {
 
 // ── Comment between two interpolations in the same branch ────────────
 //
-// Unlike `content.rs`'s and `choice.rs`'s `L_BRACE` arms, `branch_content`'s
-// `L_BRACE` arm was deliberately left as an unconditional `p.skip_ws()`
-// (not given the `nth_raw(0) == L_BRACE` raw-position guard those two
-// arms have): adding that guard here changed the CST shape for ordinary
-// comment-free leading whitespace too (an existing snapshot test,
-// `logic::cst::conditional_nested_inline_logic`, pinned the old
-// `p.skip_ws()`-swallowed shape with no `TEXT` node), so `BRANCH_CONTENT`
-// is not that ancestor's structural mirror here. `p.skip_ws()` still
-// eats a comment sitting between two interpolations without stalling
-// (it always advances -- it doesn't need the zero-progress guard the
-// catch-all arm does), and it does so while `BRANCH_CONTENT` is still the
-// open node, so the comment stays nested inside `IMPLICIT_SEQUENCE`
-// either way. This pins that it keeps working, not that it goes through
-// the catch-all's `skip_comment_tokens` retry.
+// Whitespace and a comment between two `{...}` elements of a branch
+// (#2982): `branch_content`'s guarded `L_BRACE` arm keeps the whitespace
+// as `TEXT` (ink prints `A B`, not `AB`) and elides the comment with
+// `skip_comment_tokens`, each step advancing, so the comment stays nested
+// inside `BRANCH_CONTENT` and so inside `IMPLICIT_SEQUENCE`. Only
+// whitespace AFTER earlier content takes that path: leading whitespace at
+// the start of a branch is still trivia, which is what keeps
+// `logic::cst::conditional_nested_inline_logic`'s shape (the reason an
+// earlier, unconditional version of the guard was reverted in #2976).
 
 #[test]
 fn block_comment_between_interpolations_in_branch() {

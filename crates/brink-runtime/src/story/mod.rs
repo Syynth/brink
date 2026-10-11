@@ -1946,14 +1946,18 @@ impl<R: StoryRng> Story<R> {
     /// runs, not after — or the flow reaches a stopping VM outcome (a
     /// choice point or a terminal `-> DONE`/`-> END`).
     ///
-    /// The breakpoint check is skipped on this call's very first
-    /// iteration, before any `vm::step` has run — otherwise a resumed
-    /// `debug_run` called right after a previous `debug_run`/`debug_step`
-    /// stopped exactly on an armed breakpoint would immediately re-report
-    /// that same breakpoint without making any forward progress, forever
-    /// (issue #3186 review: "resume is impossible"). At least one
-    /// instruction always executes before a breakpoint at the position
-    /// already stopped at is honored again.
+    /// The breakpoint at the starting position is skipped only when this
+    /// call resumes from the stop the previous debug verb left the flow at
+    /// — same run, same position — otherwise a resumed `debug_run` would
+    /// re-report that breakpoint without making any forward progress,
+    /// forever (issue #3186 review: "resume is impossible"). Anywhere else
+    /// the starting position is checked like every other (#3679): after
+    /// [`choose`](Self::choose), which leaves the flow on the first
+    /// instruction of the taken choice, a breakpoint on that choice's line
+    /// holds before it runs (the 2026-10-09 ruling), and a breakpoint on
+    /// the very first instruction of a fresh story holds at the start. A
+    /// choice or a host jump starts a new run, so a stop before it is
+    /// never mistaken for a resume after it.
     ///
     /// A choice point (`-> DONE`/exhaustion with pending choices) reports
     /// [`DebugStopReason::Choices`](crate::DebugStopReason::Choices), not
@@ -2149,14 +2153,69 @@ impl<R: StoryRng> Story<R> {
         breakpoints: &crate::debug_control::BreakpointSet,
         budget_ceiling: u64,
         stop_on_line: StopOnLine,
+        watchpoints: Option<&mut crate::WatchpointObserver>,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        let DebugTarget { flow, world, local } = target;
+        let resuming = Self::take_debug_hold(flow);
+        let outcome = Self::debug_run_loop(
+            env,
+            DebugTarget {
+                flow: &mut *flow,
+                world,
+                local,
+            },
+            breakpoints,
+            budget_ceiling,
+            stop_on_line,
+            watchpoints,
+            resuming,
+        );
+        Self::record_debug_hold(flow, outcome.as_ref().ok());
+        outcome
+    }
+
+    /// Whether this debug verb resumes from the stop the last one left the
+    /// flow at — same run, same position (#3679). Clears the record either
+    /// way: it describes one stop, and this verb moves on from it.
+    #[cfg(feature = "debug-hooks")]
+    fn take_debug_hold(flow: &mut FlowInstance) -> bool {
+        let here = Self::position_of(&flow.flow)
+            .map(|p| (flow.flow.next_block_id, p.container_idx, p.offset));
+        flow.debug_hold
+            .take()
+            .is_some_and(|hold| Some(hold) == here)
+    }
+
+    /// Remember where a debug verb stopped, for [`Self::take_debug_hold`].
+    #[cfg(feature = "debug-hooks")]
+    fn record_debug_hold(flow: &mut FlowInstance, outcome: Option<&crate::DebugRunOutcome>) {
+        flow.debug_hold = outcome
+            .and_then(|o| o.position)
+            .map(|p| (flow.flow.next_block_id, p.container_idx, p.offset));
+    }
+
+    /// The run loop behind [`Self::debug_run_impl`]. The breakpoint at the
+    /// starting position is checked unless `resuming`: a run that resumes
+    /// from a stop must not stop there again, but one that starts anywhere
+    /// else — a choice just taken, a jump — holds on a breakpoint right
+    /// where it begins (#3679, the 2026-10-09 ruling that a breakpoint on a
+    /// choice line holds when that choice is taken).
+    #[cfg(feature = "debug-hooks")]
+    fn debug_run_loop(
+        env: &DebugEnv<'_>,
+        target: DebugTarget<'_>,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+        stop_on_line: StopOnLine,
         mut watchpoints: Option<&mut crate::WatchpointObserver>,
+        resuming: bool,
     ) -> Result<crate::DebugRunOutcome, RuntimeError> {
         use crate::debug_control::DebugStopReason;
         use crate::state::ObservedContext;
 
         let DebugTarget { flow, world, local } = target;
         let mut steps: u64 = 0;
-        let mut past_entry = false;
+        let mut past_entry = !resuming;
         loop {
             // Leftover-hit drain (#3226), BEFORE any stepping: a hit
             // already queued in the observer reports HERE, at the position
@@ -2531,6 +2590,37 @@ impl<R: StoryRng> Story<R> {
 
     #[cfg(feature = "debug-hooks")]
     fn debug_step_impl(
+        env: &DebugEnv<'_>,
+        target: DebugTarget<'_>,
+        mode: crate::debug_control::StepMode,
+        granularity: StepGranularity,
+        breakpoints: &crate::debug_control::BreakpointSet,
+        budget_ceiling: u64,
+    ) -> Result<crate::DebugRunOutcome, RuntimeError> {
+        // A step always moves before it checks a breakpoint, wherever it
+        // starts, so it consumes the hold record without consulting it —
+        // and records its own stop, so a run from there resumes rather
+        // than holding again on the spot (#3679).
+        let DebugTarget { flow, world, local } = target;
+        flow.debug_hold = None;
+        let outcome = Self::debug_step_loop(
+            env,
+            DebugTarget {
+                flow: &mut *flow,
+                world,
+                local,
+            },
+            mode,
+            granularity,
+            breakpoints,
+            budget_ceiling,
+        );
+        Self::record_debug_hold(flow, outcome.as_ref().ok());
+        outcome
+    }
+
+    #[cfg(feature = "debug-hooks")]
+    fn debug_step_loop(
         env: &DebugEnv<'_>,
         target: DebugTarget<'_>,
         mode: crate::debug_control::StepMode,

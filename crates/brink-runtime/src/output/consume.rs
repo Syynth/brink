@@ -224,6 +224,88 @@ impl OutputBuffer {
         }
     }
 
+    /// The line ink would still deliver when the VM faults: the first
+    /// newline that survived glue, whether or not visible content has
+    /// followed it yet.
+    ///
+    /// ink evaluates past a finished line inside the same `Continue`, to
+    /// see whether glue reaches back over its newline. A fault in that
+    /// lookahead is rolled back with the state snapshot taken at the
+    /// newline: the finished line is delivered, and the fault happens
+    /// again on the next `Continue`. [`Self::take_first_line`] will not
+    /// hand this line out, since it waits for visible content to commit
+    /// the newline; at a fault nothing more is coming, so the newline is
+    /// as final as it will get. Content after it is the line the fault
+    /// interrupted, and ink drops it.
+    ///
+    /// Reads the transcript even while a capture is open: a fault inside
+    /// a function called from an interpolation leaves its capture
+    /// unclosed, but the line before it is already in the transcript.
+    ///
+    /// Returns `None` when no newline survives (a fault mid-line, or after
+    /// glue that swallowed the newline), which delivers nothing.
+    pub(crate) fn take_line_before_fault(
+        &mut self,
+        program: &Program,
+        line_tables: &[Vec<LineEntry>],
+        resolver: Option<&dyn PluralResolver>,
+    ) -> Option<ResolvedLine> {
+        loop {
+            let unread = &self.transcript[self.cursor..];
+            if unread.is_empty() {
+                return None;
+            }
+            let remove = &mut self.line_scan;
+            remove.clear();
+            remove.resize(unread.len(), false);
+            mark_glue_removals(unread, remove);
+
+            let mut after_glue = false;
+            let mut split: Option<usize> = None;
+            for (i, part) in unread.iter().enumerate() {
+                if remove[i] {
+                    if matches!(part, OutputPart::Glue) {
+                        after_glue = true;
+                    }
+                    continue;
+                }
+                if part.is_visible() {
+                    after_glue = false;
+                } else {
+                    match part {
+                        OutputPart::Newline if !after_glue => {
+                            split = Some(i);
+                            break;
+                        }
+                        OutputPart::Glue => after_glue = true,
+                        _ => {}
+                    }
+                }
+            }
+            let split_at = split?;
+
+            let slice = &self.transcript[self.cursor..=self.cursor + split_at];
+            let ((mut text, tags, suppressed, element, source), next_element) =
+                resolve_first_line_annotated(
+                    slice,
+                    &self.line_scan[..=split_at],
+                    self.pending_element.clone(),
+                    program,
+                    line_tables,
+                    resolver,
+                    &self.fragments,
+                );
+            self.cursor += split_at + 1;
+            self.rescan_completion();
+            self.pending_element = next_element;
+            if suppressed {
+                continue;
+            }
+            text.push('\n');
+            return Some((text, tags, element, source));
+        }
+    }
+
     /// Resolve glue and flush to a string (ignoring tags).
     ///
     /// Glue removes the newline immediately before it and any leading

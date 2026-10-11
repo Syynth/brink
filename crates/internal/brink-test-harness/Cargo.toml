@@ -138,5 +138,9 @@ required-features = ["debug-hooks"]
 name = "debug_seam_3223_3224_3226"
 required-features = ["debug-hooks"]
 
+[[test]]
+name = "debug_entry_hold_3679"
+required-features = ["debug-hooks"]
+
 [lints]
 workspace = true

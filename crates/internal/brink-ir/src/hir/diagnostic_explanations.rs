@@ -672,4 +672,35 @@ about being empty; it is supposed to be."#,
         DiagnosticCode::E110,
         r"`#@effects(…)` was the original tag-channel spelling of a knot/stitch's effects assertion. The `@[effects(…)]` annotation is the final NS-A2 form (`docs/stdlib-spec.md` §9.2, ruled 2026-07-18), and the two spellings are **not** interchangeable text: `#@effects(…)` keeps the legacy **colon** argument grammar (`reads: gold, hp`) frozen forever, while `@[effects(…)]` uses the amended **paren-clause** grammar (`reads(gold, hp)`, 2026-07-19). The tag spelling still parses — nothing about the assertion's meaning changes — but every new definition should use the annotation spelling, and this warning is how an existing `#@effects(…)` site is found.",
     ),
+    (
+        DiagnosticCode::E196,
+        r#"The check runs during LIR lowering, once per call to a classic built-in
+(`TURNS_SINCE`, `READ_COUNT`, `RANDOM`, `SEED_RANDOM`, `FLOOR`, `LIST_COUNT`
+and the rest), where each argument is already resolved. It refuses:
+
+- **the wrong number of arguments**, for any of them. `RANDOM(1)`,
+  `FLOOR(1, 2)` and `CHOICE_COUNT(1)` are all refused.
+- **`TURNS_SINCE` or `READ_COUNT` given a bare knot, stitch or label
+  name.** `TURNS_SINCE(k)` reads `k`'s visit count, an int, where
+  `TURNS_SINCE(-> k)` was meant. A variable or parameter holding a divert
+  target is fine; that is the case inklecate means by "only makes sense
+  for variable targets".
+- **`TURNS_SINCE` or `READ_COUNT` given a literal** (`TURNS_SINCE(3)`,
+  `READ_COUNT("k")`).
+- **`RANDOM` or `SEED_RANDOM` given a literal number that is not an
+  int**: a float (`RANDOM(1, 2.5)`, `SEED_RANDOM(-1.5)`) or a bool, which
+  ink's parser reads as a number too (`RANDOM(true, 2)`).
+
+It is an `Error` and cannot be lowered through `[lints]`. Every one of
+these shapes also fails at runtime: a missing argument underflows the value
+stack, a spare one is taken by whatever reads the stack next, and the rest
+are `RuntimeError::InvalidBuiltinArgument` faults. So there is no working
+program for a project to opt into, which is what the compat-deny tier
+requires.
+
+Arguments inklecate lets through but its runtime rejects are left to the
+runtime fault rather than refused here, so brink is never stricter than
+inklecate at compile time: `RANDOM("a", 3)`, `RANDOM(5, 2)`, and a
+variable holding an int passed to `TURNS_SINCE`."#,
+    ),
 ];

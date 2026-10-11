@@ -104,6 +104,13 @@ pub enum RuntimeError {
     #[error("type error: {0}")]
     TypeError(String),
 
+    /// An ink built-in (`TURNS_SINCE`, `READ_COUNT`, `RANDOM`,
+    /// `SEED_RANDOM`) was handed an argument the reference runtime rejects
+    /// with a hard error. The message is the reference's own wording
+    /// (#3363, #3364).
+    #[error("{0}")]
+    InvalidBuiltinArgument(String),
+
     #[error("division by zero")]
     DivisionByZero,
 

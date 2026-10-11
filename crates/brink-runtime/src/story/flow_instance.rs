@@ -58,6 +58,19 @@ pub struct FlowInstance {
     /// flag via [`Story::set_visibility_enforcement`](crate::Story::set_visibility_enforcement),
     /// so the two never diverge for story-owned flows.
     pub(crate) enforce_visibility: bool,
+    /// A fault the VM hit after a finished line, held back so that line
+    /// could go out first (ink's lookahead rollback — see
+    /// [`OutputBuffer::take_line_before_fault`](crate::output::OutputBuffer)).
+    /// Stamped with the run it happened in, like `Flow::pending_terminal`:
+    /// the next `advance` returns it unless a host jump or choice has
+    /// started a new run since.
+    pub(crate) pending_fault: Option<(u64, RuntimeError)>,
+    /// Where the last debug verb stopped, as `(run, container, offset)`
+    /// (#3679). A debug run skips the breakpoint at its starting position
+    /// only when it is resuming from exactly this stop; a choice or a host
+    /// jump starts a new run, so the breakpoint where it lands holds.
+    #[cfg(feature = "debug-hooks")]
+    pub(crate) debug_hold: Option<(u64, u32, usize)>,
 }
 
 /// Bookkeeping for an in-progress engine→ink function evaluation.
@@ -141,6 +154,9 @@ impl FlowInstance {
             stats: Stats::default(),
             eval: None,
             enforce_visibility: true,
+            pending_fault: None,
+            #[cfg(feature = "debug-hooks")]
+            debug_hold: None,
         };
         // All existing construction paths default to the all-`World`
         // policy (see `docs/scoped-flow-state-spec.md` "The policy") — this
@@ -407,6 +423,14 @@ impl FlowInstance {
         {
             return Ok(StepOutcome::Step(pending));
         }
+        // A fault held back on the previous call so the line before it
+        // could be delivered: raise it now. A new run since (host jump or
+        // choice) drops it, as it drops a stale pending terminal.
+        if let Some((stamp, fault)) = self.pending_fault.take()
+            && stamp == self.flow.next_block_id
+        {
+            return Err(fault);
+        }
 
         // 1. If buffer already has a completed line from a previous step,
         //    take it immediately (no VM stepping needed).
@@ -477,6 +501,7 @@ impl FlowInstance {
             flow,
             status,
             stats,
+            pending_fault,
             ..
         } = self;
         let step_start = stats.steps;
@@ -488,7 +513,25 @@ impl FlowInstance {
                 return Err(RuntimeError::StepLimitExceeded(step_limit));
             }
 
-            let stepped = vm::step::<R>(flow, program, line_tables, context, stats, resolver)?;
+            let stepped = match vm::step::<R>(flow, program, line_tables, context, stats, resolver)
+            {
+                Ok(stepped) => stepped,
+                Err(fault) => {
+                    // ink delivers a finished line before a fault in the
+                    // lookahead past it, and raises the fault on the next
+                    // `Continue` (#3363).
+                    let Some((text, tags, element, source)) =
+                        flow.output
+                            .take_line_before_fault(program, line_tables, resolver)
+                    else {
+                        return Err(fault);
+                    };
+                    *pending_fault = Some((flow.next_block_id, fault));
+                    return Ok(StepOutcome::Step(make_output_line(
+                        flow, text, tags, element, source,
+                    )));
+                }
+            };
 
             match stepped {
                 vm::Stepped::Continue | vm::Stepped::ThreadCompleted => {

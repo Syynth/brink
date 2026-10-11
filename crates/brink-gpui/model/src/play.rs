@@ -497,24 +497,10 @@ pub fn run(
             }
             // A breakpoint on the taken choice's line (decision log
             // 2026-10-09, option A) sits on the first instruction the
-            // choice runs — exactly where `choose` leaves the story. A debug
-            // run never stops at the position it starts from (that is how
-            // a hold resumes), so it would step straight past: the landing
-            // place is checked here, and a hit holds before anything plays.
-            if let Some(pos) = running.story.debug_position()
-                && let Some(bp) = running.breakpoints.iter().find(|b| {
-                    b.enabled && b.container_idx == pos.container_idx && b.offset == pos.offset
-                })
-            {
-                return PlayOutcome {
-                    stop: Some(PlayStop {
-                        kind: StopKind::Breakpoint,
-                        reason: format!("breakpoint {}", bp.name),
-                        at: current_line(running),
-                    }),
-                    ..PlayOutcome::default()
-                };
-            }
+            // choice runs, exactly where `choose` leaves the story. The
+            // debug run below holds there: it skips its starting position
+            // only when resuming from a stop at it, and a choice starts a
+            // new run (#3679).
             // On to the choice's first line — the rewind point is the one
             // taken before the choice.
             let mut outcome = debug_command(slot, DebugVerb::Line);

@@ -2122,6 +2122,21 @@ pub enum DiagnosticCode {
     /// `[lints]`-overridable, matching the sibling markup/shadow-warning
     /// family (`E164`/`E188`/…) — the story still compiles.
     E195,
+    /// A classic ink built-in called with arguments inklecate's compiler
+    /// refuses (#3363, #3364), worded as inklecate words it: the wrong
+    /// number of arguments for any of them; for `TURNS_SINCE`/`READ_COUNT`,
+    /// a bare knot/stitch/label name (a read count, where `-> name` was
+    /// meant) or a literal; for `RANDOM`/`SEED_RANDOM`, a literal number
+    /// that is not an int (a float or a bool).
+    ///
+    /// Raised from LIR lowering of a `CallBuiltin`
+    /// (`lir::lower::expr::check_builtin_args`), where the argument is
+    /// already resolved (a bare name has become `VisitCount`). `Error`, and
+    /// not the compat-deny tier: every one of these shapes faults at
+    /// runtime too, so there is no working program to opt into. What
+    /// inklecate lets through and only its runtime rejects is left to
+    /// the runtime fault (`RuntimeError::InvalidBuiltinArgument`).
+    E196,
 }
 
 impl DiagnosticCode {
@@ -2329,6 +2344,7 @@ impl DiagnosticCode {
         Self::E193,
         Self::E194,
         Self::E195,
+        Self::E196,
     ];
 
     /// The stable string representation (e.g., `"E001"`).
@@ -2533,6 +2549,7 @@ impl DiagnosticCode {
             Self::E193 => "E193",
             Self::E194 => "E194",
             Self::E195 => "E195",
+            Self::E196 => "E196",
         }
     }
 
@@ -2868,6 +2885,7 @@ impl DiagnosticCode {
             Self::E193 => "`temp` read on a path its declaration does not dominate",
             Self::E194 => "a knot's temp is not visible from its stitches",
             Self::E195 => "choice has neither display text nor a divert",
+            Self::E196 => "built-in function called with arguments ink rejects",
         }
     }
 
@@ -3281,6 +3299,7 @@ impl DiagnosticCode {
             "E193" => Some(Self::E193),
             "E194" => Some(Self::E194),
             "E195" => Some(Self::E195),
+            "E196" => Some(Self::E196),
             _ => None,
         }
     }
