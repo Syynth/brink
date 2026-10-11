@@ -770,6 +770,11 @@ impl Studio {
             let root = root.display().to_string();
             if saved.scroll_root.as_deref() == Some(root.as_str()) {
                 code.update(cx, |code, _| code.set_scroll_state(saved.scroll));
+                // And Write mode's place (#3689), put back once the files
+                // have arrived and the section there has laid out.
+                if let Some(anchor) = saved.manuscript {
+                    manuscript.update(cx, |m, cx| m.restore_anchor(anchor, cx));
+                }
             }
         }
 
@@ -787,7 +792,7 @@ impl Studio {
         // thread alive until quit (found by the headless harness's leak
         // check).
         cx.on_app_quit(|this: &mut Studio, cx: &mut Context<Studio>| {
-            let documents = document_state(&this.project, &this.code, cx);
+            let documents = document_state(&this.project, &this.code, &this.manuscript, cx);
             Workspace::save_layout(&this.workspace, Some(documents), cx);
             async move {}
         })
@@ -1227,7 +1232,7 @@ impl Studio {
 
     /// Write the open tabs and their scrolls into the settings.
     fn save_documents(&self, cx: &mut App) {
-        let documents = document_state(&self.project, &self.code, cx);
+        let documents = document_state(&self.project, &self.code, &self.manuscript, cx);
         Workspace::save_layout(&self.workspace, Some(documents), cx);
     }
 
@@ -2285,6 +2290,7 @@ impl Studio {
     /// closes the window itself, so this says no.
     fn should_close(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if self.close.confirmed {
+            self.save_documents(cx);
             return true;
         }
         if self.close.asking {
@@ -2293,6 +2299,10 @@ impl Studio {
             return false;
         }
         let Some(answer) = self.ask_about_unsaved(window, cx) else {
+            // Where the author was — the tabs, their scrolls, Write mode's
+            // place (#3689) — goes with the window, not only with a quit:
+            // closing a project and opening it again is a restart too.
+            self.save_documents(cx);
             return true;
         };
         cx.spawn_in(window, async move |this, cx| {
@@ -2315,6 +2325,7 @@ impl Studio {
                 studio.close.asking = false;
                 if close {
                     studio.close.confirmed = true;
+                    studio.save_documents(cx);
                     window.remove_window();
                 } else if choice == closing::Choice::Save {
                     studio.report_unsaved(window, cx);
@@ -2641,6 +2652,7 @@ fn counted(n: usize, noun: &str) -> String {
 fn document_state(
     project: &Entity<Project>,
     code: &Entity<CodeView>,
+    manuscript: &Entity<ContinuousView>,
     cx: &App,
 ) -> brink_gpui_shell::settings::Documents {
     let code = code.read(cx);
@@ -2649,6 +2661,16 @@ fn document_state(
         scroll: code.scroll_state(cx),
         open: code.open_paths(cx),
         active: code.active_path(cx),
+        // Write mode's place, as text (#3689). Kept when the manuscript has
+        // none to give (a project not yet laid out), so a quick close does
+        // not forget where the author was.
+        manuscript: manuscript.read(cx).anchor(cx).or_else(|| {
+            let saved = brink_gpui_shell::settings::AppSettings::get(cx).layout;
+            (saved.scroll_root.as_deref()
+                == Some(project.read(cx).root().display().to_string().as_str()))
+            .then_some(saved.manuscript)
+            .flatten()
+        }),
     }
 }
 
@@ -5771,6 +5793,158 @@ mod modes_driven {
         );
         std::fs::write(dir.join("story.ink"), story).expect("writing the story");
         dir
+    }
+
+    /// #3689 case 1: Write mode's place survives closing and reopening the
+    /// project — the same line at the top, as text, not as pixels.
+    #[test]
+    fn write_modes_place_survives_a_reopen() {
+        let mut h = Harness::new();
+        let root = long_outline_project();
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        // Line ~80, a few pixels into it.
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5 + 7., cx)));
+        h.redraw(window);
+        h.redraw(window);
+        let before = h
+            .read(|cx| manuscript.read(cx).anchor(cx))
+            .expect("a place to remember");
+        assert!(!before.on_break, "scrolled into the text: {before:?}");
+        assert!(before.offset > 0, "{before:?}");
+
+        h.dispatch(window, brink_gpui_shell::commands::CloseWindow);
+        assert!(!h.is_open(window));
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("reopened");
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        let back = h.settle_until(std::time::Duration::from_secs(20), |h| {
+            h.redraw(window);
+            let now = h.read(|cx| manuscript.read(cx).anchor(cx));
+            now.as_ref()
+                .is_some_and(|a| a.path == before.path && a.offset == before.offset)
+        });
+        let now = h.read(|cx| manuscript.read(cx).anchor(cx));
+        assert!(back, "reopened at {now:?}, not {before:?}");
+    }
+
+    /// The text of the line a manuscript anchor names, for the #3689 tests.
+    fn anchored_line(h: &mut Harness, studio: &gpui::Entity<crate::Studio>) -> Option<String> {
+        h.read(|cx| {
+            let m = studio.read(cx).manuscript.read(cx);
+            let anchor = m.anchor(cx)?;
+            let editor = m.section_editor(&anchor.path)?;
+            let text = editor.read(cx).value().to_string();
+            let rest = text.get(anchor.offset..)?;
+            Some(rest.lines().next().unwrap_or("").to_owned())
+        })
+    }
+
+    /// #3689 case 2: a mode switch out of Write and back leaves the place
+    /// alone.
+    #[test]
+    fn write_modes_place_survives_a_mode_switch() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5 + 7., cx)));
+        h.redraw(window);
+        h.redraw(window);
+        let before = anchored_line(&mut h, &studio).expect("a line at the top");
+        h.dispatch(window, ModeScript);
+        h.redraw(window);
+        h.dispatch(window, ModeWrite);
+        h.redraw(window);
+        h.redraw(window);
+        assert_eq!(
+            anchored_line(&mut h, &studio).as_deref(),
+            Some(before.as_str())
+        );
+    }
+
+    /// #3689 case 3: the file changing on disk above the view keeps the
+    /// same text at the top of it.
+    #[test]
+    fn an_edit_above_the_view_keeps_the_line_at_the_top() {
+        let mut h = Harness::new();
+        let root = long_outline_project();
+        let window = h.open(&root);
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5 + 7., cx)));
+        h.redraw(window);
+        h.redraw(window);
+        let before = anchored_line(&mut h, &studio).expect("a line at the top");
+        let path = root.join("story.ink");
+        let text = std::fs::read_to_string(&path).expect("the story");
+        std::fs::write(
+            &path,
+            format!("Added one.\nAdded two.\nAdded three.\n{text}"),
+        )
+        .expect("rewriting the story");
+        // What the watcher would report; the harness does not watch disk.
+        h.update(|cx| {
+            let project = studio.read(cx).project.clone();
+            project.update(cx, |p, cx| p.disk_changed(&["story.ink".to_owned()], cx));
+        });
+        let reloaded = h.settle_until(std::time::Duration::from_secs(20), |h| {
+            h.redraw(window);
+            h.read(|cx| {
+                manuscript
+                    .read(cx)
+                    .section_editor("story.ink")
+                    .is_some_and(|e| e.read(cx).value().starts_with("Added one."))
+            })
+        });
+        assert!(reloaded, "the change on disk reached the manuscript");
+        h.redraw(window);
+        h.redraw(window);
+        assert_eq!(
+            anchored_line(&mut h, &studio).as_deref(),
+            Some(before.as_str())
+        );
+    }
+
+    /// #3689 case 4: a resize, and a font-size change that re-wraps and
+    /// re-heights every row, keep the same line at the top.
+    #[test]
+    fn a_resize_or_a_zoom_keeps_the_line_at_the_top() {
+        let mut h = Harness::new();
+        let window = h.open(&long_outline_project());
+        let studio = h.studio(window).expect("open");
+        h.dispatch(window, ModeWrite);
+        let manuscript = h.read(|cx| studio.read(cx).manuscript.clone());
+        h.update(|cx| manuscript.update(cx, |m, cx| m.scroll_list_to(92. + 80. * 19.5 + 7., cx)));
+        h.redraw(window);
+        h.redraw(window);
+        let before = anchored_line(&mut h, &studio).expect("a line at the top");
+
+        h.app_window(window, |window, _| {
+            window.resize(gpui::size(gpui::px(900.), gpui::px(500.)));
+        });
+        h.redraw(window);
+        h.redraw(window);
+        assert_eq!(
+            anchored_line(&mut h, &studio).as_deref(),
+            Some(before.as_str()),
+            "after a resize"
+        );
+
+        h.press(window, "cmd-=");
+        h.press(window, "cmd-=");
+        h.redraw(window);
+        h.redraw(window);
+        h.redraw(window);
+        assert_eq!(
+            anchored_line(&mut h, &studio).as_deref(),
+            Some(before.as_str()),
+            "after a zoom"
+        );
     }
 
     /// Scrolled into a stitch, its knot's header and its own stay pinned at

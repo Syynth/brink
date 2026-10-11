@@ -798,6 +798,7 @@ impl Workspace {
             // The app's panes (Write mode's sidebar columns, its Player):
             // theirs to size, so carried through like the scrolls.
             panes: saved.panes,
+            manuscript: saved.manuscript,
         }
     }
 
@@ -855,6 +856,7 @@ impl Workspace {
             layout.scroll = documents.scroll;
             layout.open_files = documents.open;
             layout.active_file = documents.active;
+            layout.manuscript = documents.manuscript;
         }
         crate::settings::update(cx, |settings| settings.layout = layout);
     }
