@@ -1,0 +1,9 @@
+# Capture-tier case (issue #3380, docs/program-generator-spec.md §5).
+# Written by scripts/promote-generated.mjs; the golden under oracle/ came
+# from the inkjs oracle (tools/inkjs-oracle).
+
+[provenance]
+source = "probe"
+property = "probe: #3363 against inkjs"
+oracle-source = "inkjs"
+issue = "#3363"

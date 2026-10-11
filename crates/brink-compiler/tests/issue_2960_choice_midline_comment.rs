@@ -19,28 +19,13 @@
 //! text is missing `world` / a bogus follow-on line appears. After the
 //! fix, there must be zero diagnostics and exactly one choice.
 //!
-//! Byte-exact whitespace preservation around the elided comment (the
-//! double space #2958's `content.rs` precedent established, matching
-//! inklecate's own `astrochili__narrator` `comments.ink` corpus output) is
-//! pinned separately at the CST/`TEXT`-node level in
-//! `crates/internal/brink-syntax/src/parser/tests/choice/mod.rs`, the same
-//! layer #2958's own precedent tests use — NOT at this runtime layer.
-//! `OutputBuffer::push_text` (`brink-runtime/src/output/mod.rs`) collapses
-//! adjacent whitespace at text-part boundaries by design (see
-//! `adjacent_whitespace_collapsed`), and an elided comment leaves nothing
-//! between the two surviving whitespace-bearing `TEXT` parts, so the two
-//! spaces this fix preserves in the CST collapse to one single space by
-//! the time a choice's displayed text (or a chosen choice's follow-on
-//! output) reaches the transcript. That collapse is pre-existing brink
-//! output-buffer behavior, unrelated to and unchanged by this fix — but
-//! note it DIVERGES from the C# reference for this exact shape: inklecate
-//! compiles the elided comment's surrounding whitespace verbatim (a double
-//! space — see `tests/tests_github/astrochili__narrator/test/units/`
-//! `comments.ink.json`) and the C# runtime prints it as-is. No oracle
-//! episode covers the shape today, so the ratchet doesn't see it; the
-//! divergence is tracked as its own issue rather than resolved (or
-//! declared correct) here. The runtime assertions below expect brink's
-//! current single collapsed space accordingly.
+//! Whitespace around the elided comment (#2975): ink keeps it verbatim in
+//! a choice's displayed text (`Hello  world`, two spaces — checked against
+//! `tools/inkjs-oracle`), because choice text is a string evaluation and
+//! never passes through the runtime's output-whitespace cleaning. Content
+//! output, including a chosen choice's echoed text, is cleaned, so there
+//! the two spaces read as one, in ink and in brink alike. The assertions
+//! below expect exactly that.
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::expect_used)]
 
@@ -133,17 +118,16 @@ fn choose_first_and_collect_output(source: &str) -> String {
 
 /// A mid-line block comment in choice START content (before any `[`) must
 /// not fragment the choice: exactly one choice, its text intact with both
-/// surrounding spaces of the elided comment preserved.
+/// surrounding spaces of the elided comment preserved, as ink offers it.
 #[test]
 fn block_comment_in_choice_start_content_stays_one_choice() {
     let src = "* Hello /* c */ world\n    -> END\n";
     let texts = first_choice_texts(src);
     assert_eq!(
         texts,
-        vec!["Hello world".to_string()],
-        "expected exactly one intact choice, comment elided, no fragmentation \
-         (the CST's two surviving spaces collapse to one at the runtime \
-         output-buffer layer -- see this file's module doc)"
+        vec!["Hello  world".to_string()],
+        "expected exactly one intact choice, comment elided, no fragmentation, \
+         both spaces kept (see this file's module doc)"
     );
 }
 
@@ -189,24 +173,19 @@ fn block_comment_between_interpolations_in_choice_text() {
     let texts = first_choice_texts(src);
     assert_eq!(
         texts,
-        vec!["Hi A B".to_string()],
+        vec!["Hi A  B".to_string()],
         "expected the comment elided with no fragmentation between the two \
-         interpolations, once collapsed at the output layer"
+         interpolations, both spaces kept as ink keeps them"
     );
 }
 
 /// `choice_bracket_content` already survives a mid-line comment (stuck-token
 /// handler is `p.bump()`, not `break`) — pinned here so a future change
-/// can't silently regress the one region that was never broken. Unlike
-/// `skip_comment_tokens`, `choice_bracket_content`'s `p.bump()` recovery
-/// consumes exactly the stuck comment token and nothing more, so it does
-/// not carry the same double-space whitespace-preservation guarantee as
-/// the fixed start/inner regions below — this test pins its actual
-/// existing (untouched by this fix) output, not a normative claim about
-/// what it should produce.
+/// can't silently regress the one region that was never broken. The two
+/// spaces around the comment are kept, as ink offers them (#2975).
 #[test]
 fn block_comment_in_choice_bracket_content_already_works() {
     let src = "* Hello[hidden /* c */ bracket]world\n    -> END\n";
     let texts = first_choice_texts(src);
-    assert_eq!(texts, vec!["Hellohidden bracket".to_string()]);
+    assert_eq!(texts, vec!["Hellohidden  bracket".to_string()]);
 }

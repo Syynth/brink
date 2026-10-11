@@ -1175,7 +1175,14 @@ fn emit_content_parts(parts: &[ContentPart], context: &str) -> Result<String, Em
             ContentPart::Text(t) => s.push_str(&escape_content_text(t)),
             ContentPart::Glue => s.push_str("<>"),
             ContentPart::Interpolation(e) => {
-                let _ = write!(s, "{{{}}}", emit_expr(e, context)?);
+                // `{!` opens a once-only sequence in native content, so a
+                // negation leading an interpolation is bracketed (#3516).
+                let rendered = emit_expr(e, context)?;
+                if rendered.starts_with('!') {
+                    let _ = write!(s, "{{({rendered})}}");
+                } else {
+                    let _ = write!(s, "{{{rendered}}}");
+                }
             }
             ContentPart::Spring => return Err(unsupported("word-break spring", context)),
             ContentPart::InlineConditional(_) => {
@@ -1737,19 +1744,33 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
             Ok(out)
         }
         Expr::Prefix(op, inner) => {
+            // The native surface's logical negation is `!` (`not` is a
+            // variable name there, #3516). A prefix binds tighter than
+            // every infix operator, so a binary operand needs parentheses
+            // to stay the operand (`not (a and b)` is `!(a && b)`), and a
+            // nested prefix gets them so `- -1` cannot lex as `--`.
             let op_str = match op {
                 PrefixOp::Negate => "-",
-                PrefixOp::Not => "not ",
+                PrefixOp::Not => "!",
             };
-            Ok(format!("{op_str}{}", emit_expr(inner, context)?))
+            let operand = emit_expr(inner, context)?;
+            if matches!(**inner, Expr::Infix(_) | Expr::Prefix(..)) {
+                Ok(format!("{op_str}({operand})"))
+            } else {
+                Ok(format!("{op_str}{operand}"))
+            }
         }
         Expr::Infix(ie) => {
+            // Parenthesise an operand whose own operator would not keep
+            // it together under the native grammar's precedence (#3518):
+            // a looser left operand, and a looser-or-equal right one,
+            // since every native infix operator is left-associative
+            // (`a - (b + c)` must not print as `a - b + c`).
             let op_str = infix_op_str(ie.op);
-            Ok(format!(
-                "{} {op_str} {}",
-                emit_expr(&ie.lhs, context)?,
-                emit_expr(&ie.rhs, context)?
-            ))
+            let prec = native_infix_prec(ie.op);
+            let lhs = emit_operand(&ie.lhs, context, |p| p < prec)?;
+            let rhs = emit_operand(&ie.rhs, context, |p| p <= prec)?;
+            Ok(format!("{lhs} {op_str} {rhs}"))
         }
         Expr::Postfix(inner, op) => {
             let op_str = match op {
@@ -1809,6 +1830,40 @@ fn emit_expr(e: &Expr, context: &str) -> Result<String, EmitError> {
         // refusal for every other claiming-file construct (module doc:
         // "`emit_native` cannot round-trip a claiming file").
         Expr::Fragment(_) => Err(unsupported("internal fragment-capture expression", context)),
+    }
+}
+
+/// An infix operand, parenthesised when it is itself an infix expression
+/// whose precedence `needs_parens` says would not bind it to its parent.
+fn emit_operand(
+    e: &Expr,
+    context: &str,
+    needs_parens: impl Fn(u8) -> bool,
+) -> Result<String, EmitError> {
+    let rendered = emit_expr(e, context)?;
+    match e {
+        Expr::Infix(inner) if needs_parens(native_infix_prec(inner.op)) => {
+            Ok(format!("({rendered})"))
+        }
+        _ => Ok(rendered),
+    }
+}
+
+/// The native grammar's binding power for an infix operator, mirroring
+/// `brink-syntax-native`'s `parser::expr::Prec` (higher binds tighter).
+/// The list operators have no native infix spelling in that table; `0`
+/// makes them parenthesised wherever they appear as an operand, and their
+/// own operands too, which never changes a grouping the HIR carries.
+fn native_infix_prec(op: InfixOp) -> u8 {
+    match op {
+        InfixOp::Coalesce => 1,
+        InfixOp::Or => 2,
+        InfixOp::And => 3,
+        InfixOp::Eq | InfixOp::NotEq => 4,
+        InfixOp::Lt | InfixOp::Gt | InfixOp::LtEq | InfixOp::GtEq => 5,
+        InfixOp::Add | InfixOp::Sub => 6,
+        InfixOp::Mul | InfixOp::Div | InfixOp::Mod => 7,
+        InfixOp::Intersect | InfixOp::Has | InfixOp::HasNot => 0,
     }
 }
 
@@ -2995,5 +3050,50 @@ flow a() {
             msg.contains("var directive channel"),
             "refusal message should name the var-directive channel, got: {msg}"
         );
+    }
+
+    /// The `~ let` value a one-statement flow respells to.
+    fn emitted_let_value(expr: &str) -> String {
+        let src = format!("flow a() {{\n  ~ let t = {expr}\n  {{t}}\n}}\n");
+        let emitted = lower_and_emit(&src).expect("emits");
+        let line = emitted
+            .lines()
+            .find(|l| l.trim_start().starts_with("~ let t = "))
+            .unwrap_or_else(|| panic!("no `~ let t` in:\n{emitted}"));
+        line.trim_start()["~ let t = ".len()..].to_owned()
+    }
+
+    /// #3518: parentheses survive where the native grammar's precedence or
+    /// left-associativity needs them, and only there.
+    #[test]
+    fn infix_operands_keep_the_parentheses_precedence_needs() {
+        assert_eq!(emitted_let_value("0 - (0 + 1)"), "0 - (0 + 1)");
+        assert_eq!(emitted_let_value("(0 - 1) - 2"), "0 - 1 - 2");
+        assert_eq!(emitted_let_value("8 / (4 / 2)"), "8 / (4 / 2)");
+        assert_eq!(emitted_let_value("(1 + 2) * 3"), "(1 + 2) * 3");
+        assert_eq!(emitted_let_value("1 + 2 * 3"), "1 + 2 * 3");
+        assert_eq!(
+            emitted_let_value("(true || false) && true"),
+            "(true || false) && true"
+        );
+        assert_eq!(emitted_let_value("-(1 + 2)"), "-(1 + 2)");
+        assert_eq!(emitted_let_value("-(-1)"), "-(-1)");
+    }
+
+    /// #3516: logical negation is `!`, with a binary operand bracketed so
+    /// it stays the operand.
+    #[test]
+    fn negation_respells_as_bang() {
+        assert_eq!(emitted_let_value("!true"), "!true");
+        assert_eq!(emitted_let_value("!(true && false)"), "!(true && false)");
+    }
+
+    /// #3516: `{!` opens a once-only sequence in native content, so an
+    /// interpolated negation is bracketed.
+    #[test]
+    fn an_interpolated_negation_is_bracketed() {
+        let emitted = lower_and_emit("flow a() {\n  {(!true)}a\n}\n").expect("emits");
+        assert!(emitted.contains("{(!true)}a"), "{emitted}");
+        reparse_and_lower(&emitted);
     }
 }

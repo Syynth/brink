@@ -371,7 +371,7 @@ Key semantics from the reference C# ink implementation relevant to compilation:
 
 ## Diagnostic Codes
 
-Every diagnostic the compiler can emit has a stable code (`E001`–`E195`, with
+Every diagnostic the compiler can emit has a stable code (`E001`–`E196`, with
 `E177` reserved and unused) and a
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
@@ -599,6 +599,7 @@ through the real native driver.
 | [`E193`](diagnostics/E193.md) | A classic `~ temp` (native `~ let`) is read on a path its declaration does not dominate — a sibling choice branch, a gather reached from a branch that did not declare it, or a read written textually ahead of the declaration. Warning, `[lints]`-overridable: the story compiles and plays, reading the unset slot as ink's missing-variable default. See "Temp scope and definite assignment" below. |
 | [`E194`](diagnostics/E194.md) | A knot's `~ temp` (native `~ let`) is read from one of that knot's stitches — brink plays it correctly (one shared call frame), but inklecate rejects the identical program (`Unresolved variable`). The **compat-deny** tier's first member: `Error` by default, `[lints]`-overridable all the way to `allow`. See "Compat-deny diagnostics" below. |
 | [`E195`](diagnostics/E195.md) | A `*`/`+` choice line has no divert (even an empty `* ->`), no tag directly on the line, and no text in any of its three same-line content regions — matching inklecate's "Choice is completely empty" warning; a `(label)` or `{condition}` guard does NOT exempt it either, matching the reference. Ink surface only (raised from `hir::lower::choice`); the same rule is not wired into native's `{? … }` surface, where a body-only divert is the ordinary idiom. Warning, `[lints]`-overridable. |
+| [`E196`](diagnostics/E196.md) | A classic ink built-in called with arguments inklecate's compiler refuses, in inklecate's wording: the wrong argument count for any built-in; a bare knot/stitch/label name or a literal passed to `TURNS_SINCE`/`READ_COUNT`; a float or bool literal passed to `RANDOM`/`SEED_RANDOM` (#3363, #3364). Raised from LIR lowering (`check_builtin_args`). Error: every shape also faults at runtime, so it is not compat-deny. What only inklecate's runtime rejects is left to `RuntimeError::InvalidBuiltinArgument`. |
 
 ## Compat-deny diagnostics
 

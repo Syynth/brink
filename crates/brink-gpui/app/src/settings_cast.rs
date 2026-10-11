@@ -17,7 +17,7 @@ use brink_project_config::edit::{ConfigDocument, EditError};
 use gpui::prelude::*;
 use gpui::{
     AnyElement, App, ClickEvent, Context, Entity, Hsla, IntoElement, Render, SharedString,
-    Subscription, Window, div, px,
+    Subscription, Window, div,
 };
 use gpui_component::button::{Button, ButtonVariants as _};
 use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
