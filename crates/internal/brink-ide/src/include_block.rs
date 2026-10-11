@@ -55,17 +55,14 @@ pub fn include_block_span(hir: &HirFile, source: &str) -> Option<IncludeBlockSpa
         .collect();
     include_lines.sort_unstable();
 
-    // The end of the leading comment/blank region: the first line that is
-    // neither blank nor a `//` / `///` comment. The leading INCLUDE run may
-    // only begin at or after the comment block, and must start at the very
-    // first line of "real" content.
+    // The end of the leading header region: the first line that is not
+    // blank, a `//` / `///` comment, or a `#@module` directive (#3465). The
+    // leading INCLUDE run may only begin after the header, and must start at
+    // the very first line of "real" content.
     let lines: Vec<&str> = source.lines().collect();
     let first_content_line = lines
         .iter()
-        .position(|line| {
-            let t = line.trim_start();
-            !t.is_empty() && !t.starts_with("//")
-        })
+        .position(|line| !is_header_line(line))
         .unwrap_or(lines.len());
 
     // The leading run is only a leading run if the very first piece of real
@@ -97,6 +94,13 @@ pub fn include_block_span(hir: &HirFile, source: &str) -> Option<IncludeBlockSpa
     })
 }
 
+/// A line that may precede the leading `INCLUDE` run: blank, a `//` / `///`
+/// comment, or a `#@module` directive.
+pub(crate) fn is_header_line(line: &str) -> bool {
+    let t = line.trim_start();
+    t.is_empty() || t.starts_with("//") || t.starts_with("#@module")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,6 +109,15 @@ mod tests {
         let parsed = brink_syntax::parse(src);
         let (hir, _, _) = brink_ir::hir::lower(brink_ir::FileId(0), &parsed.tree());
         include_block_span(&hir, src)
+    }
+
+    /// #3465: a `#@module` header before the run does not hide it.
+    #[test]
+    fn a_module_header_precedes_the_run() {
+        let span =
+            span_for("// Notes.\n#@module town\n\nINCLUDE a.ink\nINCLUDE b.ink\n== hub ==\n")
+                .expect("include block after a module header");
+        assert_eq!((span.start_line, span.end_line, span.count), (3, 4, 2));
     }
 
     #[test]
