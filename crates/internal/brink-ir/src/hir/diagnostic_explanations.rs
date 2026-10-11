@@ -703,4 +703,25 @@ runtime fault rather than refused here, so brink is never stricter than
 inklecate at compile time: `RANDOM("a", 3)`, `RANDOM(5, 2)`, and a
 variable holding an int passed to `TURNS_SINCE`."#,
     ),
+    (
+        DiagnosticCode::E197,
+        r"The check runs once per choice line, during HIR lowering, right after the
+E195 check and on the same evidence: the choice's own line. It fires when
+the choice has an explicit `[]` with nothing inside it, and no text before
+the brackets. Text after the brackets does not save it: `* [] some text`
+fires, because the choice offers the player a blank option.
+
+It never fires together with E195. When the whole choice is empty and has
+no divert (`* []`), that is E195's case. Everything else with a blank `[]`
+is this one, including a choice that does have a divert (`* [] -> knot`)
+or a tag (`* [] #tag`), and a `(label)` or `{condition}` guard does not
+exempt it either. All of that matches inklecate, measured shape by shape.
+
+Inside the brackets, a space is content, as it is in ink: `* [ ] text` is
+clean. A comment is not: it is elided before the check, so
+`* [/* note */] text` fires.
+
+It is a `Warning`, overridable through `[lints]`: the story still compiles
+and plays, as it does in inklecate.",
+    ),
 ];

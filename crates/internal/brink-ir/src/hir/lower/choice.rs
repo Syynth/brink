@@ -199,8 +199,8 @@ impl LowerChoice for ast::Choice {
         // on the choice line, and no real text in any of its three content
         // regions — matching inklecate's "Choice is completely empty"
         // warning (`InkParser/InkParser_Choices.cs:84-86`; line 90's
-        // "Blank choice" warning, guarded by a different condition on the
-        // `* [] some text` shape, is a deliberate non-goal here).
+        // "Blank choice" warning, on the `* [] some text` shape, is E197
+        // just below).
         //
         // A `(label)` or `{condition}` guard does NOT exempt a choice from
         // this check — the reference's own `emptyContent` computation
@@ -230,6 +230,14 @@ impl LowerChoice for ast::Choice {
             && content_region_is_textless(inner_content.as_ref())
         {
             sink.diagnose(self.syntax().text_range(), DiagnosticCode::E195);
+        } else if bracket_content.as_ref().is_some_and(|b| b.parts.is_empty())
+            && start_content.as_ref().is_none_or(|s| s.parts.is_empty())
+        {
+            // #3480: inklecate's "Blank choice" warning, the line-90
+            // sibling of the one above: an explicit `[]` with nothing in it
+            // and no text before it, whatever follows. Tags, a divert, a
+            // label or a guard do not exempt it (measured with inkjs).
+            sink.diagnose(self.syntax().text_range(), DiagnosticCode::E197);
         }
 
         Ok(Choice {
