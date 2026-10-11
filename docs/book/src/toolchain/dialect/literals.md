@@ -474,7 +474,7 @@ interpolation boundary at work, not a rendering bug.)
 
 Two fences keep the doctrine honest. First, `Option<T>` has **no
 truthiness** — `{first(tab): …}` is not "is there a first element", it is
-a compile error under strict (`E116`: "an `Option[T]` has no truthiness —
+a compile error under strict (`E116`: "an `Option<T>` has no truthiness —
 test `== none` / `== some(x)` in the condition (F27, docs/stdlib-spec.md
 §1.6)") and a runtime fault under gradual:
 

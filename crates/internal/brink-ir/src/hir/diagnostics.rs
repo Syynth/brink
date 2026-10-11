@@ -2720,7 +2720,7 @@ impl DiagnosticCode {
             Self::E114 => "protocol impl exceeds its protocol's effect contract",
             Self::E115 => "ill-formed protocol impl registration",
             Self::E116 => {
-                "an `Option[T]` has no truthiness — test `== none` / `== some(x)` in the condition"
+                "an `Option<T>` has no truthiness — test `== none` / `== some(x)` in the condition"
             }
             Self::E117 => "`int(r)` requires an inhabited range (NonEmptyRange)",
             Self::E118 => {
@@ -2777,7 +2777,7 @@ impl DiagnosticCode {
                 "the `as` binding must be the entire condition (no `&&`/`||` composition)"
             }
             Self::E146 => "retired (issue #1508) — choice-guard `as` bindings now lower for real",
-            Self::E147 => "the `as` binding requires an `Option[T]` condition",
+            Self::E147 => "the `as` binding requires an `Option<T>` condition",
             Self::E148 => "an `as` binding is immutable and cannot be assigned to",
             Self::E149 => "`remove` is map-only — did you mean `remove_at`?",
             Self::E150 => {
