@@ -270,10 +270,46 @@ fn choice_guard_alone_produces_a_guard_node() {
 }
 
 #[test]
-fn choice_guard_and_label_combine_in_the_documented_order() {
-    // `choice.rs`'s own doc comment on `choice()`: "bullet, optional
-    // `{if cond}` guard, optional `(label)`" — guard THEN label, both
-    // present together.
+fn choice_label_and_guard_combine_in_inks_canonical_order() {
+    // #1253: ink's own canonical order is label-then-guard — the reference
+    // C# parser's `Choice()` (`InkParser_Choices.cs`) parses
+    // `BracketedName` (label) strictly before `ChoiceCondition` (guard),
+    // and `brink-syntax`'s reference grammar (`label?` before
+    // `choice_condition*`) agrees. `* (name) {if cond} text` is the
+    // idiomatic ink spelling a writer would reach for first.
+    let src = "flow f() {\n  {?\n    * (again) {if visited} Been here.\n  }\n}\n";
+    let p = assert_lossless(src);
+    assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
+    let choice = p
+        .syntax()
+        .descendants()
+        .find(|n| n.kind() == SyntaxKind::CHOICE)
+        .expect("CHOICE");
+    let label = choice
+        .children()
+        .find(|n| n.kind() == SyntaxKind::LABEL)
+        .expect("LABEL");
+    let guard = choice
+        .children()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_GUARD)
+        .expect("CHOICE_GUARD");
+    assert!(
+        label.text_range().start() < guard.text_range().start(),
+        "label must precede guard in child order"
+    );
+}
+
+#[test]
+fn guard_before_label_does_not_recognize_the_trailing_paren_as_a_label() {
+    // The flip side of the #1253 fix: ink has no support for the reverse
+    // order (guard-then-label) either — the reference C# parser never
+    // tries `BracketedName` after `ChoiceCondition`. A guard immediately
+    // after the bullet still parses as a guard, but a `(paren)` that
+    // follows it is not recognized as a `LABEL`; it falls through and
+    // reads as ordinary choice text, the same "unrecognized shape falls
+    // through to prose" tradeoff `content::at_content_label`'s doc comment
+    // documents for content-line labels. No parse error — this is
+    // structural reinterpretation, not a rejected shape.
     let src = "flow f() {\n  {?\n    * {if visited} (again) Been here.\n  }\n}\n";
     let p = assert_lossless(src);
     assert!(p.errors().is_empty(), "errors: {:?}", p.errors());
@@ -282,53 +318,21 @@ fn choice_guard_and_label_combine_in_the_documented_order() {
         .descendants()
         .find(|n| n.kind() == SyntaxKind::CHOICE)
         .expect("CHOICE");
-    let guard = choice
-        .children()
-        .find(|n| n.kind() == SyntaxKind::CHOICE_GUARD)
-        .expect("CHOICE_GUARD");
-    let label = choice
-        .children()
-        .find(|n| n.kind() == SyntaxKind::LABEL)
-        .expect("LABEL");
+    assert!(has_node_kind(&choice, SyntaxKind::CHOICE_GUARD));
     assert!(
-        guard.text_range().start() < label.text_range().start(),
-        "guard must precede label in child order"
+        !has_node_kind(&choice, SyntaxKind::LABEL),
+        "a label after the guard is not ink's canonical order and must not \
+         be recognized as LABEL"
     );
-}
-
-#[test]
-fn label_before_guard_is_currently_not_recognized_as_a_choice_guard() {
-    // GAP, not a ruling: `choice()` only checks for a guard BEFORE
-    // consuming a label, never after (`choice.rs`'s own doc comment
-    // reflects this implementation order, but the charter itself
-    // (native-surface-charter.md §6, §11) gives `{if cond}` and `(name)`
-    // as separate exhibits and is silent on their combined order).
-    // brink-syntax's reference grammar — the ink-parity source of truth —
-    // takes label FIRST, then condition(s)
-    // (`brink-syntax/src/parser/choice.rs`'s `choice()`: `label?` before
-    // `choice_condition*`), i.e. `* (name) {cond} text` is the canonical
-    // ink spelling. The native parser currently rejects that spelling: a
-    // `{if cond}` following a label is reparsed from scratch by the
-    // generic content scanner, which recognizes it as a bare inline
-    // `CONDITIONAL_BLOCK` (the annotated-brace family, charter §6)
-    // instead of a `CHOICE_GUARD` — and since that shorthand form has no
-    // `:`/`{` body opener here, it errors. Asserting the CURRENT (buggy)
-    // behavior below, characterized as a gap, not a documented ruling —
-    // see #1253 for the tracking issue on this ordering divergence.
-    let src = "flow f() {\n  {?\n    * (again) {if visited} Been here.\n  }\n}\n";
-    let p = assert_lossless(src);
+    let start = choice
+        .children()
+        .find(|n| n.kind() == SyntaxKind::CHOICE_START_CONTENT)
+        .expect("CHOICE_START_CONTENT");
     assert!(
-        !p.errors().is_empty(),
-        "the reversed order is expected to produce an error: {:?}",
-        p.errors()
+        text_run_concat(&start).contains("(again)"),
+        "the unrecognized paren falls through to choice text: {:?}",
+        text_run_concat(&start)
     );
-    let choice = p
-        .syntax()
-        .descendants()
-        .find(|n| n.kind() == SyntaxKind::CHOICE)
-        .expect("CHOICE");
-    assert!(!has_node_kind(&choice, SyntaxKind::CHOICE_GUARD));
-    assert!(has_node_kind(&choice, SyntaxKind::CONDITIONAL_BLOCK));
 }
 
 // ── Bracket-split anatomy: isolated, and combined with tags/diverts ──────
