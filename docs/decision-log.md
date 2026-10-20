@@ -6129,3 +6129,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** (1) Pasting a multi-line block into the native editor re-indents it to the indentation where it lands, keeping the block's internal relative indentation (as VS Code / Zed do), instead of inserting the clipboard text verbatim. (2) Cmd-C / Cmd-X with an empty selection stays a no-op; it does NOT copy the whole line as VS Code does.
 - **WHY:** (1) Maintainer: "yes on paste". Verbatim paste left every line after the first at its old depth, so moving a block between nesting levels needed manual repair — part of the reported copy/paste indentation weirdness. (2) Maintainer: "i don't think so on the cmd-c w/ no selection".
+
+## glam moves to 0.33 with Bevy 0.20, keeping one glam shared with Bevy
+- **WHEN:** 2026-10-20
+- **PROJECT:** brink
+- **SYSTEM:** numeric tower / bevy-brink
+- **SCOPE:** moderate
+- **WHAT:** The workspace glam pin moves from 0.32 to 0.33, the version Bevy 0.20's `bevy_math` uses, in the same change as the Bevy 0.20 bump (#3707). It also updates every satellite lockfile that resolves glam ("whatever we need to update"). This settles #3705 in favour of realigning, not decoupling the pin from Bevy.
+- **WHY:** The 2026-07-19 tower ruling pins glam once, at the version the bevy graph uses, so a future bevy marshal is the identity on the same types. Maintainer: "we should update glam as well, whatever we need to update". The 0.33 numeric changes (the `lerp` form, finite-only inverses, FMA in the SIMD back-ends) are taken as part of the bump, not a reason to hold the pin back.
