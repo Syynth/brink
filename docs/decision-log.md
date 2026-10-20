@@ -6113,3 +6113,19 @@
   - **Surfaces:** the Player in the native (gpui) studio and in the web and desktop studios, plus the web Conventions preview's cue. The editor's highlighting of cue lines does **not** follow the cast colour for now.
   - **Settings ▸ Project ▸ Cast** edits the table in both the gpui and web studios: a colour picker and a remove button per declared speaker, and a row that adds one. Edits keep the file's comments and key order.
 - **WHY:** The maintainer asked for authored speaker colours (#3504) and chose these options on 2026-10-10. The location is `brink.toml`; `[dialogue]` was ruled out because its one-line form (`dialogue = "dialect.json"`) cannot also hold a sub-table. One table per speaker was chosen over `name = "colour"` pairs so that later per-speaker settings and pattern rows fit without a reshape. Matching ignoring case follows from cue styles that capitalise names. The editor was left alone deliberately, for now.
+
+## Cmd-Left in the native editor stops at the indent first, like VS Code
+- **WHEN:** 2026-10-20
+- **PROJECT:** brink
+- **SYSTEM:** gpui / code editor (GPUI Kit fork)
+- **SCOPE:** minor/local
+- **WHAT:** In the native studio's editor, Cmd-Left / Home (and Cmd-Shift-Left / Shift-Home for selection) moves to the line's first non-whitespace character; pressed again there, it goes to column 0, and pressed again toggles back — VS Code's "smart home". On a soft-wrapped continuation row the visual row's start still comes first.
+- **WHY:** Maintainer: "cmd-left should stop at the indent first, like vscode". Going straight to column 0 meant a Cmd-Shift-Left selection picked up the leading indentation, so copying a line and pasting it at an indented caret doubled the indent — part of the reported copy/paste/selection indentation weirdness.
+
+## Paste re-indents a multi-line block to where it lands; Cmd-C with no selection copies nothing
+- **WHEN:** 2026-10-20
+- **PROJECT:** brink
+- **SYSTEM:** gpui / code editor (GPUI Kit fork)
+- **SCOPE:** minor/local
+- **WHAT:** (1) Pasting a multi-line block into the native editor re-indents it to the indentation where it lands, keeping the block's internal relative indentation (as VS Code / Zed do), instead of inserting the clipboard text verbatim. (2) Cmd-C / Cmd-X with an empty selection stays a no-op; it does NOT copy the whole line as VS Code does.
+- **WHY:** (1) Maintainer: "yes on paste". Verbatim paste left every line after the first at its old depth, so moving a block between nesting levels needed manual repair — part of the reported copy/paste indentation weirdness. (2) Maintainer: "i don't think so on the cmd-c w/ no selection".
