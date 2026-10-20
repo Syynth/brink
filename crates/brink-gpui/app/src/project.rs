@@ -174,6 +174,8 @@ pub struct Project {
     /// The resolved `[dialogue]` dialect, from the last analysis.
     dialogue: Option<brink_ir::DialogueDialect>,
     dialogue_error: Option<String>,
+    /// `[project] indent` from the last analysis, the default applied.
+    indent: u8,
     closure: BTreeSet<String>,
     diagnostics: BTreeMap<String, Vec<Diagnostic>>,
     kinds: BTreeMap<String, Kinds>,
@@ -379,6 +381,7 @@ impl Project {
             drafts_known: false,
             dialogue: None,
             dialogue_error: None,
+            indent: brink_project_config::DEFAULT_INDENT,
             closure: BTreeSet::new(),
             diagnostics: BTreeMap::new(),
             kinds: BTreeMap::new(),
@@ -481,6 +484,7 @@ impl Project {
                 self.drafts_known = analyzed.drafts_known;
                 self.dialogue = analyzed.dialogue;
                 self.dialogue_error = analyzed.dialogue_error;
+                self.indent = analyzed.indent;
                 self.closure = analyzed.closure.into_iter().collect();
                 // The config can move the entry between analyses.
                 self.entry = analyzed.entry;
@@ -1223,6 +1227,16 @@ impl Project {
     #[must_use]
     pub fn dialogue(&self) -> (Option<&brink_ir::DialogueDialect>, Option<&str>) {
         (self.dialogue.as_ref(), self.dialogue_error.as_deref())
+    }
+
+    /// What an editor over this project indents by: `[project] indent`,
+    /// the same width the formatter writes and the guides are drawn at.
+    #[must_use]
+    pub fn tab_size(&self) -> gpui_component::input::TabSize {
+        gpui_component::input::TabSize {
+            tab_size: usize::from(self.indent),
+            hard_tabs: false,
+        }
     }
 
     /// `[project] drafts`, glob by glob, with what each currently matches

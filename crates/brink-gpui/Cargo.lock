@@ -158,9 +158,9 @@ checksum = "683d7910e743518b0e34f1186f92494becacb047c7b6bf616c96772180fef923"
 
 [[package]]
 name = "ammonia"
-version = "4.1.4"
+version = "4.1.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dc6d763210e2eb7670d1a5183a08bebefa3f97db2a738a684f2ce00bd49f681d"
+checksum = "2f6660fb4ff692ef4937b1b4e74ab3d378653d8588389587d91f96a296907ea0"
 dependencies = [
  "cssparser",
  "html5ever 0.39.0",
@@ -4024,7 +4024,7 @@ dependencies = [
 [[package]]
 name = "gpui-base"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=0d71e3eb8a9ca00f1595bf5a74d28e727887e43c#0d71e3eb8a9ca00f1595bf5a74d28e727887e43c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=c4906f2dda07edf545fa54bbc5e445a4682326f3#c4906f2dda07edf545fa54bbc5e445a4682326f3"
 dependencies = [
  "aho-corasick",
  "anyhow",
@@ -4060,7 +4060,7 @@ dependencies = [
 [[package]]
 name = "gpui-component"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=0d71e3eb8a9ca00f1595bf5a74d28e727887e43c#0d71e3eb8a9ca00f1595bf5a74d28e727887e43c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=c4906f2dda07edf545fa54bbc5e445a4682326f3#c4906f2dda07edf545fa54bbc5e445a4682326f3"
 dependencies = [
  "anyhow",
  "chrono",
@@ -4105,7 +4105,7 @@ dependencies = [
 [[package]]
 name = "gpui-component-macros"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=0d71e3eb8a9ca00f1595bf5a74d28e727887e43c#0d71e3eb8a9ca00f1595bf5a74d28e727887e43c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=c4906f2dda07edf545fa54bbc5e445a4682326f3#c4906f2dda07edf545fa54bbc5e445a4682326f3"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -4116,7 +4116,7 @@ dependencies = [
 [[package]]
 name = "gpui-kit-assets"
 version = "0.6.0"
-source = "git+https://github.com/Syynth/gpui-kit?rev=0d71e3eb8a9ca00f1595bf5a74d28e727887e43c#0d71e3eb8a9ca00f1595bf5a74d28e727887e43c"
+source = "git+https://github.com/Syynth/gpui-kit?rev=c4906f2dda07edf545fa54bbc5e445a4682326f3#c4906f2dda07edf545fa54bbc5e445a4682326f3"
 dependencies = [
  "anyhow",
  "gpui-pre",
@@ -8222,9 +8222,9 @@ dependencies = [
 
 [[package]]
 name = "ruzstd"
-version = "0.9.0"
+version = "0.9.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a252f5e20f038fe7b4ea53e073e65398d652c864cc162fc77c56c2f13717b888"
+checksum = "69e4ce4a039f42bf25920b95667e4d789e98749ab11bbb8d2c2936f788421bb5"
 dependencies = [
  "twox-hash",
 ]
@@ -9218,7 +9218,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

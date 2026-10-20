@@ -286,6 +286,7 @@ impl ContinuousView {
             |this, _, event: &ProjectEvent, window, cx| match event {
                 ProjectEvent::Opened { .. } => this.reload(cx),
                 ProjectEvent::Analyzed => {
+                    this.apply_tab_size(cx);
                     this.refresh_diagnostics(cx);
                     this.refresh_play_lines(cx);
                     if this.read.on.get() {
@@ -1691,6 +1692,21 @@ impl ContinuousView {
         }
     }
 
+    /// Every section indents by `[project] indent`, which an edit to
+    /// `brink.toml` can change between analyses.
+    fn apply_tab_size(&mut self, cx: &mut Context<Self>) {
+        let tab = self.project.read(cx).tab_size();
+        let sections: Vec<Entity<EditorState>> = self
+            .editors
+            .borrow()
+            .values()
+            .map(|(editor, _)| editor.clone())
+            .collect();
+        for editor in sections {
+            editor.update(cx, |state, cx| state.set_tab_size(tab, cx));
+        }
+    }
+
     /// Whether the Read view is on.
     #[must_use]
     pub fn is_read(&self) -> bool {
@@ -1790,6 +1806,7 @@ impl ContinuousView {
                 // start its text two digits further left, and the manuscript
                 // reads as one column or it does not read at all.
                 .min_line_number_digits(MANUSCRIPT_GUTTER_DIGITS)
+                .tab_size(project.read(cx).tab_size())
                 .language("brink")
                 // Prose wraps (maintainer, 2026-09-05); the section is
                 // re-sized to its wrapped rows — see `section_height`.

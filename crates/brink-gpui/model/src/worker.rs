@@ -250,6 +250,10 @@ pub struct Analyzed {
     pub dialogue: Option<brink_ir::DialogueDialect>,
     /// Why `[dialogue]` did not resolve, if it did not.
     pub dialogue_error: Option<String>,
+    /// `[project] indent`, with the default applied: the width the editors
+    /// indent by, as the formatter does (decision log, "Indent size becomes
+    /// configurable, and everything that indents reads the same setting").
+    pub indent: u8,
     /// [`Opened::config_reads`] as the config now applied has them: an
     /// edit to `brink.toml` can name a different manifest.
     pub config_reads: Vec<String>,
@@ -1072,6 +1076,10 @@ fn analyze(session: &mut IdeSession, config: &ConfigState, revision: u64) -> Ana
         drafts_known: report.compiled,
         dialogue: session.project_settings().dialogue.clone(),
         dialogue_error: session.project_settings().dialogue_error.clone(),
+        indent: session
+            .project_settings()
+            .indent
+            .unwrap_or(brink_project_config::DEFAULT_INDENT),
         elapsed_ms: started.elapsed().as_secs_f64() * 1e3,
     }
 }

@@ -165,6 +165,7 @@ impl Document {
                 // Structural folds land in the gutter from `refresh_folds`;
                 // explicit rather than trusting the layout mode's default.
                 .folding(brink)
+                .tab_size(project.read(cx).tab_size())
                 // Prose wraps (maintainer, 2026-09-05): a line of narrative
                 // is a paragraph, and scrolling sideways to read one is
                 // wrong in every view.
@@ -247,6 +248,10 @@ impl Document {
                 // arrive with the analysis rather than being pulled on a
                 // timer.
                 ProjectEvent::Analyzed => {
+                    // `brink.toml` may have changed the indent.
+                    let tab = this.project.read(cx).tab_size();
+                    this.editor
+                        .update(cx, |state, cx| state.set_tab_size(tab, cx));
                     this.outline = None;
                     this.refresh(cx);
                 }
