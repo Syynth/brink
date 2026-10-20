@@ -48,6 +48,21 @@ ignore = [
     # vulnerability. Path: paste <- burn-ndarray <- harper-pos-utils, and
     # directly under harper-core.
     "RUSTSEC-2024-0436",
+    # zip < 9.0 — `ZipArchive::extract` mishandles symlinks and SUID/SGID
+    # bits when writing an archive out to disk. harper-core (2.8 and still
+    # 2.13, the newest) requires zip ^8.6, and only ever opens its own
+    # bundled weirpack from memory (`ZipArchive::new` over a cursor, in
+    # `weirpack/mod.rs`) — it never calls `extract`, so none of the three
+    # applies. Drop these once harper-core moves to zip 9.
+    "RUSTSEC-2026-0367",
+    "RUSTSEC-2026-0368",
+    "RUSTSEC-2026-0369",
+    # ruzstd < 0.9.1 — a tiny frame can decompress to unbounded memory.
+    # harper-thesaurus's copy is bumped to 0.9.1 in the lockfile; this
+    # ignore is for the 0.8 that bevy_image 0.19 (and 0.19.1) requires,
+    # used only to decode `.ktx2` textures — a game's own shipped assets,
+    # not attacker-controlled input. Re-evaluate on the Bevy 0.20 bump.
+    "RUSTSEC-2026-0344",
 ]
 
 [licenses]
