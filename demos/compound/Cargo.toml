@@ -19,7 +19,7 @@ publish = false
 description = "The Compound — Phase 0 pure-bevy stealth demo (brink #988)"
 
 [dependencies]
-bevy = "0.19"
+bevy = "0.20"
 thiserror = "2"
 
 # Phase 1a: the brink runtime as a Bevy plugin. Path deps into the workspace
