@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # demos/compound depends on bevy 0.19 directly, so even `cargo check`
+      # demos/compound depends on bevy 0.20 directly, so even `cargo check`
       # runs wayland-sys/winit/alsa build scripts — the same system libs
       # demo.yml's DEMO_GATE installs for the same reason.
       - name: Install Linux dependencies (bevy)

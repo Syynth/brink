@@ -253,7 +253,7 @@ cd packages/brink-desktop/src-tauri && cargo test
 | `brink-opt` | `crates/brink-opt/` | Post-compile `.inkb` → `.inkb` optimizer: the peephole engine + superinstruction passes (`docs/optimizer-peephole.md`); `brink-format`-only dep, `publish = false` |
 | `brink-format` | `crates/internal/brink-format/` | Binary interface between compiler and runtime |
 | `brink-test-harness` | `crates/internal/brink-test-harness/` | Episode exploration, diffing, corpus tests |
-| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.19 integration: plugin, assets, components, external-function bindings |
+| `bevy-brink` | `crates/bevy-brink/` | Bevy 0.20 integration: plugin, assets, components, external-function bindings |
 | `bevy-brink-derive` | `crates/internal/bevy-brink-derive/` | `#[derive(BrinkCommand)]` proc-macro for ink→engine command events |
 
 **Native surface + authoring** (the crates the current work lives in):

@@ -239,7 +239,7 @@ jobs:
   #        `tests/scenario_baseline_tripwire.rs` both `#[path]`-include
   #        `benches/scenario/model.rs`, which pulls in the `bevy` umbrella
   #        (MinimalPlugins, AssetPlugin, ComputeTaskPool, …) — the same
-  #        dev-dependency (`bevy = { version = "0.19.0", features =
+  #        dev-dependency (`bevy = { version = "0.20.0", features =
   #        ["file_watcher"] }`, default features on) that `play_story`
   #        links. So this step still links two headless test binaries
   #        against the full bevy graph; exposure to the 2026-07-20 ld bus
