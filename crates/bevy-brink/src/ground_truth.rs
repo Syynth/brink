@@ -277,8 +277,13 @@ mod tests {
     #[derive(Component)]
     struct AudioSink;
 
+    // Any fixed id serves: these tests never resolve the asset, only key
+    // the capability table by it. (Bevy 0.20 deprecated
+    // `AssetId::invalid()`.)
     fn story_id() -> AssetId<ProgramAsset> {
-        AssetId::<ProgramAsset>::invalid()
+        AssetId::Uuid {
+            uuid: bevy_asset::uuid::Uuid::from_u128(0x9b2f_6c1e_4d3a_4f8b_a1c7_5e0d_2b6f_8a31),
+        }
     }
 
     #[test]

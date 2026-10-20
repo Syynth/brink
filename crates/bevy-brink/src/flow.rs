@@ -759,7 +759,7 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<bevy_asset::Assets<crate::ProgramAsset>>();
-            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // Bevy 0.19+: `Assets::get_mut` returns a change-tracking `AssetMut`
             // guard that only queues `AssetEvent::Modified` if the value is
             // actually dereferenced mutably (see the migration note on
             // `AssetMut`). We're simulating "file watcher re-issued the same
@@ -1143,7 +1143,7 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // Bevy 0.19+: `Assets::get_mut` returns a change-tracking `AssetMut`
             // guard that only queues `AssetEvent::Modified` if the value is
             // actually dereferenced mutably (see the migration note on
             // `AssetMut`). We're simulating "file watcher re-issued the same
@@ -1301,7 +1301,7 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // Bevy 0.19+: `Assets::get_mut` returns a change-tracking `AssetMut`
             // guard that only queues `AssetEvent::Modified` if the value is
             // actually dereferenced mutably (see the migration note on
             // `AssetMut`). We're simulating "file watcher re-issued the same
@@ -1438,7 +1438,7 @@ mod tests {
             let mut programs = app
                 .world_mut()
                 .resource_mut::<Assets<crate::ProgramAsset>>();
-            // Bevy 0.19: `Assets::get_mut` returns a change-tracking `AssetMut`
+            // Bevy 0.19+: `Assets::get_mut` returns a change-tracking `AssetMut`
             // guard that only queues `AssetEvent::Modified` if the value is
             // actually dereferenced mutably (see the migration note on
             // `AssetMut`). We're simulating "file watcher re-issued the same

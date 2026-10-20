@@ -224,7 +224,7 @@ pub fn advance_batch_parallel<M: Send + Sync + 'static>(world: &mut World) {
     // `Commands` system param genuinely defers to the schedule's next sync
     // point), this is an exclusive system: `queue.apply(world)` runs any
     // `commands.trigger(...)` observer synchronously, in this same call, and
-    // bevy 0.19 does not advance the world's change tick across
+    // bevy (0.19 and 0.20 alike) does not advance the world's change tick across
     // `CommandQueue::apply`. An observer that writes `BrinkGlobals<M>` (the
     // documented ink→engine pattern) would therefore land on the *same* tick
     // as this Apply's own write, making it indistinguishable from "nothing
