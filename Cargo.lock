@@ -1372,7 +1372,7 @@ dependencies = [
  "approx",
  "bevy_reflect",
  "derive_more 2.1.1",
- "glam 0.33.12",
+ "glam",
  "libm",
  "rand 0.10.2",
  "serde",
@@ -1401,7 +1401,7 @@ dependencies = [
  "bytemuck",
  "derive_more 2.1.1",
  "encase",
- "glam 0.33.12",
+ "glam",
  "half",
  "hexasphere",
  "serde",
@@ -1558,7 +1558,7 @@ dependencies = [
  "downcast-rs 2.0.2",
  "erased-serde",
  "foldhash 0.2.0",
- "glam 0.33.12",
+ "glam",
  "indexmap",
  "inventory",
  "petgraph 0.8.3",
@@ -1623,7 +1623,7 @@ dependencies = [
  "derive_more 2.1.1",
  "downcast-rs 2.0.2",
  "encase",
- "glam 0.33.12",
+ "glam",
  "image",
  "indexmap",
  "itertools 0.14.0",
@@ -2427,7 +2427,7 @@ version = "0.0.17"
 dependencies = [
  "bitflags 2.13.0",
  "brink-compiler",
- "glam 0.32.1",
+ "glam",
  "insta",
  "pest",
  "pest_derive",
@@ -2582,7 +2582,7 @@ dependencies = [
  "brink-compiler",
  "brink-format",
  "divan",
- "glam 0.32.1",
+ "glam",
  "proptest",
  "serde",
  "serde_json",
@@ -5256,15 +5256,6 @@ dependencies = [
 
 [[package]]
 name = "glam"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f70749695b063ecbf6b62949ccccde2e733ec3ecbbd71d467dca4e5c6c97cca0"
-dependencies = [
- "libm",
-]
-
-[[package]]
-name = "glam"
 version = "0.33.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "37bfe73dc8ec21f54d181e5a60554327ec3f1c600c455a75ccbfc65d2106a6c4"
@@ -5656,7 +5647,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "163385eff5a0cf606ebe2c10b3a44ab02f4306e83fbd068a64f5e1d72a3049ac"
 dependencies = [
  "constgebra",
- "glam 0.33.12",
+ "glam",
  "tinyvec",
 ]
 
