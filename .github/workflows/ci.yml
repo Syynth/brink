@@ -168,6 +168,11 @@ jobs:
         # under API rate limiting (HTML, not JSON).
         with:
           version: v0.14.0
+        # The action extracts under os.tmpdir() and then rename()s into
+        # ~/.cargo/bin; Ubuntu 26 runners mount /tmp separately, so that
+        # rename fails with EXDEV. runner.temp shares the home directory's disk.
+        env:
+          TMPDIR: ${{ runner.temp }}
       - run: wasm-pack test --node crates/brink-web
 
   test:
@@ -765,6 +770,11 @@ jobs:
         # rate limiting (HTML, not JSON).
         with:
           version: v0.14.0
+        # The action extracts under os.tmpdir() and then rename()s into
+        # ~/.cargo/bin; Ubuntu 26 runners mount /tmp separately, so that
+        # rename fails with EXDEV. runner.temp shares the home directory's disk.
+        env:
+          TMPDIR: ${{ runner.temp }}
       # The @brink-lang/web package is a file: dependency on the wasm-pack output,
       # so the bundle must be built BEFORE `pnpm install` can link it (#2479).
       # This ordering is CI-self-enforcing: `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
@@ -876,6 +886,11 @@ jobs:
         uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with:
           version: v0.14.0
+        # The action extracts under os.tmpdir() and then rename()s into
+        # ~/.cargo/bin; Ubuntu 26 runners mount /tmp separately, so that
+        # rename fails with EXDEV. runner.temp shares the home directory's disk.
+        env:
+          TMPDIR: ${{ runner.temp }}
       # Same file: dependency ordering as the `frontend` job above (#2479);
       # `every_pnpm_install_lane_builds_wasm_first_in_the_same_job`
       # (packages/brink-desktop/src-tauri/src/lib.rs, #2504) covers this job too.
