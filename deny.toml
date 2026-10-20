@@ -59,9 +59,12 @@ ignore = [
     "RUSTSEC-2026-0369",
     # ruzstd < 0.9.1 — a tiny frame can decompress to unbounded memory.
     # harper-thesaurus's copy is bumped to 0.9.1 in the lockfile; this
-    # ignore is for the 0.8 that bevy_image 0.19 (and 0.19.1) requires,
+    # ignore is for the 0.8 that bevy_image requires — re-evaluated on the
+    # Bevy 0.20 bump, and 0.20.0 still pins `ruzstd = "0.8.0"`. It is
     # used only to decode `.ktx2` textures — a game's own shipped assets,
-    # not attacker-controlled input. Re-evaluate on the Bevy 0.20 bump.
+    # not attacker-controlled input — and reaches this graph only through
+    # bevy-brink's `bevy` dev-dependency. Drop it once bevy_image moves to
+    # ruzstd >= 0.9.1.
     "RUSTSEC-2026-0344",
 ]
 

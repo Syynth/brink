@@ -10,6 +10,13 @@ on:
   # lockfiles, breaking the advisory DEMO_GATE and BENCHMARKS_*_GATE
   # workflows.
   #
+  # The four cargo-fuzz crates (`crates/*/fuzz`, `crates/internal/*/fuzz`)
+  # are resolved here too, but only resolved (`cargo metadata --locked`),
+  # not built: building them needs nightly and libFuzzer. All four had gone
+  # stale unnoticed until #3707 because nothing ever resolved them. Their
+  # paths are already inside the `crates/brink-*/**` and `crates/internal/**`
+  # filters below.
+  #
   # Not in branch protection's required-checks list, so it's advisory: it
   # goes red on a relevant PR but does not block the merge by itself.
   # Promoting it (or DEMO_GATE/BENCHMARKS_*_GATE) to an actual required check
@@ -66,7 +73,7 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
-      # demos/compound depends on bevy 0.19 directly, so even `cargo check`
+      # demos/compound depends on bevy 0.20 directly, so even `cargo check`
       # runs wayland-sys/winit/alsa build scripts — the same system libs
       # demo.yml's DEMO_GATE installs for the same reason.
       - name: Install Linux dependencies (bevy)
@@ -92,3 +99,13 @@ jobs:
       - name: Check (benchmarks/drivers/brink-loop, --locked)
         working-directory: benchmarks/drivers/brink-loop
         run: cargo check --locked
+      # Resolution only — see the header comment for why the fuzz crates are
+      # not built here.
+      - name: Resolve (fuzz crates, --locked)
+        run: |
+          for dir in crates/brink-runtime/fuzz crates/internal/brink-format/fuzz \
+                     crates/internal/brink-syntax/fuzz crates/internal/brink-syntax-native/fuzz; do
+            echo "::group::$dir"
+            (cd "$dir" && cargo metadata --locked --format-version 1 > /dev/null)
+            echo "::endgroup::"
+          done

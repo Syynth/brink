@@ -8,6 +8,8 @@
 
 use bevy::ecs::relationship::RelatedSpawnerCommands;
 use bevy::prelude::*;
+use bevy::ui::Pressed;
+use bevy::ui_widgets::Button;
 
 use crate::rounds::{LastOutcome, Phase, Round, StartRound};
 use crate::stats::{CATALOGUE, Loadout, PlayerStats, apply_purchase, can_buy};
@@ -166,19 +168,19 @@ fn item_label(index: usize, loadout: &Loadout) -> String {
 }
 
 /// Handle shop button clicks: purchases and the continue action.
+///
+/// Fires on press, as the pre-0.20 `Interaction::Pressed` check did: the
+/// headless `ui_widgets::Button` inserts [`Pressed`] on pointer-down.
 #[allow(clippy::too_many_arguments)]
 pub fn shop_button_system(
-    interactions: Query<(&Interaction, &ShopButton), Changed<Interaction>>,
+    pressed: Query<&ShopButton, (With<Button>, Added<Pressed>)>,
     mut player: Query<&mut PlayerStats, With<Player>>,
     mut round: ResMut<Round>,
     mut loadout: ResMut<Loadout>,
     mut start: MessageWriter<StartRound>,
     mut next: ResMut<NextState<Phase>>,
 ) {
-    for (interaction, button) in &interactions {
-        if *interaction != Interaction::Pressed {
-            continue;
-        }
+    for button in &pressed {
         match *button {
             ShopButton::Item(i) => {
                 let Ok(mut stats) = player.single_mut() else {

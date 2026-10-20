@@ -2305,7 +2305,7 @@ fn a_direct_host_write_still_wakes_a_flow_with_a_precise_row() {
     );
 }
 
-/// Regression for the #1146 follow-up parallel-driver missed-wake: bevy 0.19
+/// Regression for the #1146 follow-up parallel-driver missed-wake: bevy 0.19+
 /// does not advance the world's change tick across `CommandQueue::apply`, so
 /// an observer that writes `BrinkGlobals<M>` synchronously during
 /// `advance_batch_parallel`'s own deferred-command flush (`flush_deferred` ->

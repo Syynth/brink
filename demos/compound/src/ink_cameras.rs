@@ -349,7 +349,7 @@ mod tests {
         // `MinimalPlugins` supplies `Time` (`ink_camera_system`'s
         // `CameraReaders` reads `Res<Time>` — without it, `SystemState::get_mut`
         // fails validation and the system silently no-ops every frame, the
-        // same shape as a missing resource anywhere else in bevy 0.19's
+        // same shape as a missing resource anywhere else in bevy 0.20's
         // fallible-param world).
         app.add_plugins((
             MinimalPlugins,

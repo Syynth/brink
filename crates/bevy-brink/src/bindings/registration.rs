@@ -544,7 +544,16 @@ impl BrinkBindingsAppExt for App {
         let (id, access) = {
             let mut boxed: BoxedSystem<In<BrinkQueryInput>, Value> =
                 Box::new(IntoSystem::into_system(system));
-            let access = boxed.initialize(self.world_mut()).combined_access().clone();
+            // Bevy 0.20: `initialize` returns a `SystemAccess` (None /
+            // Shared / Exclusive) rather than the `FilteredAccessSet`
+            // directly; `to_filtered_access_set` maps an exclusive system to
+            // write-all, which the ground-truth check then reports as an
+            // `<all components>` violation.
+            let access = boxed
+                .initialize(self.world_mut())
+                .to_filtered_access_set()
+                .combined_access()
+                .clone();
             let id = self.world_mut().register_boxed_system(boxed);
             (id, access)
         };
