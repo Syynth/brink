@@ -344,7 +344,7 @@ pub(crate) fn step_one<M: Send + Sync + 'static>(
     } else {
         false
     };
-    let triggers = handler.map(|h| h.take_queued()).unwrap_or_default();
+    let triggers = handler.map_or_default(|h| h.take_queued());
 
     FlowBatchOutcome {
         entity,

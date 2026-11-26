@@ -596,8 +596,7 @@ mod tests {
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or_default()
+                .map_or_default(|d| d.as_nanos())
         );
         // native_root = /tmp/.../brink-issue-2320-<unique>
         // cwd (decoy)  = /tmp/.../brink-issue-2320-<unique>/scenes

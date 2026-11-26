@@ -436,10 +436,7 @@ pub fn solve_scc_effects(
     let mut rows: BTreeMap<DefinitionId, EffectRow> = batch
         .iter()
         .map(|&id| {
-            let base = atoms
-                .get(&id)
-                .map(EffectAtoms::base_row)
-                .unwrap_or_default();
+            let base = atoms.get(&id).map_or_default(EffectAtoms::base_row);
             (id, base)
         })
         .collect();

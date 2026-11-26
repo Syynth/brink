@@ -87,8 +87,7 @@ fn parse_meta_group(elem: &ExtensionElement) -> MetaGroup {
                     .attributes
                     .iter()
                     .find(|(k, _)| k == "type")
-                    .map(|(_, v)| v.clone())
-                    .unwrap_or_default();
+                    .map_or_default(|(_, v)| v.clone());
                 let value = e
                     .children
                     .iter()

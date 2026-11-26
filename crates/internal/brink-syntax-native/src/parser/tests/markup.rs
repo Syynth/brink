@@ -18,8 +18,7 @@ fn escape_literal(escape: &SyntaxNode) -> String {
         .children_with_tokens()
         .filter_map(rowan::NodeOrToken::into_token)
         .nth(1)
-        .map(|t| t.text().to_string())
-        .unwrap_or_default()
+        .map_or_default(|t| t.text().to_string())
 }
 
 // ── Basic spans (§4.1) ───────────────────────────────────────────────

@@ -480,8 +480,7 @@ fn native_corpus_report() {
     for case_dir in &cases {
         let name = case_dir
             .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_default();
+            .map_or_default(|n| n.to_string_lossy().into_owned());
 
         let expected = match brink_test_harness::corpus::load_golden_transcript(
             &case_dir.join("expected.txt"),
@@ -708,8 +707,7 @@ fn generated_corpus_report() {
             case.provenance
                 .issue
                 .as_deref()
-                .map(|i| format!(" · {i}"))
-                .unwrap_or_default()
+                .map_or_default(|i| format!(" · {i}"))
         );
         let mark = match (matched, flag) {
             (Ok(true), None) => {

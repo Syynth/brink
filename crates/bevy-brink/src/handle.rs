@@ -509,8 +509,7 @@ pub fn load_handles<M: Send + Sync + 'static>(
 
     let registered: BTreeSet<&str> = world
         .get_resource::<HandleKinds<M>>()
-        .map(|kinds| kinds.kind_names().collect())
-        .unwrap_or_default();
+        .map_or_default(|kinds| kinds.kind_names().collect());
 
     if policy == RehydrationPolicy::StrictKinds {
         let unregistered: Vec<String> = by_kind

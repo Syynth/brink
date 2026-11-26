@@ -1854,8 +1854,7 @@ impl Parenthetical {
     /// The delivery text between the parentheses, trimmed.
     pub fn text(&self) -> String {
         support::child::<Text>(&self.syntax)
-            .map(|t| t.syntax().text().to_string().trim().to_owned())
-            .unwrap_or_default()
+            .map_or_default(|t| t.syntax().text().to_string().trim().to_owned())
     }
 
     /// Trailing `#tag`s on the parenthetical line, if any.

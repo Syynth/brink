@@ -130,8 +130,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut db = ProjectDb::new();
     let mut session = Session::new(base_files);
 
-    for f in 0..base_files {
-        db.set_file(&file_path(f), generate_file(f, session.revisions[f]));
+    for (f, &revision) in session.revisions.iter().enumerate() {
+        db.set_file(&file_path(f), generate_file(f, revision));
     }
     db.set_file(
         "main.ink",

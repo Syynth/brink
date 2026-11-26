@@ -156,6 +156,5 @@ fn transcript_text(app: &App, flow: Entity) -> String {
     app.world()
         .entity(flow)
         .get::<BrinkTranscript<()>>()
-        .map(BrinkTranscript::text)
-        .unwrap_or_default()
+        .map_or_default(BrinkTranscript::text)
 }

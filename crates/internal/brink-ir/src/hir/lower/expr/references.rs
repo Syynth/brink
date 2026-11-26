@@ -34,14 +34,11 @@ impl LowerExpr for ast::FunctionCall {
             range: ident_range,
             crosses_module_wall: false,
         };
-        let args: Vec<Expr> = self
-            .arg_list()
-            .map(|al| {
-                al.args()
-                    .filter_map(|a| a.lower_expr(scope, sink).ok())
-                    .collect()
-            })
-            .unwrap_or_default();
+        let args: Vec<Expr> = self.arg_list().map_or_default(|al| {
+            al.args()
+                .filter_map(|a| a.lower_expr(scope, sink).ok())
+                .collect()
+        });
         Ok(Expr::Call(path, args))
     }
 }

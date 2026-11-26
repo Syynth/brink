@@ -1125,11 +1125,7 @@ pub(super) fn print_tree(
 ) -> Result<(), String> {
     for e in entries {
         let indent = "  ".repeat(depth);
-        let detail = e
-            .detail
-            .as_deref()
-            .map(|d| format!(" [{d}]"))
-            .unwrap_or_default();
+        let detail = e.detail.as_deref().map_or_default(|d| format!(" [{d}]"));
         writeln!(
             out,
             "{indent}{} {}{}  {}",

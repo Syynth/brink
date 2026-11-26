@@ -487,8 +487,7 @@ fn lower_one_item(
             let body_items: Vec<SyntaxNode> = node
                 .children()
                 .find(|n| n.kind() == N::SCENE_BODY)
-                .map(|b| b.children().collect())
-                .unwrap_or_default();
+                .map_or_default(|b| b.children().collect());
             let Some((claimed, consumed)) = heading
                 .as_ref()
                 .and_then(|h| super::element::try_claim(file_id, h, elements, &body_items, diags))

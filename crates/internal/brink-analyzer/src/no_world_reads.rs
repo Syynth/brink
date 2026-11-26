@@ -228,7 +228,7 @@ pub fn check(
             for (call_range, target) in collector.sites {
                 match index.symbols.get(&target).map(|s| s.kind) {
                     Some(SymbolKind::External) => {
-                        let kind = symbol_meta.get(&target).map(|m| m.kind).unwrap_or_default();
+                        let kind = symbol_meta.get(&target).map_or_default(|m| m.kind);
                         if !matches!(kind, ExternalKind::Query | ExternalKind::Plain) {
                             continue;
                         }

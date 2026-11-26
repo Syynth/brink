@@ -247,11 +247,7 @@ impl Analyzer {
                 }
             }
             Stmt::Await(a) => {
-                let cond_reads = a
-                    .condition
-                    .as_ref()
-                    .map(collect_read_names)
-                    .unwrap_or_default();
+                let cond_reads = a.condition.as_ref().map_or_default(collect_read_names);
                 if let Some(e) = &a.condition {
                     self.record_reads(e, pos);
                 }
@@ -279,11 +275,7 @@ impl Analyzer {
             BlockStmt::Break(_) | BlockStmt::Continue(_) => {}
             BlockStmt::ExprStmt(e) => self.record_reads(e, pos),
             BlockStmt::Await(a) => {
-                let cond_reads = a
-                    .condition
-                    .as_ref()
-                    .map(collect_read_names)
-                    .unwrap_or_default();
+                let cond_reads = a.condition.as_ref().map_or_default(collect_read_names);
                 if let Some(e) = &a.condition {
                     self.record_reads(e, pos);
                 }

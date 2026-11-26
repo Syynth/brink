@@ -252,8 +252,7 @@ impl ConfigDocument {
         self.doc
             .get(table)
             .and_then(Item::as_table_like)
-            .map(|t| t.iter().map(|(k, _)| k.to_owned()).collect())
-            .unwrap_or_default()
+            .map_or_default(|t| t.iter().map(|(k, _)| k.to_owned()).collect())
     }
 
     /// Read `table.key` as a string, or `None` when absent or not a string.

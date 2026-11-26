@@ -143,8 +143,7 @@ fn lower_while_stmt(
         .and_then(|e| e.lower_expr(scope, sink))?;
     let body = w
         .body()
-        .map(|b| lower_stmt_block(&b, scope, sink))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(&b, scope, sink));
     Ok(BlockStmt::While(WhileStmt {
         ptr: scope.prov(NodeClass::While, w.syntax()),
         condition,
@@ -173,8 +172,7 @@ fn lower_for_stmt(
         .and_then(|e| e.lower_expr(scope, sink))?;
     let body = f
         .body()
-        .map(|b| lower_stmt_block(&b, scope, sink))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(&b, scope, sink));
     Ok(BlockStmt::For(ForStmt {
         ptr: scope.prov(NodeClass::For, f.syntax()),
         var_name,
@@ -212,8 +210,7 @@ fn lower_if_stmt(
         .and_then(|e| e.lower_expr(scope, sink))?;
     let body = if_stmt
         .body()
-        .map(|b| lower_stmt_block(&b, scope, sink))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(&b, scope, sink));
     let else_branch = if_stmt
         .else_clause()
         .map(|clause| lower_else_clause(&clause, scope, sink))
@@ -239,8 +236,7 @@ fn lower_else_clause(
     } else {
         let body = clause
             .body()
-            .map(|b| lower_stmt_block(&b, scope, sink))
-            .unwrap_or_default();
+            .map_or_default(|b| lower_stmt_block(&b, scope, sink));
         Ok(ElseBranch::Else(body))
     }
 }

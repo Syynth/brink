@@ -389,9 +389,7 @@ fn flush_choices(
         // labeled block so they live inside the gather container.  This
         // ensures thread calls and other code between the gather label
         // and the first choice are re-executed when looping back.
-        let mut labeled_stmts = gather_stmts_start
-            .map(|start| stmts.split_off(start))
-            .unwrap_or_default();
+        let mut labeled_stmts = gather_stmts_start.map_or_default(|start| stmts.split_off(start));
         labeled_stmts.push(cs);
         let tail = crate::tail_from_stmts(&labeled_stmts);
         stmts.push(Stmt::LabeledBlock(Box::new(Block {

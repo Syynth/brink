@@ -1072,8 +1072,7 @@ mod tests {
         let n = COUNTER.fetch_add(1, Ordering::Relaxed);
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
+            .map_or_default(|d| d.as_nanos());
         let dir = std::env::temp_dir().join(format!(
             "brink-lsp-projects-test-{label}-{}-{n}-{nanos}",
             std::process::id()

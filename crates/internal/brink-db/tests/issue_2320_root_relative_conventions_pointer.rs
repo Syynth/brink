@@ -76,8 +76,7 @@ fn unique_temp_dir(label: &str) -> PathBuf {
         label,
         std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default()
+            .map_or_default(|d| d.as_nanos())
     );
     std::env::temp_dir().join(format!("brink-issue-2320-{unique}"))
 }

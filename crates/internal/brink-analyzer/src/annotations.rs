@@ -111,15 +111,13 @@ impl TypeNames {
 /// `external_check`'s semantic-type resolution (issue #339).
 #[must_use]
 pub fn declared_handle_kinds(manifest: Option<&HostManifest>) -> BTreeSet<String> {
-    manifest
-        .map(|m| {
-            m.types
-                .iter()
-                .filter(|t| t.base == BaseType::Handle)
-                .map(|t| t.name.clone())
-                .collect()
-        })
-        .unwrap_or_default()
+    manifest.map_or_default(|m| {
+        m.types
+            .iter()
+            .filter(|t| t.base == BaseType::Handle)
+            .map(|t| t.name.clone())
+            .collect()
+    })
 }
 
 /// Resolve a parsed type annotation into the checker's `Ty` universe.
