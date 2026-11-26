@@ -337,7 +337,7 @@ fn declared_fn_type(
     // never be legitimately referenced at all — `modules::check`'s `E087`
     // fires unconditionally the moment resolution reaches it (confirmed
     // by `native_cross_file_global_shadow_of_a_fn_value_reference_fails_to_compile`,
-    // `crates/brink-compiler/tests/driver.rs`), failing the whole compile
+    // `crates/brink-compiler/tests/integration/driver.rs`), failing the whole compile
     // before this decision could ever matter.
     //
     // The **same-file** case is different, and matters: `ListItem`s are
@@ -356,7 +356,7 @@ fn declared_fn_type(
     // `double` while lowering bound it to the list item, producing a
     // bogus `E063` the moment a caller's declared parameter type didn't
     // happen to admit `fn`. `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
-    // (`crates/brink-compiler/tests/driver.rs`) is the regression test;
+    // (`crates/brink-compiler/tests/integration/driver.rs`) is the regression test;
     // reverting the `lookup_list_item_bare` call below reproduces the
     // bogus `E063` it guards against.
     if matches!(value, Expr::Path(_))

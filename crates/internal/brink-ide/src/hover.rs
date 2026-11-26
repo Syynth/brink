@@ -588,7 +588,7 @@ mod tests {
     /// session's resolved options into its own `ProjectDb`
     /// ([`IdeSession::sync_db_options`] — issue #1553) — unlike
     /// `update_and_analyze` alone, which does not (see that method's own
-    /// doc comment, and `tests/live_typing_db_divergence.rs`).
+    /// doc comment, and `tests/integration/live_typing_db_divergence.rs`).
     fn native_session(path: &str, src: &str) -> (IdeSession, FileId) {
         let mut session = IdeSession::new();
         let file_id = session.update_source(path, src.to_string());
@@ -1249,7 +1249,7 @@ fn main() {
     fn hover_on_a_ufcs_field_call_shows_the_field_call_verdict() {
         // Fixture mirrors `brink-analyzer`'s
         // `a_function_typed_field_wins_and_is_recorded_as_a_field_call`
-        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — a
+        // (crates/internal/brink-analyzer/tests/integration/ufcs_resolution.rs) — a
         // function-typed field wins over a same-named free function (D1).
         let src = "\
 struct Guest {
@@ -1270,7 +1270,7 @@ fn main() {
     fn hover_on_a_ufcs_free_fn_auto_ref_shows_the_by_ref_verdict() {
         // Fixture mirrors `brink-analyzer`'s
         // `a_ref_first_param_auto_refs_a_frame_local_receiver`
-        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs) — `bump`'s
+        // (crates/internal/brink-analyzer/tests/integration/ufcs_resolution.rs) — `bump`'s
         // first parameter is `ref`, so the desugar passes the receiver by
         // reference (D5 auto-ref, issue #1462).
         let src = "\

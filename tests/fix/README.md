@@ -27,7 +27,7 @@ be in a real project.
 
 Who runs what:
 
-- `crates/internal/brink-test-harness/tests/fix_safe_obligations.rs` sweeps
+- `crates/internal/brink-test-harness/tests/integration/fix_safe_obligations.rs` sweeps
   every directory here, and separately requires every `Safe`-max fixer in
   `brink_ide::fix::FIXERS` to have one.
 - `brink_ide::fix`'s own registry test demands the fixture *exists*; it

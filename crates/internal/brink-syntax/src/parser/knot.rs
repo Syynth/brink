@@ -213,7 +213,7 @@ pub(crate) fn stitch_definition(p: &mut Parser<'_, '_>) {
 ///
 /// Whitespace-free (and leading-whitespace) stitch headers are not
 /// hypothetical: they're checked in as real-world ink in the `tests_github`
-/// corpus (`crates/internal/brink-test-harness/tests/corpus_report.rs:169`
+/// corpus (`crates/internal/brink-test-harness/tests/integration/corpus_report.rs:169`
 /// walks `["tier1", "tier2", "tier3", "tests_github"]`) —
 /// `tests/tests_github/mifu67__august/Assets/Dialogue/home-clues.ink:13`
 /// (`=julian`) and `:9` (` =no_julian`), both divert targets from the block

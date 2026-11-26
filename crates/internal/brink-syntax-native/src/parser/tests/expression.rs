@@ -2032,7 +2032,7 @@ fn garbage_inside_an_array_literal_never_panics() {
 // ── O. Proptest round-trip generator (local to this family file — see  ──
 // ── the PR discussion: #1199's own scope is `fuzz_repro.rs`, a         ──
 // ── `.brink`-corpus round-trip test, and a new `fuzz/` crate, not      ──
-// ── `tests/proptest_native.rs`, so this generator stays local here     ──
+// ── `tests/integration/proptest_native.rs`, so this generator stays local here     ──
 // ── rather than claiming ownership of the shared harness. Its keyword  ──
 // ── filter reuses the crate's real classifier so it can never drift    ──
 // ── from `classify_keyword`'s actual keyword set again.)               ──

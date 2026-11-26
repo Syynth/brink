@@ -2161,7 +2161,7 @@ mod tests {
     /// Issue #1685: the `Expr::Lambda` arm added to `emit_expr` is
     /// reachable from a top-level `var` initializer
     /// (`a_lambda_lowers_in_a_top_level_var_initializer_too`,
-    /// `crates/internal/brink-ir/tests/native_lambdas.rs`) — every other
+    /// `crates/internal/brink-ir/tests/integration/native_lambdas.rs`) — every other
     /// emit shape added to this file got a round-trip test right here
     /// (`fn_type_annotation_round_trips`, `stitch_return_type_round_trips`,
     /// `conditional_as_binding_round_trips`, `use_and_import_round_trip`),
@@ -2902,7 +2902,7 @@ mod tests {
     // old blanket `visibility.is_some()` refusal the moment `pub` (issue
     // #1582/#2194) made `Some(VisibilityMark::Public)` reachable from a
     // real native parse. These tests don't go through
-    // `crates/internal/brink-respell/tests/round_trip.rs`'s
+    // `crates/internal/brink-respell/tests/integration/round_trip.rs`'s
     // `round_trip_case` (full `brink-analyzer` pass via
     // `explore_from_brink_native`) — deliberately: a single-file harness
     // with no `module { }` wrapper is always an *undeclared* module

@@ -13,7 +13,7 @@
 //! without the oracle: the fixture must **exist** and be well-formed
 //! ([`safe_fixture_dir`], enforced by the registry test in
 //! [`super`]). The harness's own
-//! `crates/internal/brink-test-harness/tests/fix_safe_obligations.rs`
+//! `crates/internal/brink-test-harness/tests/integration/fix_safe_obligations.rs`
 //! enumerates the same [`super::FIXERS`] registry and runs each fixture
 //! through the oracle. Neither half is optional, and neither can be
 //! satisfied by the other.

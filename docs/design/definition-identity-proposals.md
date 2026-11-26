@@ -27,7 +27,7 @@ It deliberately stops short of prescribing an implementation. The
 and requiring maintainer sign-off" is read here as: do not pick the
 shape unilaterally.
 
-Companion artifact: `crates/internal/brink-intl/tests/rename_identity.rs`
+Companion artifact: `crates/internal/brink-intl/tests/integration/rename_identity.rs`
 (added alongside this document) pinned the failure as executable
 evidence. Its translation-orphaning case flipped when #1442 landed; the
 churn case flipped when #1671 landed. The shallow-net case still holds,
@@ -121,7 +121,7 @@ followed).
 
 ## 3. Measured evidence
 
-`crates/internal/brink-intl/tests/rename_identity.rs` compiles a knot
+`crates/internal/brink-intl/tests/integration/rename_identity.rs` compiles a knot
 `hub` with a stitch `market`, then the same story with the knot renamed
 to `plaza` and the rename **declared** (`#@was(hub)`). Observed:
 

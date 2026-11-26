@@ -15,7 +15,7 @@ It is what the four fixtures beside it are measured against: E025, E063,
 E080 and E081 all discharge **compilation-blocking** diagnostics, so their
 pre-fix source has no program to preserve and the verdict is
 `NoPreImage`. Without a positive case, the sweep in
-`crates/internal/brink-test-harness/tests/fix_safe_obligations.rs` could
+`crates/internal/brink-test-harness/tests/integration/fix_safe_obligations.rs` could
 pass while proving nothing.
 
 The fixture directory is keyed by diagnostic code and does **not** require

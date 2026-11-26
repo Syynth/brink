@@ -1,6 +1,6 @@
 //! Corpus differential oracle (issue #898) — per-lane reference
 //! implementations that share zero code with `brink-runtime`, used by
-//! `tests/algorithms_ground_truth.rs` to cross-validate the algorithms
+//! `tests/integration/algorithms_ground_truth.rs` to cross-validate the algorithms
 //! corpus (`tests/tier1-brink/algorithms/`, issue #822) against known-good
 //! Rust ground truth rather than only against a hand-verified golden
 //! transcript.
@@ -20,7 +20,7 @@
 //! own explicit ask):**
 //! - `sort`: [`sort::reference_sort`] wraps `slice::sort` — exact multiset
 //!   equality is proven for every sorting-lane case, fixed-input AND
-//!   property mode (`tests/algorithms_ground_truth.rs`'s `proptest`-free
+//!   property mode (`tests/integration/algorithms_ground_truth.rs`'s `proptest`-free
 //!   bounded loop over [`pcg`]-seeded random arrays).
 //! - `dp`: direct (non-memoized) recurrences for edit distance, 0/1
 //!   knapsack, LCS (length + recovered subsequence text), and fibonacci —
@@ -149,7 +149,7 @@ pub mod dp {
     /// `longest-common-subsequence/story.ink`'s own tie-break. Callers that
     /// want a ground-truth check should compare `length` only, the same way
     /// the graphs lane checks path COST but not path shape — see
-    /// `tests/algorithms_ground_truth.rs`'s module doc.
+    /// `tests/integration/algorithms_ground_truth.rs`'s module doc.
     // Textbook DP notation (a/b sequences, n/m lengths, i/j indices) is
     // clearer here than invented longer names would be — allowed narrowly
     // on this one fn rather than renaming away from the standard notation.
@@ -319,7 +319,7 @@ pub mod graph {
         /// module's own reference implementation against the corpus's
         /// documented golden cost (`expected.txt`: `Total cost: 12`)
         /// independent of the parsing/harness plumbing in
-        /// `tests/algorithms_ground_truth.rs`.
+        /// `tests/integration/algorithms_ground_truth.rs`.
         #[test]
         fn matches_the_shared_corpus_fixture_grid() {
             let grid: Vec<Vec<i64>> = vec![

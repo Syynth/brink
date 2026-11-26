@@ -376,11 +376,11 @@ Every diagnostic the compiler can emit has a stable code (`E001`–`E197`, with
 per-code reference file under [`docs/diagnostics/`](diagnostics/) with a summary,
 explanation, minimal repro, and fix guidance. `DiagnosticCode::as_str` /
 `DiagnosticCode::from_str_code` (`crates/internal/brink-ir/src/hir/diagnostics.rs`) are the
-source of truth for the code set; `crates/internal/brink-test-harness/tests/diagnostic_docs_validation.rs`
+source of truth for the code set; `crates/internal/brink-test-harness/tests/integration/diagnostic_docs_validation.rs`
 asserts every variant has a corresponding doc file and that no orphaned doc files exist.
 
 **A page's `Example`/`Fix` fences are compile-checked, not just tag-checked**
-(DD-1, issue #2021): `crates/internal/brink-test-harness/tests/diagnostic_docs_fences.rs`
+(DD-1, issue #2021): `crates/internal/brink-test-harness/tests/integration/diagnostic_docs_fences.rs`
 compiles every `ink`/`brink` fence in `docs/diagnostics/*.md` through the real
 compile path and asserts the page's own code appears (or is absent) per the
 fence's own tag. Every such fence must carry one of:
@@ -727,7 +727,7 @@ Consequences worth stating:
 ### Measured
 
 Every checked-in oracle episode replayed on the artifact before and after
-(`cargo test -p brink-test-harness --test opt_corpus_stats -- --ignored`),
+(`cargo test -p brink-test-harness --test integration opt_corpus_stats:: -- --ignored`),
 390 cases and 6 636 episodes:
 
 | | Opcodes executed | Bytecode bytes |

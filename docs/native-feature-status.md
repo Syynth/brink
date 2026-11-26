@@ -306,7 +306,7 @@ verified above.
 
 ## Keeping this honest
 
-Re-derive rather than trust. `cargo test -p brink-respell --test full_corpus_sweep -- --ignored --nocapture`
+Re-derive rather than trust. `cargo test -p brink-respell --test integration full_corpus_sweep:: -- --ignored --nocapture`
 gives the bucket counts. For a per-feature check, use **one isolated project
 per probe** — native discovery is tree-is-universe, so several `.brink` files
 in one directory silently merge into one project — and always run

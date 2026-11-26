@@ -4,7 +4,7 @@
 //! "E014 bare `~` → delete the line"). `tests/fix/E014/` (before/expected)
 //! predates this fixer by design — see that fixture's own `README.md` — and
 //! is what this module is measured against; `expected_verdicts()` in
-//! `crates/internal/brink-test-harness/tests/fix_safe_obligations.rs`
+//! `crates/internal/brink-test-harness/tests/integration/fix_safe_obligations.rs`
 //! already pins its verdict to `ObservablyEquivalent`.
 //!
 //! # Which `E014` sites this covers

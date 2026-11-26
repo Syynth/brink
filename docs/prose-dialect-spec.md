@@ -1526,7 +1526,7 @@ the persisted `.brkt` wire format) rather than mutating a live `Flow`
 field, because the buffer defers a line's commitment until later content
 proves no `Glue` reaches back over it — a naively "current, mutable"
 field would misattribute a later run's data to an earlier, still-buffered
-line. See `crates/brink-runtime/tests/element.rs`'s
+line. See `crates/brink-runtime/tests/integration/element.rs`'s
 `attach_convention_data_reaches_the_following_run` for the runtime proof.
 
 **Still scoped narrower than the full ruling, honestly**: `kind` stays

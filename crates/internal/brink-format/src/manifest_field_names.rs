@@ -22,7 +22,7 @@
 //! minimal: these constants pin the two spellings both types' `externals`
 //! wrapper and each entry's `name` field must keep using, so a rename on
 //! either side is a deliberate, visible edit here, not silent drift; a
-//! cross-validation test (`crates/bevy-brink/tests/manifest_field_convergence.rs`)
+//! cross-validation test (`crates/bevy-brink/tests/integration/manifest_field_convergence.rs`)
 //! parses one literal manifest JSON built from these constants through both
 //! types and asserts they agree.
 //!

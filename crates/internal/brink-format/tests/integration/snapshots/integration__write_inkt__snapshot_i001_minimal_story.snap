@@ -1,0 +1,30 @@
+---
+source: crates/internal/brink-format/tests/integration/write_inkt.rs
+expression: buf
+---
+(story
+
+  (name_table
+    0 ""
+  )
+
+  (addresses
+    (address $01_406ea523c53def -> $01_406ea523c53def +0)
+  )
+
+  (address_paths
+    (path 0 -> $01_406ea523c53def)
+  )
+
+  (container $01_406ea523c53def
+    (name 0)
+    (lines
+      0 "Hello, world!" @38d1334144987bf4 (source "story.ink" 0..14)
+    )
+    (code
+      emit_line 0 0
+      emit_newline
+      done
+    )
+  )
+)

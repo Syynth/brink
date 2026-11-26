@@ -166,7 +166,7 @@ Consequences that follow from "bare name, no sigil":
     (`resolve::lookup_list_item_bare`), ahead of the knot lookup — see
     `declared_fn_type`'s own doc for the fix and
     `native_bare_name_shadowed_by_a_same_named_list_item_is_not_typed_as_a_fn_value`
-    (`crates/brink-compiler/tests/driver.rs`) for the regression test.
+    (`crates/brink-compiler/tests/integration/driver.rs`) for the regression test.
     With that fixed, the *cross-file* half of #1901's question still
     closes empirically, for two independent reasons: native
     `VAR`/`CONST`/`LIST` have no publicity mechanism at all
@@ -312,7 +312,7 @@ explicitly not the direction.
   TM-3 escape rule applied to call position). A strict-mode author
   can never reach the §3 runtime fault — **inside a named knot or
   stitch.** Measured exception (issue #2872,
-  `crates/brink-compiler/tests/issue_2872_e063_policy_audit.rs`,
+  `crates/brink-compiler/tests/integration/issue_2872_e063_policy_audit.rs`,
   `root_flow_e063_never_fires_regardless_of_policy`):
   `strict::check_value_calls` only walks `hir.knots` to find inference
   bodies to check; the file's own root/entry flow (`HirFile.root_content`

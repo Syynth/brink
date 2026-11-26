@@ -282,7 +282,7 @@ mod tests {
     /// anything built on `ConventionsProjection` (the `E169` diagnostic
     /// included) even though the query itself was already proven correct
     /// against real project data at the `brink-db`/`brink-ir` layer
-    /// (`crates/internal/brink-db/tests/issue_2111_conventions_projection.rs`,
+    /// (`crates/internal/brink-db/tests/integration/issue_2111_conventions_projection.rs`,
     /// this crate's own `hir::explain` unit tests) — #1880 is what threads
     /// the pointer the rest of the way through `IdeSession`.
     const CONVENTIONS: &str = "\

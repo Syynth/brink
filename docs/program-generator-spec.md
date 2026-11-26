@@ -136,7 +136,7 @@ enter the differential profile (#3379 states which).
 **Status (2026-09-04, #3379 landed).** `tools/inkjs-oracle` is a port
 of `tools/ink-oracle`'s crawler (same DFS, same episode JSON) onto
 `inkjs/compiler`, and the sanction is
-`crates/internal/brink-test-harness/tests/inkjs_sanction.rs`: **414 of
+`crates/internal/brink-test-harness/tests/integration/inkjs_sanction.rs`: **414 of
 414** oracle cases match — 400 byte for byte, 14 after two
 normalisations that forgive presentational artefacts of the *reference*
 (the C# tool's no-`onError` error wrapper and absolute source paths;
@@ -159,7 +159,7 @@ that sanction measured:
   checked-in golden needed the strict mode to match.
 
 The differential itself is
-`crates/internal/brink-gen/tests/inkjs_differential.rs` over
+`crates/internal/brink-gen/tests/integration/inkjs_differential.rs` over
 `Profile::PLAIN_INK`, compared by the harness's `diff_oracle` (the
 corpus ratchet's own comparison). Its first run found two brink
 divergences from ink — whitespace between an interpolation and `<>`

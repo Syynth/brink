@@ -6,12 +6,12 @@
 //! so it runs in CI and in cloud sessions that have no `dotnet`. This module
 //! spawns it and normalises its output so the harness can use it two ways:
 //!
-//! - **Sanction** (`tests/inkjs_sanction.rs`): replay every C# golden across
+//! - **Sanction** (`tests/integration/inkjs_sanction.rs`): replay every C# golden across
 //!   tier1–3 through inkjs and demand a match. inkjs is not on `CLAUDE.md`'s
 //!   trust hierarchy; this is what earns it standing as a proxy for the
 //!   rank-2 reference. The goldens stay C#-blessed — the inkjs tool never
 //!   writes next to one.
-//! - **Differential** (`crates/internal/brink-gen/tests/inkjs_differential.rs`):
+//! - **Differential** (`crates/internal/brink-gen/tests/integration/inkjs_differential.rs`):
 //!   for generated stories, `brink(P)` against `inkjs(P)` via
 //!   [`crate::diff_oracle`], the same comparison the corpus ratchet uses.
 //!
@@ -43,7 +43,7 @@
 //! Neither normalisation can hide a wrong branch, a wrong value, a missing
 //! step or a wrong choice list — those stay exact. A future divergence that
 //! survives both is a real finding and belongs in
-//! `tests/inkjs_sanction.rs`'s `KNOWN_DIVERGENCES` with a reason, never in a
+//! `tests/integration/inkjs_sanction.rs`'s `KNOWN_DIVERGENCES` with a reason, never in a
 //! third normaliser.
 
 use std::path::{Path, PathBuf};

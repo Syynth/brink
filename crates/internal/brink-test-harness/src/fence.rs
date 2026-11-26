@@ -1,7 +1,7 @@
 //! Shared markdown fence-extraction machinery (issue #2021).
 //!
-//! Originally lived only in `tests/book_fences.rs` (BW-5); split out here so
-//! a second walker — `tests/diagnostic_docs_fences.rs` (DD-1, docs/diagnostics/*.md)
+//! Originally lived only in `tests/integration/book_fences.rs` (BW-5); split out here so
+//! a second walker — `tests/integration/diagnostic_docs_fences.rs` (DD-1, docs/diagnostics/*.md)
 //! — can reuse the exact same extractor rather than re-implementing fence
 //! parsing a second time. Both consumers define their own fence-tag taxonomy
 //! (`Kind` enum + `classify`) locally, since BW-5's book taxonomy and DD-1's

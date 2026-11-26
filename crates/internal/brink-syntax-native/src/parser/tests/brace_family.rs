@@ -980,7 +980,7 @@ fn garbage_tokens_inside_conditional_body_never_panic() {
 
 // ── Section J: proptest round-trip generators ──────────────────────────
 //
-// Local to this file (issue #1199 owns `tests/proptest_native.rs` this
+// Local to this file (issue #1199 owns `tests/integration/proptest_native.rs` this
 // wave) — a small generator covering the shapes this family adds:
 // `{if}`/`{match}` (both body forms) and multiline alternation.
 
@@ -1063,7 +1063,7 @@ mod proptests {
 
     const NUM_CASES: u32 = 256;
 
-    // Mirrors `tests/proptest_native.rs`'s own `KEYWORDS` list (this
+    // Mirrors `tests/integration/proptest_native.rs`'s own `KEYWORDS` list (this
     // family's generators are local to this file, so the list is
     // duplicated here rather than shared — see the module doc comment
     // above). Every hard-reserved keyword must appear here or proptest

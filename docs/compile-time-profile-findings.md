@@ -85,6 +85,6 @@ built once per project revision in `chunk_lowering_ctx_query` and shared:
 | `synthetic_cold.compile` (end-to-end) | 341 ms | 307 ms |
 
 Byte-identical output is the non-negotiable bar (CLAUDE.md determinism
-rule): `crates/internal/brink-db/tests/issue_460_shared_chunk_ctx.rs` pins
+rule): `crates/internal/brink-db/tests/integration/issue_460_shared_chunk_ctx.rs` pins
 cold-vs-warm `.inkb` identity across an edit sequence, and
 `incremental_fuzz.rs` is the broad randomized version of the same contract.

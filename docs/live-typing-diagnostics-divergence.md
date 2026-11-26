@@ -5,7 +5,7 @@ pure `analyze_with_modules` path") implemented §4's **option B** below:
 `IdeSnapshot` now carries the db's real `is_native` and threads it through
 `analyze_with_modules` → `finish_analysis` → `per_file_diagnostics` (and adds
 the missing `E137` call site). That closes every divergence measured in §3 —
-`crates/internal/brink-ide/tests/live_typing_db_divergence.rs` now pins
+`crates/internal/brink-ide/tests/integration/live_typing_db_divergence.rs` now pins
 *agreement* between the two surfaces on the same fixtures that used to pin
 the mismatch.
 

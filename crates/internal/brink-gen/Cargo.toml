@@ -17,12 +17,12 @@ proptest.workspace = true
 brink-compiler = { workspace = true, features = ["test-util"] }
 brink-runtime = { workspace = true }
 brink-test-harness = { workspace = true }
-# The source-transformation equivalence properties (`tests/equivalence.rs`,
+# The source-transformation equivalence properties (`tests/integration/equivalence.rs`,
 # docs/observable-semantics-spec.md §4.1): the formatter and the respeller
 # are the transformations under test.
 brink-fmt = { workspace = true }
 brink-respell = { workspace = true }
-# The optimizer equivalence property (`tests/opt_equivalence.rs`). The
+# The optimizer equivalence property (`tests/integration/opt_equivalence.rs`). The
 # `test-control` feature carries the negative-control passes the non-vacuity
 # half drives — see `brink_opt::control` for why the guard against one reaching
 # a real artifact is a runtime assertion rather than this feature being off.

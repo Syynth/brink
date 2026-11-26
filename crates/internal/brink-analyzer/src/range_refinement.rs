@@ -212,7 +212,7 @@ impl HirVisitor for RefinementVisitor<'_> {
     /// would otherwise inherit the shadowing hazard silently, exactly as
     /// this file and `contains_domain.rs` did before #2773 — so the hooks
     /// stay rather than being removed and re-derived later.
-    /// `crates/brink-compiler/tests/driver.rs`'s
+    /// `crates/brink-compiler/tests/integration/driver.rs`'s
     /// `compile_ink_brink_range_refinement_direct_var_initializer_is_e117`
     /// records the same surface-disjointness finding for issue #1774.
     ///
@@ -381,7 +381,7 @@ mod tests {
     /// Real resolutions + a whole-project [`InferenceResult`] — mirrors
     /// `conversions::tests::build_with_inference`. This module had no unit
     /// tests at all before issue #2793's audit (coverage previously lived
-    /// only in `crates/brink-compiler/tests/driver.rs`'s
+    /// only in `crates/brink-compiler/tests/integration/driver.rs`'s
     /// `compile_ink_brink_range_refinement_direct_var_initializer_is_e117`)
     /// — this harness is new, not a refactor of an existing one.
     fn check_all(src: &str) -> Vec<Diagnostic> {

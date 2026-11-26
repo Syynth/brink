@@ -81,7 +81,7 @@ This is the load-bearing section; read it before trusting any number here.
   `live`/`history` array pair shared then mutated every turn (the
   `snapshot-retention-g10-m10` bench story's share-then-mutate shape,
   scaled to one generation per turn) — proven to move both counters off
-  zero in `crates/bevy-brink/tests/scenario_bench_model.rs`'s
+  zero in `crates/bevy-brink/tests/integration/scenario_bench_model.rs`'s
   `collection_global_axis_forwards_nonzero_counters` (feature-gated on
   `bench-counters`, since without it the fields are always `None`). The
   checked-in `serial-driver.csv` baselines below deliberately still hold
@@ -154,7 +154,7 @@ matrix — re-add after regenerating).
 
 **Baseline-diff tripwire (issue #911, the seed of `BH-3`'s serial-vs-
 parallel comparator):**
-`crates/bevy-brink/tests/scenario_baseline_tripwire.rs`'s
+`crates/bevy-brink/tests/integration/scenario_baseline_tripwire.rs`'s
 `checked_in_baseline_matches_a_fresh_mini_run` re-runs the checked-in
 `serial-1` row's exact config in an ordinary `cargo test` pass and
 compares it against the checked-in CSV. Deterministic fields

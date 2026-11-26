@@ -30,7 +30,7 @@ Ground truth for corpus impact came from `brink-respell`'s existing,
 `#[ignore]`d full-corpus sweep:
 
 ```sh
-cargo test -p brink-respell --test full_corpus_sweep -- --ignored --nocapture
+cargo test -p brink-respell --test integration full_corpus_sweep:: -- --ignored --nocapture
 ```
 
 Run today against `origin/main` plus this triage's doc fixes (no production
@@ -319,7 +319,7 @@ rather than folded into #1973's fix.
 `>{ }` prose-ground override whenever `k.is_function` is true (a `flow`'s
 bare `{` already matches its own prose default and is left alone). Proven
 by a new `tests/tier1-brink-respell/fn-prose-return/` fixture
-(`crates/internal/brink-respell/tests/round_trip.rs`'s `fn_prose_return`)
+(`crates/internal/brink-respell/tests/integration/round_trip.rs`'s `fn_prose_return`)
 and two `emit_native` unit tests
 (`fn_prose_body_value_return_round_trips`,
 `fn_prose_body_bare_return_and_content_round_trip`). As predicted above,

@@ -7,10 +7,10 @@ are still hand-curated (the corpus selection itself, and the checked-in
 (`crates/internal/brink-respell/`) now prove, for every case here, that
 (a) this exact `story.brink` round-trips through native lowering + emit +
 reparse + relower to an **episode-identical** replay
-(`crates/internal/brink-respell/tests/round_trip.rs`), and (b) the ink
+(`crates/internal/brink-respell/tests/integration/round_trip.rs`), and (b) the ink
 origin listed below *mechanically* respells (no hand editing) to a
 `.brink` source that is itself episode-identical to the ink original
-(`crates/internal/brink-respell/tests/ink_corpus_convert.rs`). Run either
+(`crates/internal/brink-respell/tests/integration/ink_corpus_convert.rs`). Run either
 with `cargo test -p brink-respell`. See that crate's module docs for
 exactly which HIR constructs the emitter currently supports — it is
 conservative by construction (refuses rather than guesses on anything
@@ -67,11 +67,11 @@ below.
 Two layers, both still run in CI:
 
 1. **Parse-clean (zero errors), lossless round-trip** against the shipped
-   native parser — `crates/internal/brink-syntax-native/tests/respell_fixtures.rs`
+   native parser — `crates/internal/brink-syntax-native/tests/integration/respell_fixtures.rs`
    walks every `story.brink` under this directory. Run with:
 
    ```sh
-   cargo test -p brink-syntax-native --test respell_fixtures
+   cargo test -p brink-syntax-native --test integration respell_fixtures::
    ```
 
 2. **Episode-identity** (B0.8b, issue #1178) — `crates/internal/brink-respell/tests/`:
@@ -163,7 +163,7 @@ exact identifier is not in-tree) or retire the exhibit reference.
 ## surprising, not because the charter is silent)
 
 **N-1 — RESOLVED** (see `n1_affected_fixtures_parse_inline_diverts_as_divert_nodes`
-in `crates/internal/brink-syntax-native/tests/respell_fixtures.rs`, and
+in `crates/internal/brink-syntax-native/tests/integration/respell_fixtures.rs`, and
 `brink-respell`'s emitter, which relies on this fix to glue a same-line
 `text -> target` back onto one output line — see that module's doc on
 `emit_stmt_stream`). Kept below for history.

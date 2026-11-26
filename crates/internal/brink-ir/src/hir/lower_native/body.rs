@@ -100,7 +100,7 @@ pub(super) fn lower_block(
 /// splices a `LogicBlock`'s statements directly into the enclosing
 /// container's flat sequence) — the exact shape a brink-dialect container
 /// whose entire body is one `~ { … }` block already produces, see
-/// `crates/internal/brink-ir/tests/b08_native_control_flow.rs`'s
+/// `crates/internal/brink-ir/tests/integration/b08_native_control_flow.rs`'s
 /// `ink_block_stmts` differential helper.
 ///
 /// **`> text` (charter §8.2, issue #1992)** is the one `STMT_BLOCK` item

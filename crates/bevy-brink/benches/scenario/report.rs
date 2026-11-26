@@ -229,7 +229,7 @@ fn baseline_configs(frames: usize, prefix: &str, story_globals: usize) -> Vec<Sc
             // The checked-in baselines stay scalar-only (docs/bevy-bench.md's
             // honesty note on cow_copies/arc_clones reading 0 here) — the
             // collection-typed axis is a separate exploration path (#911),
-            // proven to move the counters in tests/scenario_bench_model.rs
+            // proven to move the counters in tests/integration/scenario_bench_model.rs
             // instead of in this checked-in matrix.
             collection_global: false,
         });

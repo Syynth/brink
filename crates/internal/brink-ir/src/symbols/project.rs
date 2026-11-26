@@ -50,7 +50,7 @@
 //!   picks the closest-*preceding* local by `range.start()`, not vector
 //!   index). This walker uses natural top-down structural order instead.
 //!   The differential burn-in test
-//!   (`crates/internal/brink-test-harness/tests/b04_manifest_burn_in.rs`)
+//!   (`crates/internal/brink-test-harness/tests/integration/b04_manifest_burn_in.rs`)
 //!   compares those three fields order-insensitively (sorted by range) and
 //!   every other field (which *does* provably match legacy order — see that
 //!   test's module doc) byte-for-byte.
@@ -1046,7 +1046,7 @@ fn divert_path_text(path: &Path) -> (String, bool) {
 // symbols with every metadata channel (doc/visibility/was/params), locals
 // with their scope, every `RefKind`, and label qualification. The
 // differential burn-in test
-// (`crates/internal/brink-test-harness/tests/b04_manifest_burn_in.rs`) is
+// (`crates/internal/brink-test-harness/tests/integration/b04_manifest_burn_in.rs`) is
 // the corpus-wide proof this matches production; these are the readable,
 // single-purpose regression tests for each shape.
 

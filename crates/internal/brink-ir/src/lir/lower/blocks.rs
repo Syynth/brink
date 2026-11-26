@@ -2265,7 +2265,7 @@ fn lower_bare_mutator(
 ///    field-scoped version of `lower_bare_mutator`'s already-ratified,
 ///    tested "fault leaves the root holding `Value::Null`" trade-off
 ///    (`fault_during_insert_leaves_root_null` et al.,
-///    `crates/internal/brink-test-harness/tests/take_rmw.rs`), not a new
+///    `crates/internal/brink-test-harness/tests/integration/take_rmw.rs`), not a new
 ///    kind of risk — see the mirrored field-scoped tests in
 ///    `field_mutator_take_rmw.rs`.
 /// 4. The mutator's RMW expansion (`CollectionInsert`/`CollectionRemove`/…)

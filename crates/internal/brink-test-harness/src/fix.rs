@@ -53,7 +53,7 @@
 //! - **The sensitivity of the oracle itself is measured elsewhere.** Tier 3a
 //!   (`docs/observable-semantics-spec.md` §4) is what says a *real* semantic
 //!   change would have been caught; it is shipped for the corpus
-//!   (`tests/trace_mutation_study.rs`) but has never been run over
+//!   (`tests/integration/trace_mutation_study.rs`) but has never been run over
 //!   *fix-shaped* mutations, and the program generator that would run every
 //!   Safe fixer over generated stories rather than hand fixtures is #3370.
 //!   Until then a passing fixture says "this fixture is equivalent", not
@@ -441,7 +441,7 @@ fn parse_rewrites(text: &str) -> Vec<String> {
 ///
 /// Returns a report rather than asserting, so a caller can record a verdict
 /// it does not intend to require (which is how the migrated `Suggested`
-/// fixers are exercised — see `tests/fix_safe_obligations.rs`). Use
+/// fixers are exercised — see `tests/integration/fix_safe_obligations.rs`). Use
 /// [`assert_safe_fix`] for the obligation itself.
 #[must_use]
 pub fn check_safe_fix(fixture: &FixFixture, config: &SafeFixConfig) -> SafeFixReport {

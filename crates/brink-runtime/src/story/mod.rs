@@ -3406,7 +3406,7 @@ mod tests {
 
     /// Defers (`Pending`) its first call, then resolves — mirrors the
     /// `DeferOnce` pattern used for the flow-level resume gap elsewhere in
-    /// the runtime's test suite (`tests/session.rs`, `tests/speculation.rs`).
+    /// the runtime's test suite (`tests/integration/session.rs`, `tests/integration/speculation.rs`).
     struct DeferOnce {
         deferred: std::cell::Cell<bool>,
     }

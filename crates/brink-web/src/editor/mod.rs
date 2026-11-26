@@ -6741,7 +6741,7 @@ mod tests {
     // ── Issue #2318: `brink.toml` sharing a session must not disqualify
     // `is_all_native` on the COMPILE road ───────────────────────────────
     //
-    // `crates/internal/brink-ide/tests/issue_2318_std_collision_survives_config_document.rs`
+    // `crates/internal/brink-ide/tests/integration/issue_2318_std_collision_survives_config_document.rs`
     // already pins this fix on the ANALYSIS road (`IdeSession::snapshot` ->
     // `analyze_with_modules`). But the issue's own reported diagnostics came
     // from a different road: `packages/ink-editor/src/diagnostics.ts`'s

@@ -237,7 +237,7 @@ literal instead of the placeholder — see that file's header for why this
 doesn't change static-offset eligibility.
 
 **This class of break is now guarded on the normal PR gate, not just here.**
-`crates/brink-runtime/tests/benchmark_fixtures_compile.rs` (issue #2777)
+`crates/brink-runtime/tests/integration/benchmark_fixtures_compile.rs` (issue #2777)
 compiles every `benchmarks/stories/*/story.ink` fixture — including this
 one, under both the strict and gradual policies — as a plain `#[test]`
 under `cargo test -p brink-runtime`, which already runs on every PR; it

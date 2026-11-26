@@ -62,7 +62,7 @@ Two corrections this pass found in the traced evidence:
 
 Headline numbers re-read at this ref, since a prior audit got them wrong:
 `RATCHET_EPISODE_COUNT: usize = 5607`
-(`crates/internal/brink-test-harness/tests/oracle_snapshots.rs:54`); 6,639
+(`crates/internal/brink-test-harness/tests/integration/oracle_snapshots.rs:54`); 6,639
 `*.oracle.json` files under `tests/`; `crates/internal/` contains 18 crates and
 **none** of `brink-converter`, `brink-json`, `brink-codegen-json`.
 
@@ -81,7 +81,7 @@ Every file's root content lowers with an empty scope path
 (`crates/internal/brink-ir/src/lir/lower/mod.rs:487` = `String::new()`, against a
 shared `IdAllocator`), so anonymous `c-N`/`g-N` container paths collide across
 files. The acceptance test exists but is disabled:
-`crates/internal/brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs:68`
+`crates/internal/brink-ir/tests/integration/lir_lowering/root_content_definition_id_soundness.rs:68`
 carries `#[ignore = "known bug #1504(a): root-content scope paths are unqualified by …"]`.
 The R1 ruling explicitly unbundled this — *"a shipping correctness bug must not
 sit behind an identity ruling"* — yet **issue #1504 is CLOSED (COMPLETED)**. Open
@@ -100,7 +100,7 @@ zero alias usage anywhere in `crates/internal/brink-intl/src`, and compile-local
 still matches scope ids by string equality —
 `crates/internal/brink-intl/src/compile.rs:43` =
 `.ok_or_else(|| IntlError::ScopeNotInBase(scope.id.clone()))?`. Characterization
-tests **pin the broken behaviour** (`crates/internal/brink-intl/tests/rename_identity.rs`).
+tests **pin the broken behaviour** (`crates/internal/brink-intl/tests/integration/rename_identity.rs`).
 `docs/intl-spec.md:417` still points readers at the closed #1442.
 
 ## 3. XLIFF `<unit id>` reverts to DefinitionId-based (#1442)

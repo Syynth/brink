@@ -250,7 +250,7 @@ pub fn diff_oracle(oracle: &OracleEpisode, brink: &Episode) -> OracleDiff {
     // shape of that divergence, not noise: all shared steps must still
     // match exactly. See `docs/runtime-spec.md`'s "RanOutOfContent
     // divergence from C# (RULED)" subsection for the durable spec home,
-    // and `crates/brink-runtime/tests/terminal_classification.rs` for the
+    // and `crates/brink-runtime/tests/integration/terminal_classification.rs` for the
     // runtime-level characterization tests pinning the same ruling.
     if !all_match
         && outcome_matches

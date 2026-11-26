@@ -1071,7 +1071,7 @@ fn resolve_function(
     // `RuntimeError::NotCallable("int")` — no diagnostic of any kind,
     // unlike the sibling `VAR`/`List` cases, which fall through to the
     // real builtin instead. Pinned (not yet fixed) by
-    // `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`'s
+    // `crates/brink-compiler/tests/integration/issue_2856_builtin_shadow.rs`'s
     // `local_named_builtin_faults_at_runtime_not_callable` (temp) and
     // `param_named_builtin_faults_at_runtime_not_callable` (param). Fixing
     // this is a maintainer ruling (issue #2867's "Ask"): gate locals like
@@ -1480,14 +1480,14 @@ fn lookup_local_in_scope(
 /// same point in resolution. A single shared implementation removes the
 /// "one copy edited, the other forgotten" half of that risk; the *order*
 /// half is a separate, per-call-site invariant, pinned end-to-end by
-/// `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs` and by this
+/// `crates/brink-compiler/tests/integration/issue_2856_builtin_shadow.rs` and by this
 /// crate's own `crates/internal/brink-analyzer/tests/
 /// reserved_names_cross_crate.rs`.
 ///
 /// `pub` rather than `pub(crate)` (module `resolve` itself stays private) so
 /// `lib.rs`'s `#[doc(hidden)] pub mod test_support` can re-export it —
 /// issue #2856: the `completeness` proptest
-/// (`tests/proptest_resolve.rs`) needs the REAL name set this function
+/// (`tests/integration/proptest_resolve.rs`) needs the REAL name set this function
 /// checks, not a hand-duplicated copy.
 pub fn is_builtin_function(name: &str) -> bool {
     brink_ir::lir::is_builtin_function(name)

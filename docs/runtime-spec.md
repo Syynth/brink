@@ -253,7 +253,7 @@ home the ruling asked for, so the question is not re-litigated.
   full R1/R2 analysis this ruling closed lives in
   `docs/design/yield-time-terminal-classifier.md`; the runtime-level
   characterization tests pinning this exact contract live in
-  `crates/brink-runtime/tests/terminal_classification.rs`.
+  `crates/brink-runtime/tests/integration/terminal_classification.rs`.
 - **What is independent of this ruling.** The ran-out-of-content
   *message* still splits into four C#-matched variants
   (`RanOutOfContentCause`, issue #1993) by call-stack state — that is a

@@ -834,7 +834,7 @@ const NUM_CASES: u32 = 200;
 // Keywords lex as their own `KW_*` token, not `IDENT` — an annotation arg
 // name/nested-clause name must avoid them or the generated fixture isn't
 // actually testing the annotation grammar (mirrors
-// `tests/proptest_native.rs`'s own `KEYWORDS` filter, duplicated here per
+// `tests/integration/proptest_native.rs`'s own `KEYWORDS` filter, duplicated here per
 // this issue's "put a proptest generator in your own family file" scoping
 // rather than touching that shared file this wave).
 const KEYWORDS: &[&str] = &[

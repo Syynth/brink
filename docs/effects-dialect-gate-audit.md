@@ -136,7 +136,7 @@ Its own `a_pure_conventions_fn_now_exceeds_on_the_registry_write` test
 (`fn`/`flow`, not `===`/`function`). (Also deleted with the rest of the
 file by #2165/#2259 — see the note above.)
 
-**c. `crates/brink-compiler/tests/driver.rs:633-640`** (E119, this wave's
+**c. `crates/brink-compiler/tests/integration/driver.rs:633-640`** (E119, this wave's
 #2085/#2097 build):
 
 > `comparator_contract`'s E119 gate is `dialect == Brink`-only, with no
@@ -249,7 +249,7 @@ where the design is headed).
 
 ## 6. Regression coverage
 
-`crates/internal/brink-db/tests/issue_2099_effects_family_dialect_gate.rs`
+`crates/internal/brink-db/tests/integration/issue_2099_effects_family_dialect_gate.rs`
 pins the current (dark-by-default) behavior for all three diagnostics on a
 genuinely native `.brink` project under default `AnalysisOptions` (no
 `dialect` override), alongside the same fixture with `dialect: Dialect::

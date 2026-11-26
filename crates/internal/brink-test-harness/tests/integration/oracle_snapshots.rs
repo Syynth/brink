@@ -1,0 +1,332 @@
+//! Snapshot-based oracle comparison test.
+//!
+//! Produces per-case insta snapshots of brink's actual output, plus a
+//! corpus-wide summary snapshot. Any behavioral change to the compiler
+//! or runtime shows up as a snapshot diff, making regressions immediately
+//! visible via `cargo insta review` or `git diff`.
+//!
+//! Subsumes `oracle_comparison.rs` — includes the ratchet assertion.
+//!
+//! Usage:
+//!   `cargo test -p brink-test-harness --test integration oracle_snapshots:: -- --nocapture`
+//!   `BRINK_CASE=I002 cargo test -p brink-test-harness --test integration oracle_snapshots:: -- --nocapture`
+
+use std::collections::HashMap;
+use std::path::PathBuf;
+
+use brink_test_harness::corpus::{
+    MismatchFlagVerdict, collect_oracle_cases, compile_and_explore_from_ink,
+    expected_mismatch_issue, has_empty_source, is_compile_error_case, mismatch_flag_verdict,
+};
+use brink_test_harness::oracle;
+use brink_test_harness::snapshot_fmt::{CaseResult, CaseStatus};
+use brink_test_harness::{Episode, ExploreConfig};
+
+fn tests_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("..")
+        .join("..")
+        .join("tests")
+}
+
+fn index_by_choice_path(episodes: &[Episode]) -> HashMap<&[usize], &Episode> {
+    episodes
+        .iter()
+        .map(|ep| (ep.choice_path.as_slice(), ep))
+        .collect()
+}
+
+/// Ratchet: minimum number of oracle episodes that must pass.
+/// Bump this as compiler coverage improves.
+///
+/// Raised 5607 -> 5608 on 2026-08-03. The measured count had been 5608 while
+/// this floor still read 5607, so a real conformance gain sat unprotected —
+/// any change could have regressed it back to 5607 with the gate still green.
+/// Measured on a *freshly cleaned* `CARGO_TARGET_DIR` (issue #2054: worktrees
+/// sharing one target can serve stale test binaries, so a corpus number taken
+/// without a clean is not trustworthy): CASES 366 pass / 8 fail / 398 total,
+/// EPISODES 5608 pass / 1010 mismatch / 2 missing. Which fix earned the extra
+/// episode is not attributed — 391 merges landed between this constant last
+/// being set (2026-07-26) and the measurement, and bisecting that range was
+/// not worth the compute.
+///
+/// Raised 5608 -> 5619 on 2026-09-02 (maintainer directive: hand-minimized
+/// edge cases found by the gen-expressions generator or by reference-
+/// differential probing become permanent C#-oracle corpus cases). Eleven new
+/// episodes pass and are attributed exactly, one per new case:
+///   tier1/gather/nested-gather-divert (#3383)
+///   tier1/gather/nested-gather-divert-text (#3383)
+///   tier1/gather/nested-gather-authored-done (#3383)
+///   tier1/gather/empty-nested-gather-falls-out (#3383)
+///   tier2/conditional/three-inline-conditionals (#3386)
+///   tier2/conditional/four-inline-conditionals (#3386)
+///   tier2/conditional/three-inline-conditionals-in-gather-choice (#3386)
+///   tier2/sequences/sequence-shared-across-lifted-branches (#3275)
+///   tier2/sequences/sequence-with-divert-branch (#3275 revoked corner)
+///   tier1/choices/once-only-fallback-consumed (generator finding)
+///   tier2/evaluation/lift-order-cond-then-fn (#3395 control case)
+/// Two more new cases (tier2/evaluation/lift-order-fn-then-cond and
+/// tier2/evaluation/lift-order-seq-fn-cond, both #3395) were added in the
+/// same batch as EXPECTED MISMATCHES against the C# oracle — they document a
+/// known lift-order divergence and deliberately do NOT count toward this
+/// floor. Measured on the same freshly-cleaned `CARGO_TARGET_DIR` discipline
+/// as the prior raise: CASES 377 pass / 10 fail / 411 total, EPISODES 5619
+/// pass / 1012 mismatch / 2 missing.
+///
+/// Raised 5619 -> 5622 on 2026-09-02: the #3401 fix (a sequence cloned into
+/// a lift's branches still lifts into whole-line renderings, but every clone
+/// counts on the ORIGINAL's container — `Sequence::counter_id`) flips
+/// exactly one existing case, its own expected-mismatch
+/// entry, and lands with two new cases pinning the shapes the fix had to
+/// get right (the glue shape and a mixed-claim shape), one episode each:
+///   tier2/sequences/sequence-leads-multi-construct-line (#3401, flipped)
+///   tier2/sequences/sequence-cloned-into-glued-line (#3401, new)
+///   tier2/sequences/sequence-shared-across-mixed-claim-branches (#3401, new)
+/// No other snapshot moved. The two #3395 expected mismatches above remain.
+/// Measured: CASES 380 pass / 10 fail / 414 total, EPISODES 5622 pass /
+/// 1012 mismatch / 2 missing.
+///
+/// Since issue #3402, an expected-mismatch case is no longer prose this
+/// constant has to be trusted against: such a case's `metadata.toml`
+/// carries `[source] expected_mismatch = "#NNNN"`, and `oracle_snapshots()`
+/// below asserts that no flagged case has quietly started matching the
+/// oracle in full — the assertion fails, naming the case, until the flag is
+/// removed and this constant is raised in the same change, so the two can
+/// never drift apart silently.
+///
+/// Raised 5622 -> 5624 on 2026-09-04: the #3395 fix (the lift hoists every
+/// interpolation left of a lifted inline construct into a synthetic temp
+/// ahead of the construct, so a condition or sequence selection runs AFTER
+/// the prefix's side effects, where ink runs it) flips exactly the two
+/// #3395 expected mismatches, one episode each, and their flags are removed
+/// in the same change:
+///   tier2/evaluation/lift-order-fn-then-cond (#3395, flipped)
+///   tier2/evaluation/lift-order-seq-fn-cond (#3395, flipped)
+/// No other snapshot moved; no expected-mismatch flags remain. Measured:
+/// CASES 382 pass / 8 fail / 414 total, EPISODES 5624 pass / 1010 mismatch
+/// / 2 missing.
+///
+/// Raised 5624 -> 5627 on 2026-09-04: the shuffle's partial Fisher-Yates
+/// now removes the picked index order-preservingly (`Vec::remove`) like the
+/// reference, instead of `swap_remove`, which moved the last unpicked
+/// element into the hole and permuted the survivors. Two cases flip whole
+/// (`tier2/conditional/shuffle` 0/1 -> 1/1, one episode;
+/// `tier2/sequences/I107-shuffle-stack-muddying` 0/2 -> 2/2, two episodes):
+/// CASES 382 -> 384 pass, 8 -> 6 fail of 414. `tests_github/dream_on` gains
+/// no passing episode (all 1000 still fail on unrelated divergences) but its
+/// snapshot loses 973 mismatch entries, 10,637 -> 9,664 — which is why the
+/// episode count moves by only 3 while the diff is large. Measured: CASES
+/// 384 pass / 6 fail / 414 total, EPISODES 5627 pass / 1007 mismatch / 2
+/// missing.
+const RATCHET_EPISODE_COUNT: usize = 5627;
+
+#[test]
+#[expect(clippy::too_many_lines)]
+fn oracle_snapshots() {
+    let root = tests_dir();
+    let cases = collect_oracle_cases(&root);
+    let case_filter = std::env::var("BRINK_CASE").ok();
+
+    let config = ExploreConfig {
+        max_depth: 20,
+        max_episodes: 1000,
+    };
+
+    let mut results: Vec<CaseResult> = Vec::new();
+    let mut episodes_pass: usize = 0;
+    let mut episodes_mismatch: usize = 0;
+    let mut episodes_missing: usize = 0;
+    // Issue #3402: cases whose `metadata.toml` flags `expected_mismatch` but
+    // whose episodes all matched the oracle this run — the underlying bug is
+    // fixed and the flag (plus RATCHET_EPISODE_COUNT) must be updated in the
+    // same change, rather than the fix silently landing unnoticed.
+    let mut unexpectedly_fixed: Vec<String> = Vec::new();
+
+    for case_dir in &cases {
+        let rel = case_dir
+            .strip_prefix(&root)
+            .unwrap_or(case_dir)
+            .display()
+            .to_string();
+
+        if let Some(ref filter) = case_filter
+            && !rel.contains(filter.as_str())
+        {
+            continue;
+        }
+
+        let ink_path = case_dir.join("story.ink");
+        if !ink_path.exists() || has_empty_source(case_dir) || is_compile_error_case(case_dir) {
+            results.push(CaseResult {
+                rel_path: rel,
+                status: CaseStatus::Skip,
+            });
+            continue;
+        }
+
+        // Load oracle episodes.
+        let oracle_eps = match oracle::load_oracle_episodes(case_dir) {
+            Ok(eps) if eps.is_empty() => {
+                results.push(CaseResult {
+                    rel_path: rel,
+                    status: CaseStatus::Skip,
+                });
+                continue;
+            }
+            Ok(eps) => eps,
+            Err(_) => {
+                results.push(CaseResult {
+                    rel_path: rel,
+                    status: CaseStatus::Skip,
+                });
+                continue;
+            }
+        };
+
+        // Compile with brink.
+        let actual = match compile_and_explore_from_ink(&ink_path, &config) {
+            Ok((_data, episodes)) => episodes,
+            Err(e) if e.starts_with("compile:") => {
+                results.push(CaseResult {
+                    rel_path: rel,
+                    status: CaseStatus::CompileError(e),
+                });
+                continue;
+            }
+            Err(e) if e.starts_with("link:") => {
+                results.push(CaseResult {
+                    rel_path: rel,
+                    status: CaseStatus::LinkError(e),
+                });
+                continue;
+            }
+            Err(e) => {
+                results.push(CaseResult {
+                    rel_path: rel,
+                    status: CaseStatus::CompileError(e),
+                });
+                continue;
+            }
+        };
+
+        // Compare episodes.
+        let actual_index = index_by_choice_path(&actual);
+        let mut case_pass = 0;
+        let mut case_mismatch = 0;
+        let mut case_missing = 0;
+
+        for oracle_ep in &oracle_eps {
+            if let Some(brink_ep) = actual_index.get(oracle_ep.choice_path.as_slice()) {
+                let d = oracle::diff_oracle(oracle_ep, brink_ep);
+                if d.matches {
+                    case_pass += 1;
+                } else {
+                    case_mismatch += 1;
+                }
+            } else {
+                case_missing += 1;
+            }
+        }
+
+        episodes_pass += case_pass;
+        episodes_mismatch += case_mismatch;
+        episodes_missing += case_missing;
+
+        // Issue #3402: fold in the case's `expected_mismatch` flag (if any).
+        // An unflagged case's mismatch/missing count already fails today via
+        // the corpus-summary snapshot and the ratchet floor below — this
+        // check only ever adds a NEW failure mode (a flagged case quietly
+        // becoming clean), never suppresses an existing one.
+        let flag = expected_mismatch_issue(case_dir);
+        if mismatch_flag_verdict(flag.as_deref(), case_mismatch, case_missing)
+            == MismatchFlagVerdict::UnexpectedlyFixed
+        {
+            unexpectedly_fixed.push(format!(
+                "{rel} (expected_mismatch {})",
+                flag.as_deref().unwrap_or("?")
+            ));
+        }
+
+        let total = oracle_eps.len();
+        let status = if case_mismatch == 0 && case_missing == 0 {
+            CaseStatus::Pass {
+                episodes_pass: case_pass,
+                episodes_total: total,
+            }
+        } else {
+            CaseStatus::Fail {
+                episodes_pass: case_pass,
+                episodes_total: total,
+                episodes_mismatch: case_mismatch,
+                episodes_missing: case_missing,
+            }
+        };
+
+        // Generate per-case snapshot.
+        let snap_name = rel.replace('/', "__");
+        let case_snapshot =
+            brink_test_harness::snapshot_fmt::format_case_snapshot(&rel, &oracle_eps, &actual);
+        insta::assert_snapshot!(snap_name, case_snapshot);
+
+        results.push(CaseResult {
+            rel_path: rel,
+            status,
+        });
+    }
+
+    // Generate corpus summary snapshot (skip when filtering to a single case).
+    if case_filter.is_none() {
+        results.sort_by(|a, b| a.rel_path.cmp(&b.rel_path));
+        let summary: String = results
+            .iter()
+            .map(CaseResult::summary_line)
+            .collect::<Vec<_>>()
+            .join("\n");
+        insta::assert_snapshot!("corpus_summary", summary);
+    }
+
+    // Print stats for console output.
+    let cases_pass = results
+        .iter()
+        .filter(|r| matches!(r.status, CaseStatus::Pass { .. }))
+        .count();
+    let cases_fail = results
+        .iter()
+        .filter(|r| matches!(r.status, CaseStatus::Fail { .. }))
+        .count();
+    println!();
+    println!(
+        "CASES: {cases_pass} pass / {cases_fail} fail / {} total",
+        results.len()
+    );
+    println!(
+        "EPISODES: {episodes_pass} pass / {episodes_mismatch} mismatch / {episodes_missing} missing"
+    );
+
+    // Issue #3402: a case pinned as `expected_mismatch` in metadata.toml
+    // must not silently start passing. Reading the flag mechanically (not
+    // trusting a prose enumeration in RATCHET_EPISODE_COUNT's doc comment)
+    // means a fix landing for one of these cases is caught here instead of
+    // leaving a stale flag and an unraised ratchet.
+    assert!(
+        unexpectedly_fixed.is_empty(),
+        "expected-mismatch case(s) now match the oracle in full — remove `expected_mismatch` \
+         from metadata.toml and raise RATCHET_EPISODE_COUNT to account for the newly-passing \
+         episodes: {}",
+        unexpectedly_fixed.join(", ")
+    );
+
+    // Ratchet assertion.
+    if case_filter.is_some() {
+        assert!(
+            episodes_mismatch == 0 && episodes_missing == 0,
+            "{episodes_mismatch} episode(s) mismatched, {episodes_missing} missing"
+        );
+    } else {
+        assert!(
+            episodes_pass >= RATCHET_EPISODE_COUNT,
+            "ratchet regression: {episodes_pass} episodes < {RATCHET_EPISODE_COUNT}"
+        );
+    }
+}

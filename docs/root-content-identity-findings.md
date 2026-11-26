@@ -49,7 +49,7 @@ brink *should* have and were `#[ignore]`d while the fix was design-gated;
 un-ignoring them was the acceptance criterion for #1504, and they now run
 unconditionally.
 
-- `crates/internal/brink-ir/tests/lir_lowering/root_content_definition_id_soundness.rs`
+- `crates/internal/brink-ir/tests/integration/lir_lowering/root_content_definition_id_soundness.rs`
 - `crates/brink-compiler/tests/issue_1504_root_content_identity.rs`
 
 A fifth, added in review follow-up, demonstrates the *reachable* form of (b)

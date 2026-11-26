@@ -10,8 +10,8 @@
 //! mirrors `hir::lower::content::logic_block` structurally (same target
 //! shape, same per-statement dispatch table) — that module is this one's
 //! differential partner
-//! (`crates/internal/brink-ir/tests/b08_native_control_flow.rs`,
-//! `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`).
+//! (`crates/internal/brink-ir/tests/integration/b08_native_control_flow.rs`,
+//! `crates/internal/brink-ir/tests/integration/b08_native_wave_b_tail.rs`).
 //!
 //! `until <cond>;` is native's condition-park spelling; it lowers to the
 //! SAME `AwaitStmt` node the brink-dialect's `~ await <cond>` produces

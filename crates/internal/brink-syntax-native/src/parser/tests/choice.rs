@@ -734,7 +734,7 @@ fn adversarial_structural_soup_inside_a_choice_point_never_panics() {
 }
 
 // ── Local proptest generators (per this issue's own instruction: a
-// family-owned generator, not a change to the shared `tests/proptest_native.rs`,
+// family-owned generator, not a change to the shared `tests/integration/proptest_native.rs`,
 // which #1199 owns this wave) ──────────────────────────────────────────
 
 mod choice_proptests {
@@ -742,7 +742,7 @@ mod choice_proptests {
 
     use super::{SyntaxKind, has_node_kind, parse};
 
-    /// Mirrors `tests/proptest_native.rs`'s own `arb_ident` keyword filter
+    /// Mirrors `tests/integration/proptest_native.rs`'s own `arb_ident` keyword filter
     /// (studied for this local generator's style, per this issue's "put it
     /// in your own family file" instruction): a bare keyword tokenizes as
     /// its `KW_*` kind, not `IDENT`, which would make `label()`'s

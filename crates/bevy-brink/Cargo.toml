@@ -95,7 +95,7 @@ brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
 # The locale example + tests build `.inkl` overlays via the intl pipeline
 # (export_lines + compile_locale).
 brink-intl = { path = "../internal/brink-intl" }
-# tests/manifest_field_convergence.rs (#911, BH follow-up deliverable 1)
+# tests/integration/manifest_field_convergence.rs (#911, BH follow-up deliverable 1)
 # cross-validates one manifest JSON literal against both `capability::
 # CapabilityManifest` (this crate) and `brink_ir::host_manifest::
 # HostManifest` (the compiler/IDE-side type parsing the same on-disk
@@ -156,7 +156,7 @@ name = "async_external"
 # would execute the full 1/100/1k/10k baseline matrix and rewrite the
 # checked-in baseline files as a side effect of an ordinary test run.
 # Real `cargo test` coverage of the generator/driver logic lives in
-# `tests/scenario_bench_model.rs` instead (includes the same source).
+# `tests/integration/scenario_bench_model.rs` instead (includes the same source).
 [[bench]]
 name = "scenario_bench"
 harness = false

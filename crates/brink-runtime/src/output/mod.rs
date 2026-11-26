@@ -1759,7 +1759,7 @@ mod tests {
             // of these pre-existing tests exercise attach conventions, and
             // widening every existing `(text, tags)` assertion in this
             // module for a field they never populate would just be noise.
-            // `crates/brink-runtime/tests/element.rs` exercises the real
+            // `crates/brink-runtime/tests/integration/element.rs` exercises the real
             // per-line element data end to end instead.
             self.flush_lines(&p, &[], None)
                 .into_iter()

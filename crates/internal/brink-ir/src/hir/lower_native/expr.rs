@@ -24,7 +24,7 @@
 //! segment but the last) and a method name, infers the receiver's type, and
 //! records its verdict in a side table for LIR lowering and IDE hover. This
 //! lowering's only job is to preserve the shape; see
-//! `crates/internal/brink-ir/tests/b08_native_wave_b_tail.rs`'s
+//! `crates/internal/brink-ir/tests/integration/b08_native_wave_b_tail.rs`'s
 //! `ufcs_call_shape_lowers_the_full_dotted_callee_path` for the pin on that
 //! contract. ink's own grammar cannot express the shape at all (E104,
 //! `hir/lower/expr/references.rs::CallExpr`), which is what keeps the ink

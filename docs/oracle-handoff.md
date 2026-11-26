@@ -66,7 +66,7 @@ cargo test -p brink-test-harness --test oracle_comparison -- --nocapture
 BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_comparison -- --nocapture
 
 # Corpus report (per-category breakdown)
-cargo test -p brink-test-harness --test corpus_report -- --nocapture
+cargo test -p brink-test-harness --test integration corpus_report:: -- --nocapture
 
 # Regenerate oracle golden files
 cd tools/ink-oracle && dotnet run -- --crawl ../../tests/ --force

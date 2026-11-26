@@ -4,7 +4,7 @@
 //! `iterate` is the registry's third entry — `next(ref Self): Option[T]`,
 //! row ⊆ writes-receiver·silent·total, with laws attached: **every element
 //! exactly once; `none` is terminal and sticky** (property-harness
-//! enforced, `tests/law_iterate.rs`). Pull-shaped was RULED over
+//! enforced, `tests/integration/law_iterate.rs`). Pull-shaped was RULED over
 //! push/`each` because a push-desugared `for` body would be an fn-value
 //! callback and functions never await — pull desugars inline and iterators
 //! park across suspensions for free.
