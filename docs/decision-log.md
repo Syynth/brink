@@ -6137,3 +6137,11 @@
 - **SCOPE:** moderate
 - **WHAT:** The workspace glam pin moves from 0.32 to 0.33, the version Bevy 0.20's `bevy_math` uses, in the same change as the Bevy 0.20 bump (#3707). It also updates every satellite lockfile that resolves glam ("whatever we need to update"). This settles #3705 in favour of realigning, not decoupling the pin from Bevy.
 - **WHY:** The 2026-07-19 tower ruling pins glam once, at the version the bevy graph uses, so a future bevy marshal is the identity on the same types. Maintainer: "we should update glam as well, whatever we need to update". The 0.33 numeric changes (the `lerp` form, finite-only inverses, FMA in the SIMD back-ends) are taken as part of the bump, not a reason to hold the pin back.
+
+## Agent-build tooling is judged on disk across parallel worktrees AND warm edit-loop time
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** build tooling / agent workflow
+- **SCOPE:** moderate
+- **WHAT:** A build accelerator or cache proposed for agent builds (blaze first, and any alternative after it) is evaluated on both (1) total disk across several parallel git worktrees, cargo's own `target/` included, and (2) warm edit-to-check time after a one-function edit. Neither alone is enough. The tool must also give each worktree its own correct diagnostics, a precondition checked before any timing.
+- **WHY:** Maintainer, asked which mattered: "Both". The disk half is the standing pain ("i always run out of disk space working on rust projects"), and agents in separate worktrees multiply it. The edit-loop half is what blaze advertises. The correctness precondition comes from the 2026-11-26 trial: blaze v1 answered a check in worktree B with worktree A's errors, which made its near-zero second-worktree disk cost meaningless.
