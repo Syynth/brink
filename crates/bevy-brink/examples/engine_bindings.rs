@@ -1,6 +1,6 @@
 //! Headless example: the **engine↔ink dynamic binding facility**.
 //!
-//! Run with `cargo run --example engine_bindings`. It prints a short
+//! Run with `cargo run -p bevy-brink --features examples --example engine_bindings`. It prints a short
 //! trace (via `info!`) and exits — no window.
 //!
 //! Where `play_story` covers interactive playback (pure `bind_brink_fn`

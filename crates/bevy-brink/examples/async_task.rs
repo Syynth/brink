@@ -1,7 +1,7 @@
 //! Headless example: **`bind_brink_task`** — an async external whose value is
 //! computed by a detached task and resolved across frames.
 //!
-//! Run with `cargo run --example async_task`. The story calls
+//! Run with `cargo run -p bevy-brink --features examples --example async_task`. The story calls
 //! `expensive_roll(20)`; the flow *parks* while bevy-brink runs the future on
 //! [`AsyncComputeTaskPool`](bevy_tasks::AsyncComputeTaskPool) off the main
 //! thread, then `poll_brink_tasks` resolves it and the flow resumes — all

@@ -2,7 +2,7 @@
 //! UI window, advance with SPACE, choose with number keys, and **edit
 //! the source file mid-execution to see the program reload live**.
 //!
-//! Run with `cargo run --example play_story` from the repo root. While
+//! Run with `cargo run -p bevy-brink --features examples --example play_story` from the repo root. While
 //! the window is open, edit `crates/bevy-brink/examples/assets/story.ink`
 //! (or `characters.ink`, which it INCLUDEs), save, and the displayed
 //! story restarts from the beginning with the new content.

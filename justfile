@@ -161,8 +161,8 @@ book-test:
     set -euo pipefail
 
     # The Bevy flows/saves pages are checked by building their backing examples.
-    cargo build -p bevy-brink --example book_flows
-    cargo build -p bevy-brink --example book_saves
+    cargo build -p bevy-brink --features examples --example book_flows
+    cargo build -p bevy-brink --features examples --example book_saves
 
     export CARGO_TARGET_DIR=target/book-doctest
     deps="$CARGO_TARGET_DIR/doctest-deps"

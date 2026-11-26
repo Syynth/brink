@@ -3,7 +3,7 @@
 //!
 //! The book pulls the snippets shown on that page out of this file via
 //! mdbook `{{#include …:anchor}}` directives, so the code readers see is
-//! exactly the code that `cargo build --example book_flows` compiles. Keep
+//! exactly the code that `cargo build -p bevy-brink --features examples --example book_flows` compiles. Keep
 //! the regions between `// ANCHOR:` / `// ANCHOR_END:` readable as prose —
 //! they are the documentation. `just book-test` builds this example and the
 //! book together.

@@ -2,7 +2,7 @@
 //! output history to bytes (the visible-history half of a save file), then
 //! reload and re-render it without re-running the story.
 //!
-//! Run with `cargo run --example transcript_save`. Drives a short story,
+//! Run with `cargo run -p bevy-brink --features examples --example transcript_save`. Drives a short story,
 //! prints the live transcript, captures it to `.brkt` bytes, reloads them,
 //! and re-renders — demonstrating that a saved transcript round-trips. In a
 //! real game you'd write the bytes into your save file and `read_transcript`

@@ -1,7 +1,7 @@
 //! Headless example: **`bind_brink_async`** — the event+resolve primitive for
 //! a multi-frame World interaction.
 //!
-//! Run with `cargo run --example async_external`. The story calls
+//! Run with `cargo run -p bevy-brink --features examples --example async_external`. The story calls
 //! `pick_target()`; the flow *parks* and [`BrinkExternalAwaited`] fires at the
 //! flow entity. An observer "opens a targeting UI", a few frames later a
 //! simulated player "click" resolves it via
