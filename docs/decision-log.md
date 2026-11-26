@@ -6161,3 +6161,11 @@
 - **SCOPE:** moderate
 - **WHAT:** Every crate's examples sit behind an empty `examples` feature (`required-features = ["examples"]` on each `[[example]]`), so a plain `cargo test` (and a plain `cargo clippy --all-targets`) neither builds nor links them. Run or build one with `--features examples`. Every `--all-features` run (CI's second clippy pass, its all-features test lane, bevy-brink's clippy lane) still builds them all, so they stay compile-checked.
 - **WHY:** Disk. After the integration-test consolidation, examples were 1.8 GB of a cold test build's 11 GB `target/`: bevy-brink's nine examples each link the bevy umbrella. Maintainer: "let's not compile the examples w/ cargo test". It is a feature gate because cargo offers nothing narrower. Checked on a scratch crate: an explicit `test = false` on an `[[example]]` does not stop `cargo test` building it, and `autoexamples = false` stops it only by making the file no example at all, so `cargo run --example`, `cargo build --example` and clippy would no longer see it.
+
+## Incremental compilation stays on, even for agent worktrees
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** build tooling / agent workflow
+- **SCOPE:** minor/local
+- **WHAT:** `target/debug/incremental` is kept. Agent builds do not set `CARGO_INCREMENTAL=0` and the dev profile does not turn `incremental` off, even though it is the next-largest piece of a cold test build's `target/` (2.1 GB of 7.2 GB after the test consolidation and examples gate).
+- **WHY:** Rebuild speed. Maintainer, asked why: "it's rebuild speed". An agent's loop is edit, then rebuild, many times in one worktree. Incremental data is what keeps those rebuilds fast, so the disk it costs is worth paying.
