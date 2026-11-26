@@ -343,6 +343,83 @@ describe("findAllStamps", () => {
   });
 });
 
+// Cargo 1.100's default build directory layout: every unit's outputs under
+// `<target>/<profile>/build/<pkg>/<hash>/out/` (package name verbatim), and
+// no `<profile>/deps/` at all. Both helpers mirror a real 1.100 build.
+function writeNestedArtifact(targetDir, pkg, hash, { profile = "debug" } = {}) {
+  const outDir = join(targetDir, profile, "build", pkg, hash, "out");
+  mkdirSync(outDir, { recursive: true });
+  const file = join(outDir, `${pkg.replace(/-/g, "_")}-${hash}.d`);
+  writeFileSync(file, `${file}: stub\n`);
+  return file;
+}
+
+function writeNestedStamp(targetDir, pkg, hash, manifestDir, { profile = "debug" } = {}) {
+  const outDir = join(targetDir, profile, "build", pkg, hash, "out");
+  mkdirSync(outDir, { recursive: true });
+  const file = join(outDir, "worktree-stamp.txt");
+  writeFileSync(file, manifestDir);
+  return file;
+}
+
+describe("cargo 1.100 nested build-dir layout", () => {
+  it("findNewestArtifact finds dep-info under build/<pkg>/<hash>/out/", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    const file = writeNestedArtifact(targetDir, "brink-respell", "66cd9b1c8cbb2a80");
+    const found = findNewestArtifact(targetDir, "brink-respell");
+    assert.ok(found);
+    assert.equal(found.path, file);
+  });
+
+  it("findNewestArtifact does not match a similarly-named package's directory", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    writeNestedArtifact(targetDir, "brink-respell-extra", "66cd9b1c8cbb2a80");
+    assert.equal(findNewestArtifact(targetDir, "brink-respell"), null);
+  });
+
+  it("findAllStamps finds nested stamps alongside old-layout ones", () => {
+    const targetDir = scratchDir("check-target-freshness-");
+    writeStamp(targetDir, "brink-ir", "aaaaaaaaaaaaaaaa", "/worktree-a/crates/internal/brink-ir");
+    writeNestedStamp(targetDir, "brink-ir", "bbbbbbbbbbbbbbbb", "/worktree-b/crates/internal/brink-ir");
+    const all = findAllStamps(targetDir, "brink-ir");
+    assert.deepEqual(
+      all.map((s) => s.data).sort(),
+      ["/worktree-a/crates/internal/brink-ir", "/worktree-b/crates/internal/brink-ir"],
+    );
+  });
+
+  it("reports RISK when a nested stamp names a currently-live sibling", () => {
+    // The regression this layout broke: under 1.100 the check found neither
+    // artifact nor stamp, and reported a shared, sibling-built target as
+    // "nothing built, no staleness risk".
+    const repoRoot = scratchDir("check-target-freshness-repo-");
+    const targetDir = join(repoRoot, "target");
+    const siblingPath = scratchDir("check-target-freshness-sibling-");
+    writeNestedArtifact(targetDir, "brink-respell", "66cd9b1c8cbb2a80");
+    writeNestedStamp(
+      targetDir,
+      "brink-respell",
+      "618bf463f317ecc2",
+      join(siblingPath, "crates", "internal", "brink-respell"),
+    );
+
+    const result = checkTargetFreshness({
+      repoRoot,
+      targetDir,
+      packages: ["brink-respell"],
+      listWorktrees: () => [
+        { path: repoRoot, locked: false },
+        { path: siblingPath, locked: false },
+      ],
+      log: () => {},
+      warn: () => {},
+    });
+
+    assert.equal(result.safe, false);
+    assert.equal(result.evidence[0].verdict.kind, "live-sibling");
+  });
+});
+
 describe("classifyPackageStamps", () => {
   // Reproduces the exact false-positive scenario a reported finding named
   // against the original `findNewestStamp`-only design: worktree A runs

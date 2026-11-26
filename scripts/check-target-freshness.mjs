@@ -163,12 +163,39 @@ export function listLiveWorktrees({
 }
 
 /**
+ * The `out/` directory of every unit cargo built for `pkg` under the build
+ * directory layout cargo 1.100 made the default: `<profile>/build/<pkg>/
+ * <hash>/out/`, package name verbatim (hyphens included), holding that
+ * unit's outputs — a lib unit's dep-info and objects, or a build-script
+ * run's `OUT_DIR`. Older cargo instead put dep-info in `<profile>/deps/` and
+ * `OUT_DIR` in `<profile>/build/<pkg>-<hash>/out/`; both finders below read
+ * both layouts, since a target dir may have been built by either toolchain.
+ */
+function nestedUnitOutDirs(targetDir, profile, pkg) {
+  const pkgDir = join(targetDir, profile, "build", pkg);
+  if (!existsSync(pkgDir)) return [];
+  let hashes;
+  try {
+    hashes = readdirSync(pkgDir);
+  } catch (err) {
+    // The same concurrent-mutation race the stat calls below guard against.
+    if (err && err.code === "ENOENT") return [];
+    throw err;
+  }
+  return hashes
+    .filter((hash) => /^[0-9a-f]+$/.test(hash))
+    .map((hash) => join(pkgDir, hash, "out"));
+}
+
+/**
  * Find the most-recently-modified cargo dep-info file for `pkg`'s lib
- * target under `<targetDir>/<profile>/deps/` (cargo/rustc normalize the
- * crate name's `-` to `_` in that filename; the hash suffix is the
- * collision-prone `-C metadata` value #2054 is about, so it is
- * intentionally NOT matched exactly — any hash for this package name
- * counts as evidence). Returns `null` if nothing has been built yet.
+ * target under `<targetDir>/<profile>/deps/`, or — under cargo 1.100's
+ * layout — under `<targetDir>/<profile>/build/<pkg>/<hash>/out/` (see
+ * `nestedUnitOutDirs`). Cargo/rustc normalize the crate name's `-` to `_`
+ * in that filename; the hash suffix is the collision-prone `-C metadata`
+ * value #2054 is about, so it is intentionally NOT matched exactly — any
+ * hash for this package name counts as evidence. Returns `null` if nothing
+ * has been built yet.
  */
 export function findNewestArtifact(
   targetDir,
@@ -180,25 +207,27 @@ export function findNewestArtifact(
 
   let newest = null;
   for (const profile of profiles) {
-    const depsDir = join(targetDir, profile, "deps");
-    if (!existsSync(depsDir)) continue;
-    for (const entry of readdirSync(depsDir)) {
-      if (!pattern.test(entry)) continue;
-      const full = join(depsDir, entry);
-      let mtimeMs;
-      try {
-        mtimeMs = stat(full).mtimeMs;
-      } catch (err) {
-        // The entry can vanish between readdirSync and statSync — a sibling
-        // worktree rebuilding, or a `cargo clean -p` (this tool's own
-        // remediation) racing us. That is exactly the kind of concurrent
-        // mutation this tool exists to be safe under, so skip the vanished
-        // entry rather than throwing.
-        if (err && err.code === "ENOENT") continue;
-        throw err;
-      }
-      if (!newest || mtimeMs > newest.mtimeMs) {
-        newest = { path: full, mtimeMs };
+    const dirs = [join(targetDir, profile, "deps"), ...nestedUnitOutDirs(targetDir, profile, pkg)];
+    for (const dir of dirs) {
+      if (!existsSync(dir)) continue;
+      for (const entry of readdirSync(dir)) {
+        if (!pattern.test(entry)) continue;
+        const full = join(dir, entry);
+        let mtimeMs;
+        try {
+          mtimeMs = stat(full).mtimeMs;
+        } catch (err) {
+          // The entry can vanish between readdirSync and statSync — a sibling
+          // worktree rebuilding, or a `cargo clean -p` (this tool's own
+          // remediation) racing us. That is exactly the kind of concurrent
+          // mutation this tool exists to be safe under, so skip the vanished
+          // entry rather than throwing.
+          if (err && err.code === "ENOENT") continue;
+          throw err;
+        }
+        if (!newest || mtimeMs > newest.mtimeMs) {
+          newest = { path: full, mtimeMs };
+        }
       }
     }
   }
@@ -210,7 +239,9 @@ export function findNewestArtifact(
  * output under `<targetDir>/<profile>/build/` (#2759) — a thin wrapper over
  * `findAllStamps` (below) that reduces its list to the entry with the
  * greatest `mtimeMs`. Cargo lays a build script's `OUT_DIR` out as
- * `<target>/<profile>/build/<pkg>-<hash>/out/`, using the same
+ * `<target>/<profile>/build/<pkg>-<hash>/out/` (cargo 1.100 and later:
+ * `<target>/<profile>/build/<pkg>/<hash>/out/`, see `nestedUnitOutDirs`;
+ * both are read), using the same
  * collision-prone `-C metadata` hash as `findNewestArtifact` — so, as
  * there, the hash is intentionally NOT matched exactly, only the package
  * name prefix. Unlike the normalized (`-` → `_`) crate-object names
@@ -268,9 +299,14 @@ export function findAllStamps(
   for (const profile of profiles) {
     const buildDir = join(targetDir, profile, "build");
     if (!existsSync(buildDir)) continue;
-    for (const entry of readdirSync(buildDir)) {
-      if (!pattern.test(entry)) continue;
-      const stampPath = join(buildDir, entry, "out", "worktree-stamp.txt");
+    const outDirs = [
+      ...readdirSync(buildDir)
+        .filter((entry) => pattern.test(entry))
+        .map((entry) => join(buildDir, entry, "out")),
+      ...nestedUnitOutDirs(targetDir, profile, pkg),
+    ];
+    for (const outDir of outDirs) {
+      const stampPath = join(outDir, "worktree-stamp.txt");
       let mtimeMs;
       try {
         mtimeMs = stat(stampPath).mtimeMs;
