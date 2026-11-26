@@ -726,6 +726,18 @@ jobs:
       - run: cargo build -p brink-runtime -p brink-compiler -p brink-format -p brink-intl -p bevy-brink -p brink-project-config --features brink-compiler/test-util
         env:
           CARGO_TARGET_DIR: target/book-doctest
+      # rustdoc's -L wants one flat directory of artifacts, which cargo stopped
+      # providing in 1.100: `debug/deps` is gone, and each unit's outputs now
+      # live in `debug/build/<pkg>/<hash>/out/`. Hard-link every library the
+      # build produced into one, whichever layout cargo used (same as the
+      # `book-test` recipe in the justfile).
+      - name: Collect doctest deps
+        run: |
+          deps=target/book-doctest/doctest-deps
+          mkdir -p "$deps"
+          find target/book-doctest/debug -type f \
+            \( -name 'lib*-*.rlib' -o -name 'lib*-*.rmeta' -o -name 'lib*-*.so' -o -name 'lib*-*.dylib' \) \
+            -exec ln -f {} "$deps"/ \;
       # Run mdbook under the pinned toolchain (rust-toolchain.toml). `cargo
       # build` above honors the pin, but mdbook's rustdoc subprocess otherwise
       # picks up the runner's default toolchain — a rustc-version mismatch that
@@ -736,7 +748,7 @@ jobs:
       - name: mdbook test (doctests)
         run: |
           channel=$(grep -oE 'channel = "[^"]+"' rust-toolchain.toml | cut -d'"' -f2)
-          rustup run "$channel" mdbook test docs/book -L target/book-doctest/debug/deps
+          rustup run "$channel" mdbook test docs/book -L target/book-doctest/doctest-deps
         env:
           CARGO_MANIFEST_DIR: ${{ github.workspace }}/crates/bevy-brink
       # Type-check the book's TypeScript examples against the published

@@ -299,8 +299,7 @@ fn inferred_local_type_str(
                 .and_then(|body| body.locals.get(&info.name).cloned())
                 .filter(|ty| !ty.is_unknown())
         })
-        .map(|ty| format!(": {}", ty.display()))
-        .unwrap_or_default()
+        .map_or_default(|ty| format!(": {}", ty.display()))
 }
 
 // ── Hover sections — the flexible dispatch (#3054 review) ───────────

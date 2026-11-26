@@ -778,8 +778,7 @@ impl<R: StoryRng> StorySession<R> {
         let name = self
             .story
             .pending_external_name()
-            .map(str::to_owned)
-            .unwrap_or_default();
+            .map_or_default(str::to_owned);
         let args = self.story.pending_external_args().to_vec();
         self.journal.push(JournalEvent::new(EventKind::External {
             name,
@@ -1063,8 +1062,7 @@ impl<R: StoryRng> StorySession<R> {
                     let name = self
                         .story
                         .pending_external_name()
-                        .map(str::to_owned)
-                        .unwrap_or_default();
+                        .map_or_default(str::to_owned);
                     return ReplayOutcome::Failed {
                         at_event: self.journal.len(),
                         reason: FailReason::AwaitingExternal { name },
@@ -1339,8 +1337,7 @@ impl<R: StoryRng> StorySession<R> {
                     let name = self
                         .story
                         .pending_external_name()
-                        .map(str::to_owned)
-                        .unwrap_or_default();
+                        .map_or_default(str::to_owned);
                     return Err(StepPark::Awaiting { name });
                 }
                 Err(e) => return Err(StepPark::Fail(runtime_fail(e))),

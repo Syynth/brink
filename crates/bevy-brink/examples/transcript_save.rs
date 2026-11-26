@@ -55,8 +55,7 @@ fn main() {
         .world()
         .entity(flow)
         .get::<BrinkTranscript<()>>()
-        .map(BrinkTranscript::text)
-        .unwrap_or_default();
+        .map_or_default(BrinkTranscript::text);
     info!("--- live transcript ---\n{live}");
 
     // Capture the flow's output history to `.brkt` bytes (what you'd save).

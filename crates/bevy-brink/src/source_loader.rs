@@ -74,7 +74,7 @@ fn overrides_from_config(config: Option<&ProjectConfig>) -> OptionOverrides {
     OptionOverrides {
         dialect: config.and_then(|c| c.dialect),
         types: config.and_then(|c| c.types),
-        lints: config.map(|c| c.lints.clone()).unwrap_or_default(),
+        lints: config.map_or_default(|c| c.lints.clone()),
         deny_warnings: config.and_then(|c| c.deny_warnings),
         // D6 (`docs/debugger-spec.md` §1.2): no engine-runtime path opts a
         // `bevy-brink` compile into debug info today — that's D9's studio

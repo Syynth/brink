@@ -142,13 +142,11 @@ pub(super) fn lower_knot_params(
     params: Option<ast::KnotParams>,
     sink: &mut impl LowerSink,
 ) -> Vec<Param> {
-    params
-        .map(|p| {
-            p.params()
-                .filter_map(|pd| lower_param(&pd, sink).ok())
-                .collect()
-        })
-        .unwrap_or_default()
+    params.map_or_default(|p| {
+        p.params()
+            .filter_map(|pd| lower_param(&pd, sink).ok())
+            .collect()
+    })
 }
 
 fn lower_param(p: &ast::KnotParamDecl, sink: &mut impl LowerSink) -> Lowered<Param> {

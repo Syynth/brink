@@ -150,14 +150,11 @@ fn lower_thread_target(
     let ast_path = thread.target()?;
     let path = lower_path(&ast_path);
 
-    let args: Vec<Expr> = thread
-        .arg_list()
-        .map(|al| {
-            al.args()
-                .filter_map(|a| a.lower_expr(scope, sink).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+    let args: Vec<Expr> = thread.arg_list().map_or_default(|al| {
+        al.args()
+            .filter_map(|a| a.lower_expr(scope, sink).ok())
+            .collect()
+    });
 
     Some(ThreadStart {
         ptr: scope.prov(NodeClass::ThreadStart, thread.syntax()),
@@ -174,14 +171,11 @@ pub fn lower_divert_target_with_args(
     sink: &mut impl LowerSink,
 ) -> Option<DivertTarget> {
     let path = lower_divert_path(t, scope, sink)?;
-    let args: Vec<Expr> = t
-        .arg_list()
-        .map(|al| {
-            al.args()
-                .filter_map(|a| a.lower_expr(scope, sink).ok())
-                .collect()
-        })
-        .unwrap_or_default();
+    let args: Vec<Expr> = t.arg_list().map_or_default(|al| {
+        al.args()
+            .filter_map(|a| a.lower_expr(scope, sink).ok())
+            .collect()
+    });
     Some(DivertTarget { path, args })
 }
 

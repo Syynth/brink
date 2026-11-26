@@ -504,16 +504,12 @@ fn unit_to_line(unit: &Unit) -> Result<LineJson, IntlError> {
     let audio = ext_attr_value(&unit.extensions, "audio").map(str::to_string);
 
     // Build originalData lookup for select reconstruction.
-    let data_map: HashMap<&str, &str> = unit
-        .original_data
-        .as_ref()
-        .map(|od| {
-            od.entries
-                .iter()
-                .map(|e| (e.id.as_str(), e.content.as_str()))
-                .collect()
-        })
-        .unwrap_or_default();
+    let data_map: HashMap<&str, &str> = unit.original_data.as_ref().map_or_default(|od| {
+        od.entries
+            .iter()
+            .map(|e| (e.id.as_str(), e.content.as_str()))
+            .collect()
+    });
 
     // Extract target content if present, otherwise None (untranslated).
     let content = extract_target_content(unit, &data_map)?;

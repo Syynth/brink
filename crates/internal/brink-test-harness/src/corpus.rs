@@ -184,15 +184,13 @@ pub fn has_empty_source(case_dir: &Path) -> bool {
 /// expect a nonempty corpus already assert a floor on the result, so an
 /// unreadable root fails loudly there instead of panicking here.
 pub fn native_case_names(root: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(root)
-        .map(|entries| {
-            entries
-                .flatten()
-                .filter(|e| e.path().is_dir())
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut names: Vec<String> = std::fs::read_dir(root).map_or_default(|entries| {
+        entries
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect()
+    });
     names.sort();
     names
 }
@@ -1197,8 +1195,7 @@ pub fn collect_generated_cases(tests_root: &Path) -> Vec<PathBuf> {
 pub fn load_generated_case(dir: &Path) -> Result<GeneratedCase, String> {
     let name = dir
         .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
+        .map_or_default(|n| n.to_string_lossy().into_owned());
     let meta_path = dir.join("case.toml");
     let text = std::fs::read_to_string(&meta_path)
         .map_err(|e| format!("{name}: read {}: {e}", meta_path.display()))?;

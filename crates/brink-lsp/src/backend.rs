@@ -69,8 +69,7 @@ impl ProjectAnalyses {
     fn all_for_file(&self, file: brink_ir::FileId) -> Vec<&Arc<AnalysisResult>> {
         self.file_to_roots
             .get(&file)
-            .map(|roots| roots.iter().filter_map(|r| self.by_root.get(r)).collect())
-            .unwrap_or_default()
+            .map_or_default(|roots| roots.iter().filter_map(|r| self.by_root.get(r)).collect())
     }
 
     /// Project members for the primary project of a file.
@@ -228,8 +227,7 @@ impl LanguageOptions {
             host_manifest: self
                 .host_manifest
                 .lock()
-                .map(|guard| guard.clone())
-                .unwrap_or_default(),
+                .map_or_default(|guard| guard.clone()),
             external_check: brink_analyzer::ExternalCheckSeverity::default(),
             semantic_type_check: brink_analyzer::SemanticTypeDiagnosticSeverity::default(),
             // D6 (`docs/debugger-spec.md` §1.2): no brink-lsp-side source
@@ -958,13 +956,12 @@ impl Backend {
         let includes = db
             .file_id(path)
             .and_then(|fid| db.hir(fid))
-            .map(|hir| {
+            .map_or_default(|hir| {
                 hir.includes
                     .iter()
                     .map(|inc| inc.file_path.clone())
                     .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+            });
         let base_dir = std::path::Path::new(path).parent();
         let resolved: Vec<String> = includes
             .iter()
@@ -3974,8 +3971,7 @@ mod tests {
         let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let nanos = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or_default();
+            .map_or_default(|d| d.as_nanos());
         let dir = std::env::temp_dir().join(format!(
             "brink-lsp-walk-test-{label}-{}-{n}-{nanos}",
             std::process::id()

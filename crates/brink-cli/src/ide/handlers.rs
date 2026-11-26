@@ -706,11 +706,7 @@ fn emit_move_mutation(
         .file_id(old)
         .and_then(|id| db.source(id))
         .unwrap_or_default();
-    let new_src = mutation
-        .edited
-        .get(new)
-        .map(String::as_str)
-        .unwrap_or_default();
+    let new_src = mutation.edited.get(new).map_or_default(String::as_str);
 
     let mut out = io::stdout().lock();
 

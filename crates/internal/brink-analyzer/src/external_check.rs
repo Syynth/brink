@@ -257,7 +257,7 @@ pub fn analyze_externals(
                 returns,
                 params,
                 value: None,
-                group_widgets: reg.map(|r| r.widgets.clone()).unwrap_or_default(),
+                group_widgets: reg.map_or_default(|r| r.widgets.clone()),
             },
         );
     }

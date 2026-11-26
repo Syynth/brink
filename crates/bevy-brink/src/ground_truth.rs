@@ -218,8 +218,7 @@ pub fn check<M: Send + Sync + 'static>(
     for entry in &log.entries {
         let declared = cap_table
             .access_for(entry.story)
-            .map(aggregate_access)
-            .unwrap_or_default();
+            .map_or_default(aggregate_access);
         if entry.access.is_subset(&declared) {
             continue;
         }

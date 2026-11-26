@@ -369,8 +369,7 @@ fn stamp_stmt(
                 let label_path = block
                     .label
                     .as_ref()
-                    .map(|l| qualify(label_scope, &l.text))
-                    .unwrap_or_default();
+                    .map_or_default(|l| qualify(label_scope, &l.text));
                 let label_id = lookup_label_id(index, file, &label_path)
                     .unwrap_or_else(|| alloc_address(&label_path));
                 block.container_id = Some(label_id);

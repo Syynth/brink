@@ -383,8 +383,7 @@ fn lower_divert_target(target: &hir::DivertTarget, ctx: &mut LowerCtx<'_>) -> li
     let target_params = match &target.path {
         hir::DivertPath::Path(path) => ctx
             .resolve_path(path.range)
-            .map(|info| info.params.clone())
-            .unwrap_or_default(),
+            .map_or_default(|info| info.params.clone()),
         _ => Vec::new(),
     };
 

@@ -2549,8 +2549,7 @@ Mirrored by packages/brink-studio/src/__tests__/structural-refusal-shape.test.ts
         let generated = generated();
         let mut enumerated: Vec<String> = generated["shapes"]
             .as_object()
-            .map(|m| m.keys().cloned().collect())
-            .unwrap_or_default();
+            .map_or_default(|m| m.keys().cloned().collect());
         enumerated.sort();
 
         assert!(

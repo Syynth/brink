@@ -28,14 +28,11 @@ impl DeclareSymbols for ast::ListDecl {
         let (doc, issues) = parse_doc_comment(self.syntax(), DocPolicy::VALUE);
         issues.diagnose(sink);
 
-        let members: Vec<ListMember> = self
-            .definition()
-            .map(|def| {
-                def.members()
-                    .filter_map(|m| lower_list_member(&m, range, sink))
-                    .collect()
-            })
-            .unwrap_or_default();
+        let members: Vec<ListMember> = self.definition().map_or_default(|def| {
+            def.members()
+                .filter_map(|m| lower_list_member(&m, range, sink))
+                .collect()
+        });
 
         // `#@local` doesn't apply to LISTs (diagnosed if it attaches), but
         // `#@private`/`#@public` do (M-2: LISTs are importable, §2).

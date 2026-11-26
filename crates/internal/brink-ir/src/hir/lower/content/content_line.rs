@@ -75,8 +75,7 @@ impl LowerBody for ast::ContentLine {
 
         let parts = self
             .mixed_content()
-            .map(|mc| lower_content_node_children(mc.syntax(), scope, sink))
-            .unwrap_or_default();
+            .map_or_default(|mc| lower_content_node_children(mc.syntax(), scope, sink));
         let tags = lower_tags(self.tags(), scope, sink);
 
         if parts.is_empty() && tags.is_empty() {

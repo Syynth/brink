@@ -390,8 +390,7 @@ pub fn to_dialogue_config(dialect: &DialogueDialect) -> Option<DialogueConfig> {
     let run_ends_at = dialect
         .chain
         .first()
-        .map(|r| r.run_ends_at.clone())
-        .unwrap_or_default();
+        .map_or_default(|r| r.run_ends_at.clone());
     for name in PRESET_NAMES {
         let Some(preset) = preset_by_name(name) else {
             continue;
@@ -1093,8 +1092,7 @@ pub fn infer_dialect(lines: &[MarkedLine]) -> Inference {
     // decision.
     let texts: Vec<&str> = lines.iter().map(|l| l.text.as_str()).collect();
     let parsed = ResolvedDialect::compile(&dialect)
-        .map(|resolved| parse_source(&resolved, &texts))
-        .unwrap_or_default();
+        .map_or_default(|resolved| parse_source(&resolved, &texts));
     let kind_at = |i: usize| -> Option<&str> { parsed.get(i).and_then(|l| l.kind.as_deref()) };
 
     for (kind, shape) in &shapes {

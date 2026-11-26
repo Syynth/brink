@@ -326,8 +326,7 @@ fn lower_if_stmt(
     let binding = lower_as_binding(file_id, if_stmt.as_binding().as_ref(), &condition, diags);
     let body = if_stmt
         .body()
-        .map(|b| lower_stmt_block(file_id, &b, diags))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(file_id, &b, diags));
     let else_branch = match if_stmt.else_clause() {
         None => None,
         Some(clause) => Some(lower_else_clause(file_id, &clause, diags)?),
@@ -353,8 +352,7 @@ fn lower_else_clause(
     } else {
         let body = clause
             .body()
-            .map(|b| lower_stmt_block(file_id, &b, diags))
-            .unwrap_or_default();
+            .map_or_default(|b| lower_stmt_block(file_id, &b, diags));
         Some(ElseBranch::Else(body))
     }
 }
@@ -373,8 +371,7 @@ fn lower_while_stmt(
     let binding = lower_as_binding(file_id, w.as_binding().as_ref(), &condition, diags);
     let body = w
         .body()
-        .map(|b| lower_stmt_block(file_id, &b, diags))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(file_id, &b, diags));
     Some(WhileStmt {
         ptr: native_provenance(file_id, NodeClass::While, w.syntax()),
         condition,
@@ -413,8 +410,7 @@ fn lower_for_stmt(
     let iterable = lower_expr(file_id, &iterable_node, diags);
     let body = f
         .body()
-        .map(|b| lower_stmt_block(file_id, &b, diags))
-        .unwrap_or_default();
+        .map_or_default(|b| lower_stmt_block(file_id, &b, diags));
     Some(ForStmt {
         ptr: native_provenance(file_id, NodeClass::For, f.syntax()),
         var_name,

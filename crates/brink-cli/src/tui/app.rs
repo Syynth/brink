@@ -256,11 +256,8 @@ impl App {
             ..
         } = old_phase
         {
-            let chosen_text = choices
-                .get(selected)
-                .map(|c| c.text.clone())
-                .unwrap_or_default();
-            let choice_index = choices.get(selected).map(|c| c.index).unwrap_or_default();
+            let chosen_text = choices.get(selected).map_or_default(|c| c.text.clone());
+            let choice_index = choices.get(selected).map_or_default(|c| c.index);
             let fragment_idx = story.choice_fragment_idx(choice_index);
 
             self.history.push(Passage {

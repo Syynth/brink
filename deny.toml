@@ -48,15 +48,25 @@ ignore = [
     # vulnerability. Path: paste <- burn-ndarray <- harper-pos-utils, and
     # directly under harper-core.
     "RUSTSEC-2024-0436",
-    # zip < 9.0 — `ZipArchive::extract` mishandles symlinks and SUID/SGID
-    # bits when writing an archive out to disk. harper-core (2.8 and still
-    # 2.13, the newest) requires zip ^8.6, and only ever opens its own
-    # bundled weirpack from memory (`ZipArchive::new` over a cursor, in
-    # `weirpack/mod.rs`) — it never calls `extract`, so none of the three
-    # applies. Drop these once harper-core moves to zip 9.
+    # zip < 9.0 (< 9.0.5 for 0548) — `ZipArchive::extract` mishandling
+    # symlinks, SUID/SGID bits and large declared sizes; AES entries returned
+    # unauthenticated; the legacy Shrink/Reduce/Implode decoders
+    # preallocating the declared size; and `ZipStreamReader` trusting
+    # local-header names. harper-core (2.8 and still 2.13, the newest)
+    # requires zip ^8.6, and its only zip entry point is
+    # `Weirpack::from_bytes` (`weirpack/mod.rs`: `ZipArchive::new` over an
+    # in-memory cursor, then `by_index`, deflate feature only). Nothing in
+    # harper-core 2.8 calls it, and brink-prose uses only harper's linting,
+    # parser, mask and spell APIs — so no zip code is reachable from this
+    # graph at all. Drop these once harper-core moves to zip 9.
     "RUSTSEC-2026-0367",
     "RUSTSEC-2026-0368",
     "RUSTSEC-2026-0369",
+    "RUSTSEC-2026-0429",
+    "RUSTSEC-2026-0545",
+    "RUSTSEC-2026-0546",
+    "RUSTSEC-2026-0547",
+    "RUSTSEC-2026-0548",
     # ruzstd < 0.9.1 — a tiny frame can decompress to unbounded memory.
     # harper-thesaurus's copy is bumped to 0.9.1 in the lockfile; this
     # ignore is for the 0.8 that bevy_image requires — re-evaluated on the

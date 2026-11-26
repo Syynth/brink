@@ -1367,8 +1367,7 @@ fn diag_tags(diags: &[Value], code: &str) -> Option<Vec<u64>> {
         .map(|d| {
             d["tags"]
                 .as_array()
-                .map(|arr| arr.iter().filter_map(Value::as_u64).collect())
-                .unwrap_or_default()
+                .map_or_default(|arr| arr.iter().filter_map(Value::as_u64).collect())
         })
 }
 
@@ -2694,14 +2693,11 @@ fn native_two_file_workspace_goes_to_definition_without_opening_the_sibling() {
          got: {definition}"
     );
 
-    let ref_uris: Vec<&str> = references["result"]
-        .as_array()
-        .map(|locs| {
-            locs.iter()
-                .filter_map(|loc| loc["uri"].as_str())
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
+    let ref_uris: Vec<&str> = references["result"].as_array().map_or_default(|locs| {
+        locs.iter()
+            .filter_map(|loc| loc["uri"].as_str())
+            .collect::<Vec<_>>()
+    });
     assert!(
         ref_uris.iter().any(|uri| uri.ends_with("main.brink")),
         "find-references must see the referring native module (#1562), \
@@ -2809,8 +2805,7 @@ fn market_vendor_cue_completes_across_files_without_opening_the_declaring_file()
 
     let labels: Vec<&str> = completion_resp["result"]
         .as_array()
-        .map(|items| items.iter().filter_map(|it| it["label"].as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|items| items.iter().filter_map(|it| it["label"].as_str()).collect());
     assert!(
         labels.contains(&"VENDOR"),
         "a cue declared only in market/vendor.brink (never opened) must \
@@ -2916,8 +2911,7 @@ fn cue_completion_does_not_offer_a_multi_word_cue_mid_second_word() {
 
     let labels: Vec<&str> = completion_resp["result"]
         .as_array()
-        .map(|items| items.iter().filter_map(|it| it["label"].as_str()).collect())
-        .unwrap_or_default();
+        .map_or_default(|items| items.iter().filter_map(|it| it["label"].as_str()).collect());
     assert!(
         !labels.contains(&"MARKET VENDOR"),
         "completion mid-second-word of a partially typed multi-word cue \
