@@ -172,8 +172,7 @@ pub fn check(text: &str, language: Option<&str>, ignored: &[String]) -> Spellche
                     ns_language.as_deref(),
                     0,
                 )
-                .map(|guesses| guesses.iter().map(|guess| guess.to_string()).collect())
-                .unwrap_or_default();
+                .map_or_default(|guesses| guesses.iter().map(|guess| guess.to_string()).collect());
             misspellings.push(Misspelling {
                 start: range.location,
                 end: range.location + range.length,

@@ -843,8 +843,7 @@ fn bundle_list(app: tauri::AppHandle) -> Result<BundleInventory, String> {
     let state = bundles::read_state(&runtime.root);
     let policy = settings_path(&app)
         .ok()
-        .map(|path| load_settings(&path).unwrap_or_default())
-        .unwrap_or_default()
+        .map_or_default(|path| load_settings(&path).unwrap_or_default())
         .update_policy;
 
     Ok(BundleInventory {
@@ -1158,8 +1157,7 @@ async fn resolve_update(app: &tauri::AppHandle) -> Result<Resolution, String> {
 
     let policy = settings_path(app)
         .ok()
-        .map(|path| load_settings(&path).unwrap_or_default())
-        .unwrap_or_default()
+        .map_or_default(|path| load_settings(&path).unwrap_or_default())
         .update_policy;
 
     let index = fetch_index().await?;
@@ -1391,8 +1389,7 @@ async fn bundle_update_run(app: &tauri::AppHandle) -> Result<BundleUpdateOutcome
     // function of a root path, and the pin lives in the app's settings.
     let pinned = settings_path(app)
         .ok()
-        .map(|path| load_settings(&path).unwrap_or_default())
-        .unwrap_or_default();
+        .map_or_default(|path| load_settings(&path).unwrap_or_default());
     bundles::promote(
         &root,
         &manifest.version,
