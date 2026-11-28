@@ -6169,3 +6169,11 @@
 - **SCOPE:** minor/local
 - **WHAT:** `target/debug/incremental` is kept. Agent builds do not set `CARGO_INCREMENTAL=0` and the dev profile does not turn `incremental` off, even though it is the next-largest piece of a cold test build's `target/` (2.1 GB of 7.2 GB after the test consolidation and examples gate).
 - **WHY:** Rebuild speed. Maintainer, asked why: "it's rebuild speed". An agent's loop is edit, then rebuild, many times in one worktree. Incremental data is what keeps those rebuilds fast, so the disk it costs is worth paying.
+
+## The gpui-kit fork replays its patches onto each upstream release, preferring upstream's API where it covers ours
+- **WHEN:** 2026-11-27
+- **PROJECT:** brink
+- **SYSTEM:** gpui studio (GPUI Kit fork)
+- **SCOPE:** moderate
+- **WHAT:** Catching the fork (`Syynth/gpui-kit`) up to an upstream release means starting a branch from the release tag and cherry-picking our patches onto it one at a time. It is no longer `git merge upstream` into the long-lived `brink` branch, which `crates/brink-gpui/Cargo.toml` used to prescribe. The previous line stays reachable under a tag, so an older brink-gpui pin keeps building. Where upstream now provides what one of our patches did, with its own API, our patch is dropped and brink-gpui moves to upstream's API. Ours is re-ported only where upstream's falls short of what brink-gpui needs, and the commit says what was missing.
+- **WHY:** The first catch-up, v0.6.0 to v0.11.0, made the merge route impractical. Upstream rewrote the files our patches live in (about 10,500 added lines across 88 commits in `input/base/state.rs` alone), so a merge meant resolving about 3,600 conflicted lines across 16 files in one step. Replaying keeps each conflict to one feature's size. Meanwhile upstream had built its own versions of several of our patches: an `Editor` size, the display map instead of row counts, a folding API, `GutterStyle`, an active line shown only while focused, inline tokens, gutter decorations. Carrying duplicates of upstream features would make every future catch-up conflict with them again. Dropping them leaves fewer and smaller patches, which are also easier to upstream. Maintainer chose both: "Replay per patch" and "Prefer upstream".
