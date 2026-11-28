@@ -1,7 +1,7 @@
 {
   "name": "@brink-lang/dialect",
-  "version": "0.17.0",
-  "description": "Brink dialogue dialects \u2014 the pure-TS artifact, validator, parser, and run rule an editor or a game engine shares.",
+  "version": "0.18.0",
+  "description": "Brink dialogue dialects — the pure-TS artifact, validator, parser, and run rule an editor or a game engine shares.",
   "license": "MIT",
   "type": "module",
   "main": "./dist/index.js",

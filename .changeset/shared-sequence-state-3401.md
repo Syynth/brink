@@ -1,5 +1,0 @@
----
-"@brink-lang/web": patch
----
-
-Fix a stateful alternative drifting one view behind ink when it follows another inline construct on a line the variant model cannot claim — `{a|b}{true:p}{c|d|e}` or `{a|b}{c|d|e} <>` (#3401). Lifting the leading construct cloned `{c|d|e}` into each branch, and a clone inside a conditional- or glue-bearing branch used to get its own visit counter. Every clone now counts on the original's container while keeping its own whole-line renderings, matching the C# reference (`apc`, `bpd`, `bpe` — not `apc`, `bpc`, `bpd`). Line-table shape and translation units for these lines are unchanged. Two observable consequences: the visit count for such a line now lives under the original's container id only (a save from an older build that recorded counts on the per-branch copies will not match it), and a cloned `shuffle` alternative now draws its permutation from the original's seed at every site, so a shuffle order on one of these lines can differ from the previous build.
