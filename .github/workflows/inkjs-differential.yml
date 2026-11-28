@@ -68,7 +68,7 @@ jobs:
         run: npm ci
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Differential (brink vs inkjs on generated stories)
-        run: cargo test -p brink-gen --test integration inkjs_differential:: -- --nocapture
+        run: 'cargo test -p brink-gen --test integration inkjs_differential:: -- --nocapture'
         env:
           BRINK_INKJS_ORACLE: "1"
           # 512 on the schedule; a PR-triggered run gets the same, a manual
