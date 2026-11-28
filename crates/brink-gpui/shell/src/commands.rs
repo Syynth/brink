@@ -33,7 +33,7 @@
 use std::collections::BTreeMap;
 use std::rc::Rc;
 
-use gpui::{Action, KeyBinding, SharedString, actions};
+use gpui::{Action, App, KeyBinding, KeyBindingContextPredicate, SharedString, actions};
 
 use crate::settings::KeymapOverride;
 
@@ -90,7 +90,8 @@ pub struct Command {
     binder: Binder,
 }
 
-type Binder = Rc<dyn Fn(&str) -> KeyBinding>;
+/// `None` for a chord gpui cannot parse.
+type Binder = Rc<dyn Fn(&str, &App) -> Option<KeyBinding>>;
 
 impl Clone for Command {
     fn clone(&self) -> Self {
@@ -112,10 +113,11 @@ impl Command {
         format!("{}: {}", self.group, self.title)
     }
 
-    /// A binding of this command to `keystroke`.
+    /// A binding of this command to `keystroke`, or `None` when gpui cannot
+    /// parse it.
     #[must_use]
-    pub fn bind(&self, keystroke: &str) -> KeyBinding {
-        (self.binder)(keystroke)
+    pub fn bind(&self, keystroke: &str, cx: &App) -> Option<KeyBinding> {
+        (self.binder)(keystroke, cx)
     }
 }
 
@@ -127,7 +129,12 @@ impl Command {
 /// unparsable string is returned as written.
 #[must_use]
 pub fn canonical_chord(chord: &str) -> String {
-    let spelled = gpui::Keystroke::parse(chord).map_or_else(|_| chord.to_owned(), |k| k.unparse());
+    // Spelled as on the Mac whatever the host: the canonical form is
+    // `cmd`, which the fold below would give anyway.
+    let spelled = gpui::Keystroke::parse_with_os(chord, gpui::OperatingSystem::Mac).map_or_else(
+        |_| chord.to_owned(),
+        |k| k.unparse(gpui::OperatingSystem::Mac),
+    );
     spelled
         .split('-')
         .map(|part| match part {
@@ -214,30 +221,64 @@ pub fn reset(commands: &[Command], overrides: &mut BTreeMap<String, KeymapOverri
     overrides.remove(&commands[index].full_title());
 }
 
+/// One binding the overrides call for; see [`keymap_plan`].
+#[derive(Debug)]
+pub enum PlannedBinding<'a> {
+    /// A default some override took away, bound to [`Unbound`].
+    Shadow(SharedString),
+    /// A command's live chord.
+    Live(&'a Command, String),
+}
+
+impl std::fmt::Debug for Command {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.full_title())
+    }
+}
+
 /// The bindings that make the overrides hold, in the order to install
-/// them: every shadow first (a default some override took away, bound to
-/// [`Unbound`]), then every live keystroke — so a chord moved from one
-/// command to another is shadowed for the first and then bound for the
-/// second, and the second wins.
+/// them: every shadow first, then every live keystroke — so a chord moved
+/// from one command to another is shadowed for the first and then bound
+/// for the second, and the second wins.
 #[must_use]
-pub fn keymap_bindings(
-    commands: &[Command],
+pub fn keymap_plan<'a>(
+    commands: &'a [Command],
     overrides: &BTreeMap<String, KeymapOverride>,
-) -> Vec<KeyBinding> {
+) -> Vec<PlannedBinding<'a>> {
     let mut out = Vec::new();
     for command in commands {
         if let Some(default) = &command.keystroke
             && effective_keystroke(command, overrides).as_deref() != Some(default.as_ref())
         {
-            out.push(KeyBinding::new(default, Unbound, None));
+            out.push(PlannedBinding::Shadow(default.clone()));
         }
     }
     for command in commands {
         if let Some(keys) = effective_keystroke(command, overrides) {
-            out.push(command.bind(&keys));
+            out.push(PlannedBinding::Live(command, keys));
         }
     }
     out
+}
+
+/// [`keymap_plan`] as gpui bindings. Chords come from strings, so they are
+/// loaded through `cx`'s keyboard mapper; one gpui cannot parse is left
+/// unbound rather than taking the studio down.
+#[must_use]
+pub fn keymap_bindings(
+    commands: &[Command],
+    overrides: &BTreeMap<String, KeymapOverride>,
+    cx: &App,
+) -> Vec<KeyBinding> {
+    keymap_plan(commands, overrides)
+        .into_iter()
+        .filter_map(|planned| match planned {
+            PlannedBinding::Shadow(keys) => {
+                KeyBinding::load(&keys, Box::new(Unbound), None, false, None, cx).ok()
+            }
+            PlannedBinding::Live(command, keys) => command.bind(&keys, cx),
+        })
+        .collect()
 }
 
 /// The commands, in registration order — the order the palette and menus
@@ -276,7 +317,24 @@ impl CommandRegistry {
         // The registry keeps a boxed copy; the binder keeps the typed one,
         // since `KeyBinding::new` wants a concrete action.
         let boxed = action.boxed_clone();
-        let binder: Binder = Rc::new(move |keys| KeyBinding::new(keys, action.clone(), context));
+        // A context is a literal in the code: one that does not parse is
+        // a programmer's error, caught here in debug builds.
+        let predicate = context.and_then(|context| {
+            let parsed = KeyBindingContextPredicate::parse(context);
+            debug_assert!(parsed.is_ok(), "key context {context:?} does not parse");
+            parsed.ok().map(Rc::new)
+        });
+        let binder: Binder = Rc::new(move |keys, cx| {
+            KeyBinding::load(
+                keys,
+                action.boxed_clone(),
+                predicate.clone(),
+                false,
+                None,
+                cx,
+            )
+            .ok()
+        });
         self.commands.push(Command {
             group: group.into(),
             title: title.into(),
@@ -460,9 +518,9 @@ mod tests {
         assert_eq!(key_source(&commands[2], &overrides), KeySource::Custom);
         // Shadows first, then live keys: Code's default is shadowed once,
         // Single File and Continuous are bound.
-        let bindings = keymap_bindings(&commands, &overrides);
-        assert_eq!(bindings.len(), 3);
-        assert!(bindings[0].action().partial_eq(&Unbound));
+        let plan = keymap_plan(&commands, &overrides);
+        assert_eq!(plan.len(), 3);
+        assert!(matches!(plan[0], PlannedBinding::Shadow(_)));
         // Reset drops the override; an override equal to the default is
         // never stored.
         reset(&commands, &mut overrides, 0);

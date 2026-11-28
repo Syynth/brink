@@ -1302,7 +1302,7 @@ impl Binder {
                 let modifiers = event.modifiers();
                 if modifiers.shift {
                     this.extend_to(index, cx);
-                } else if modifiers.secondary() {
+                } else if modifiers.secondary(cx) {
                     this.toggle_marked(index, cx);
                 } else {
                     this.activate(index, cx);

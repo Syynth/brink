@@ -163,7 +163,7 @@ fn open(site: &EditorSite, position: Point<Pixels>, window: &mut Window, cx: &mu
             path: site.path.to_string(),
             line_span: (line_start, line_end),
             has_selection: !state.selected_range().is_empty(),
-            fold: state.fold_at(line),
+            fold: fold_at(state, line),
             todo,
             breakpoint,
             gutters: brink_gpui_shell::settings::AppSettings::get(cx).show_gutters,
@@ -518,6 +518,17 @@ fn text_menu(
         ),
     ]);
     entries
+}
+
+/// Whether a fold starts on 0-based buffer `line`: `Some(folded)`, or `None`
+/// when nothing folds there. The editor menu offers Fold / Unfold from it.
+/// Whether `line` heads a fold, and if so whether it is folded: `None` for a
+/// line nothing folds at, so the menu offers neither Fold nor Unfold.
+pub(crate) fn fold_at(state: &gpui_component::input::EditorState, line: usize) -> Option<bool> {
+    let display_map = state.display_map();
+    display_map
+        .is_fold_candidate(line)
+        .then(|| display_map.is_folded_at(line))
 }
 
 #[cfg(test)]

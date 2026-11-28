@@ -2784,15 +2784,10 @@ fn quit_asking(cx: &mut App) {
 }
 
 impl Render for Studio {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        // gpui-component's `Root` draws the view, tooltips and native menus
-        // — and NOT its dialog and notification layers. Those are free
-        // functions the application root composes in; without them every
-        // `open_dialog` and `push_notification` lands in a list nothing
-        // renders (which is how a rename prompt and three toasts went
-        // missing on 2026-09-05).
-        let notifications = Root::render_notification_layer(window, cx);
-        let dialogs = Root::render_dialog_layer(window, cx);
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // The window's `Root` draws the dialog, sheet and notification
+        // layers itself (gpui-kit 0.7, `RootPlugin`): this view only composes
+        // its own content.
         gpui::div()
             .size_full()
             .relative()
@@ -2852,7 +2847,8 @@ impl Render for Studio {
                 cx.listener(|this, action: &editor_menu::ToggleFold, window, cx| {
                     if let Some(site) = this.focused_site(window, cx) {
                         site.editor.update(cx, |state, cx| {
-                            state.toggle_fold_at(action.line, cx);
+                            let folded = state.display_map().is_folded_at(action.line);
+                            state.set_folded(action.line, !folded, cx);
                         });
                     }
                 }),
@@ -2912,8 +2908,6 @@ impl Render for Studio {
             // After the workspace: later children paint on top, and a
             // dialog under the window it belongs to is no dialog at all.
             .children(self.quick_open.as_ref().map(|(p, _)| p.clone()))
-            .children(notifications)
-            .children(dialogs)
     }
 }
 
@@ -3457,6 +3451,10 @@ mod modes_driven {
             player_until(h, &player, |p| p.line_count() == 1 && !p.is_busy()),
             "Play delivers the first line"
         );
+        // Animations run on the simulated clock: let the stage's opening
+        // slide and the first row's entrance finish, so geometry read next
+        // is where they land rather than mid-slide.
+        h.advance(std::time::Duration::from_millis(600));
         (window, player)
     }
 
@@ -3484,7 +3482,7 @@ mod modes_driven {
                 h.update(|cx| player.update(cx, |p, cx| p.primary(cx)));
                 assert!(player_until(&mut h, &player, |p| !p.is_busy()));
             }
-            // Let the slide run — it is timed in real time.
+            // Let the slide run, a frame per redraw.
             let _ = h.settle_until(std::time::Duration::from_secs(3), |h| {
                 h.redraw(window);
                 h.read(|cx| player.read(cx).now_gap())
@@ -3852,7 +3850,7 @@ mod modes_driven {
     /// A new line arrives without a jump: it lays out under the one
     /// before and the transcript slides up until it meets NOW — never
     /// snapped to the top and back, never past NOW, settling on it. Sampled
-    /// a frame at a time (the slide runs on real time).
+    /// a frame at a time (each redraw is a frame later).
     #[test]
     fn a_new_line_slides_up_to_now_without_jumping() {
         let mut h = Harness::new();
@@ -6357,7 +6355,8 @@ mod modes_driven {
         // how far it has scrolled — not through bounds from its last layout.
         let rows_down = h.read(|cx| {
             let state = editor.read(cx);
-            let y = row * state.display_row_of_buffer_line(80) as f32 + state.scroll_offset().y;
+            let y = row * state.display_map().buffer_line_to_display_row(80) as f32
+                + state.scroll_offset().y;
             f32::from(y) / f32::from(row)
         });
         assert!(
@@ -7207,9 +7206,11 @@ mod modes_driven {
         });
         assert!(narrowed, "typing narrows to `Vault`: {:?}", menu(&mut h));
         h.press(window, "enter");
+        // The kit closes the `(` as it is typed (gpui-kit 0.11's
+        // auto-closing pairs), so the literal lands inside `()`.
         let written = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
-            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9\n-> END"))
+            h.read(|cx| editor.read(cx).value().contains("~ set_switch(9)\n-> END"))
         });
         assert!(
             written,
@@ -7412,7 +7413,7 @@ mod modes_driven {
         // Line 6 (0-based 5), "=== start ===", once its fold is known.
         let foldable = h.settle_until(PINS_WAIT, |h| {
             h.capture(window);
-            h.read(|cx| editor.read(cx).fold_at(5).is_some())
+            h.read(|cx| crate::editor_menu::fold_at(editor.read(cx), 5).is_some())
         });
         assert!(foldable, "the knot's fold never arrived");
         h.app_window(window, |window, cx| {
@@ -7420,10 +7421,16 @@ mod modes_driven {
         });
         h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
         h.settle();
-        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(true));
+        assert_eq!(
+            h.read(|cx| crate::editor_menu::fold_at(editor.read(cx), 5)),
+            Some(true)
+        );
         h.dispatch(window, crate::editor_menu::ToggleFold { line: 5 });
         h.settle();
-        assert_eq!(h.read(|cx| editor.read(cx).fold_at(5)), Some(false));
+        assert_eq!(
+            h.read(|cx| crate::editor_menu::fold_at(editor.read(cx), 5)),
+            Some(false)
+        );
     }
 
     /// The fold button folds: a press on line 6's chevron folds the knot.
@@ -7454,14 +7461,14 @@ mod modes_driven {
             h.capture(window);
             // Line 14, "=== market ===", moves up once the knot above it
             // is folded away.
-            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+            h.read(|cx| editor.read(cx).display_map().buffer_line_to_display_row(13) < 13)
         });
         assert!(folded, "the knot folded");
         // All of it: lines 7–12 hidden, through its last, "-> DONE" — the
         // knot's header stays (row 5), the blank after it is row 6, and
         // the next knot comes straight after.
         assert_eq!(
-            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13)),
+            h.read(|cx| editor.read(cx).display_map().buffer_line_to_display_row(13)),
             7,
             "the fold hides the knot through its last line"
         );
@@ -7500,14 +7507,14 @@ mod modes_driven {
             h.mouse_down(window, x, y);
             h.mouse_up(window, x, y);
             h.capture(window);
-            h.read(|cx| editor.read(cx).display_row_of_buffer_line(13) < 13)
+            h.read(|cx| editor.read(cx).display_map().buffer_line_to_display_row(13) < 13)
         });
         assert!(folded, "the knot folded");
         h.capture(window);
         h.capture(window);
         let after = height(&mut h);
         assert!(after < before, "the section shrank: {before} -> {after}");
-        let shown = h.read(|cx| editor.read(cx).display_row_count());
+        let shown = h.read(|cx| editor.read(cx).display_map().display_row_count());
         let row = h.read(|cx| f32::from(editor.read(cx).line_height().expect("laid out")));
         // The last section carries its scroll-past-the-end rows.
         let trailing = 8.;

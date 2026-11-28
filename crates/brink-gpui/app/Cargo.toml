@@ -43,7 +43,7 @@ gpui-platform = { workspace = true, features = ["test-support"] }
 # Real text shaping that, unlike the macOS text system (reachable only
 # through `MacPlatform`, which refuses any thread but main), runs on a test
 # thread — and on Linux too.
-gpui-wgpu = { version = "0.3.3", package = "gpui-pre-wgpu" }
+gpui-wgpu = { version = "=0.3.14", package = "gpui-pre-wgpu" }
 # The same 0.25 line gpui renders into, so a screenshot is one `RgbaImage`
 # type; `png` to write it.
 image = { version = "0.25", default-features = false, features = ["png"] }
