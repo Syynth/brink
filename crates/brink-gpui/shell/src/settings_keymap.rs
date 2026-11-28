@@ -60,7 +60,9 @@ pub fn recorded_chord(keystroke: &gpui::Keystroke) -> Option<String> {
     if MODIFIER_KEYS.contains(&keystroke.key.as_str()) {
         return None;
     }
-    Some(canonical_chord(&keystroke.unparse()))
+    Some(canonical_chord(
+        &keystroke.unparse(gpui::OperatingSystem::Mac),
+    ))
 }
 
 impl KeymapSection {

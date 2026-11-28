@@ -475,7 +475,8 @@ impl Workspace {
     /// right move.
     fn apply_keymap(&self, cx: &mut Context<Self>) {
         let overrides = AppSettings::get(cx).keymap;
-        cx.bind_keys(keymap_bindings(self.commands.commands(), &overrides));
+        let bindings = keymap_bindings(self.commands.commands(), &overrides, cx);
+        cx.bind_keys(bindings);
         // A native menu reads its key equivalents when it is installed.
         self.install_menus(cx);
     }
@@ -560,7 +561,7 @@ impl Workspace {
         // Bound through the overrides, so a persisted rebinding holds from
         // the first frame.
         let overrides = AppSettings::get(cx).keymap;
-        let bindings = keymap_bindings(&self.commands.commands()[ix..=ix], &overrides);
+        let bindings = keymap_bindings(&self.commands.commands()[ix..=ix], &overrides, cx);
         cx.bind_keys(bindings);
         self.install_menus(cx);
     }

@@ -41,7 +41,7 @@ use gpui_component::{
     ActiveTheme as _, IconName, Sizable as _,
     button::{Button, ButtonVariants as _},
     h_flex,
-    input::{Editor, EditorState, InputEvent, MoveDown, MoveLeft, MoveRight, MoveUp},
+    input::{Editor, EditorState, GutterStyle, InputEvent, MoveDown, MoveLeft, MoveRight, MoveUp},
     menu::{DropdownMenu as _, PopupMenuItem},
     v_flex,
 };
@@ -71,6 +71,10 @@ type Folds = Rc<RefCell<HashMap<String, crate::document::FoldCell>>>;
 /// The fold column the kit's gutter keeps right of the line numbers
 /// (`FOLD_ICON_HITBOX_WIDTH`), now that sections fold.
 const FOLD_COLUMN: f32 = 18.;
+
+/// The kit's default gap between the line numbers and the text
+/// (`GutterStyle::resolve_gap`).
+const GUTTER_GAP: f32 = 6.;
 
 /// gpui-component renders the editor at `line_height: relative(1.5)` over the
 /// theme's monospace size (`input/editor.rs`), so a row is exactly
@@ -490,7 +494,7 @@ impl ContinuousView {
         } else {
             0
         };
-        let rows = editor.read(cx).display_row_count().max(1);
+        let rows = editor.read(cx).display_map().display_row_count().max(1);
         let height = (rows + trailing) as f32 * line_height;
         if let Some(section) = self.editors.borrow_mut().get_mut(path) {
             section.1 = height;
@@ -590,7 +594,7 @@ impl ContinuousView {
             // which is what gives the wrap map its width.
             let y = state
                 .line_height()
-                .map(|_| state.display_row_of_buffer_line(line) as f32 * line_height);
+                .map(|_| state.display_map().buffer_line_to_display_row(line) as f32 * line_height);
             (text, y)
         };
         let Some(y) = y else {
@@ -624,15 +628,15 @@ impl ContinuousView {
                     .map_or(0, |before| before.matches('\n').count());
                 let lines = text.matches('\n').count() + 1;
                 let end_row = if last + 1 < lines {
-                    state.display_row_of_buffer_line(last + 1)
+                    state.display_map().buffer_line_to_display_row(last + 1)
                 } else {
-                    state.display_row_count()
+                    state.display_map().display_row_count()
                 };
                 let first = text
                     .get(..span.start)
                     .map_or(0, |before| before.matches('\n').count());
                 let rows = end_row
-                    .saturating_sub(state.display_row_of_buffer_line(first))
+                    .saturating_sub(state.display_map().buffer_line_to_display_row(first))
                     .max(1);
                 let height = rows as f32 * line_height;
                 let room = f32::from(view.size.height) - pinned;
@@ -755,7 +759,7 @@ impl ContinuousView {
                 let line = text
                     .get(..at)
                     .map_or(0, |before| before.matches('\n').count());
-                Some(state.display_row_of_buffer_line(line) as f32 * line_height)
+                Some(state.display_map().buffer_line_to_display_row(line) as f32 * line_height)
             });
         let Some(y) = y else {
             // Not laid out yet: bring the file on screen so it mounts, and
@@ -1122,7 +1126,7 @@ impl ContinuousView {
                 let top = f32::from(item.top())
                     + self.lead(index)
                     + SEPARATOR_HEIGHT
-                    + state.display_row_of_buffer_line(line) as f32 * line_height;
+                    + state.display_map().buffer_line_to_display_row(line) as f32 * line_height;
                 let off = top - self.now_y;
                 (off.abs() > NOW_SYNC).then_some(off > 0.)
             }
@@ -1160,7 +1164,7 @@ impl ContinuousView {
             f32::from(item.top())
                 + self.lead(index)
                 + SEPARATOR_HEIGHT
-                + state.display_row_of_buffer_line(line) as f32 * line_height,
+                + state.display_map().buffer_line_to_display_row(line) as f32 * line_height,
         )
     }
 
@@ -1214,11 +1218,11 @@ impl ContinuousView {
         let line_height = f32::from(state.line_height()?);
         let line = (line1 as usize).checked_sub(1)?;
         let lines = state.value().matches('\n').count() + 1;
-        let top_row = state.display_row_of_buffer_line(line);
+        let top_row = state.display_map().buffer_line_to_display_row(line);
         let end_row = if line + 1 < lines {
-            state.display_row_of_buffer_line(line + 1)
+            state.display_map().buffer_line_to_display_row(line + 1)
         } else {
-            state.display_row_count()
+            state.display_map().display_row_count()
         };
         let item = self.list.bounds_for_item(index)?;
         let view = self.last_view.get()?;
@@ -1424,12 +1428,12 @@ impl ContinuousView {
         let line_height = f32::from(state.line_height()?);
         let text = state.value();
         let (first, last) = self.bracket_lines(&loc, choice, &text);
-        let top_row = state.display_row_of_buffer_line(first);
+        let top_row = state.display_map().buffer_line_to_display_row(first);
         let lines = text.matches('\n').count() + 1;
         let end_row = if last + 1 < lines {
-            state.display_row_of_buffer_line(last + 1)
+            state.display_map().buffer_line_to_display_row(last + 1)
         } else {
-            state.display_row_count()
+            state.display_map().display_row_count()
         };
         let item = self.list.bounds_for_item(index)?;
         let view = self.last_view.get()?;
@@ -1602,7 +1606,7 @@ impl ContinuousView {
     ) -> Option<(gpui::EntityId, bool, f32, f32)> {
         let (editor, height) = self.editors.borrow().get(path).cloned()?;
         let state = editor.read(cx);
-        let rows = state.display_row_count().max(1) as f32;
+        let rows = state.display_map().display_row_count().max(1) as f32;
         let line = f32::from(state.line_height()?);
         let focused = state.focus_handle(cx).is_focused(window);
         let trailing = if self.files.last().is_some_and(|f| f == path) {
@@ -1866,7 +1870,7 @@ impl ContinuousView {
             section_subs
                 .borrow_mut()
                 .push(cx.observe(&state, move |state, cx| {
-                    let now = state.read(cx).display_row_count();
+                    let now = state.read(cx).display_map().display_row_count();
                     if shown.replace(now) != now {
                         let _ = me.update(cx, |_, cx| cx.notify());
                     }
@@ -1972,7 +1976,7 @@ impl ContinuousView {
             let Some(index) = self.files.iter().position(|f| f == path) else {
                 continue;
             };
-            let rows = section.0.read(cx).display_row_count().max(1);
+            let rows = section.0.read(cx).display_map().display_row_count().max(1);
             let trailing = if index == last { TRAILING_ROWS } else { 0 };
             let height = (rows + trailing) as f32 * line_height;
             if (section.1 - height).abs() > 0.5 {
@@ -2064,6 +2068,13 @@ impl Render for ContinuousView {
         // own size — so a row is the same height either way and only the
         // wrapping moves, which `remeasure_sections` already follows.
         let read_font = self.read.on.get().then(|| cx.theme().font_family.clone());
+        // Read's line numbers, in `read_faint`, the caret's line's included.
+        let read_gutter = self.read.on.get().then(|| {
+            let faint = crate::document::read_faint(cx);
+            GutterStyle::default()
+                .with_line_number_color(faint)
+                .with_active_line_number_color(faint)
+        });
         let measured = self.measured_line_height;
         let column = column_width(window, cx);
         let bracket = self.hover_bracket(column, cx);
@@ -2199,6 +2210,9 @@ impl Render for ContinuousView {
                                         .with_size(SECTION_SIZE)
                                         .when_some(read_font.clone(), |editor, font| {
                                             editor.font_family(font)
+                                        })
+                                        .when_some(read_gutter.clone(), |editor, style| {
+                                            editor.gutter_style(style)
                                         })
                                         .when_some(column, |editor, width| {
                                             editor.w(width).max_w_full()
@@ -2448,14 +2462,14 @@ fn check_prose(
     .detach();
 }
 
-/// The editor chrome Read changes (W8): line numbers in `faint`, and no
-/// current-line band. `None` puts the theme's back.
+/// The editor-state chrome Read changes (W8): no current-line band. `None`
+/// puts it back. Read's faint line numbers are the render's: a
+/// `GutterStyle` on the section's `Editor`.
 fn apply_read_chrome(
     state: &mut EditorState,
     faint: Option<gpui::Hsla>,
     cx: &mut Context<EditorState>,
 ) {
-    state.set_line_number_color(faint, cx);
     state.set_active_line_highlight(faint.is_none(), cx);
 }
 
@@ -2477,10 +2491,12 @@ fn column_width(window: &Window, cx: &App) -> Option<gpui::Pixels> {
     let ch = text
         .ch_advance(text.resolve_font(&font), theme.mono_font_size)
         .map_or(f32::from(theme.mono_font_size) * 0.6, f32::from);
-    // The gutter: the breakpoint column, its digits, one column of
-    // spacing, and the margins the kit sets either side of the text.
+    // The gutter: the breakpoint column, its digits, the kit's gap before
+    // the text (`GutterStyle`'s default 6px), and the margins the kit sets
+    // either side of the text.
     let gutter = crate::gutter::COLUMN_WIDTH
-        + (MANUSCRIPT_GUTTER_DIGITS as f32 + 1.) * ch
+        + MANUSCRIPT_GUTTER_DIGITS as f32 * ch
+        + GUTTER_GAP
         + FOLD_COLUMN
         + 24.;
     Some(px(chars * ch + gutter))
@@ -2542,7 +2558,7 @@ fn keep_caret_on_screen(
     let lead = if index == 0 { head } else { 0. };
     let in_item = lead
         + SEPARATOR_HEIGHT
-        + state.display_row_of_buffer_line(line) as f32 * line_height
+        + state.display_map().buffer_line_to_display_row(line) as f32 * line_height
         + within;
     let Some(item) = list.bounds_for_item(index) else {
         list.scroll_to(gpui::ListOffset {

@@ -2072,7 +2072,7 @@ impl Document {
         let line = value
             .get(..cursor)
             .map_or(0, |before| before.matches('\n').count());
-        let cursor_y = row * state.display_row_of_buffer_line(line) as f32;
+        let cursor_y = row * state.display_map().buffer_line_to_display_row(line) as f32;
         let scroll = state.scroll_offset();
         // The strip covers `rows` rows from the top of the view. (The
         // editor's few pixels of inset above its text are left out: they

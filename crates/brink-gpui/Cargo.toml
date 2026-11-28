@@ -23,54 +23,58 @@ publish = false
 [workspace.dependencies]
 # Our fork of longbridge's GPUI Kit, pinned to a commit.
 #
-# Twenty-nine commits on top of `v0.6.0` (`Syynth/gpui-kit`, branch `brink`), each
-# a capability the upstream editor lacks rather than a rename: `Editor:
-# Sizable`, the `IntoPlot` crate lookup, in-text inlays, the wrapped row
-# count a content-sized editor needs once soft wrap is on, a minimum
-# gutter width so stacked files line up, a per-editor line-number colour
-# and active-line band (Writing mode's Read view), floating pop-ups that
-# no longer narrow the editor (a hover re-wrapped the text), and an
-# app-drawn hover card (`set_hover_renderer`) that also lists every
-# diagnostic under the pointer, tooltips on the fold chevrons, the
-# laid-out lines' byte range (pinned structure lines find the top line in
-# it), a buffer line's display row (a reveal into wrapped prose), the
-# highlighter's styles over a range (pinned lines painted as the editor
-# paints them), a host gutter column with per-line number colours (the
-# breakpoint column), the shown row count with folds applied (Write's
-# sections fold), folding at a line from code (the editor menu's Fold /
-# Unfold), per-line backgrounds from the host (the manuscript's played,
-# current and held lines while the story plays), a completion or
-# code-action menu that consumes the Enter it handles (accepting an item
-# also inserted a newline), and inlays drawn as chips — their own weight,
-# a rounded background with an optional outline — with a completion menu
-# that can open on a chosen item, hang from a buffer offset rather than
-# the caret, and is as wide as its longest row, and a press a click handler
-# takes starting no selection. Three change editing behaviour to what an
-# author expects of a code editor: Home stops at the indent first, paste
+# Twenty-two commits replayed onto upstream's `v0.11.0` (`Syynth/gpui-kit`,
+# branch `brink-v0.11`), each a capability the upstream editor lacks rather
+# than a rename: the `IntoPlot` crate lookup, in-text inlays, a minimum
+# gutter width so stacked files line up, an active-line band a host can
+# turn off (Writing mode's Read view; its number colours come from
+# upstream's `GutterStyle`), floating pop-ups that no longer narrow the
+# editor (a hover re-wrapped the text), an app-drawn hover card
+# (`set_hover_renderer`) that also lists every diagnostic under the
+# pointer, tooltips on the fold chevrons, the laid-out lines' byte range
+# (pinned structure lines find the top line in it), the highlighter's
+# styles over a range (pinned lines painted as the editor paints them), a
+# host gutter column with per-line number colours (the breakpoint column),
+# per-line backgrounds from the host (the manuscript's played, current and
+# held lines while the story plays), a completion or code-action menu that
+# consumes the Enter it handles (accepting an item also inserted a
+# newline), and inlays drawn as chips — their own weight, a rounded
+# background with an optional outline — with a completion menu that can
+# open on a chosen item, hang from a buffer offset rather than the caret,
+# and is as wide as its longest row, and a press a click handler takes
+# starting no selection. Three change editing behaviour to what an author
+# expects of a code editor: Home stops at the indent first, paste
 # re-indents a block to where it lands, and Enter, Tab and Shift-Tab keep
-# indentation sane. One more is a fix
-# rather than a capability: the editor's LSP tasks hold it weakly, where a
-# strong handle kept one code editor alive per closed window (#3628). They
-# are written to be upstreamable; if they land, this goes back to the
-# crates.io version.
+# indentation sane. One more is a fix rather than a capability: the
+# editor's LSP tasks hold it weakly, where a strong handle kept one code
+# editor alive per closed window (#3628). They are written to be
+# upstreamable; if they land, this goes back to the crates.io version.
 #
-# A FORK REPO, not a vendored tree with a re-patching script. Upstream moves
-# are then `git merge upstream/main` with real three-way merges and real
-# conflicts, instead of string replacements that silently match nothing.
+# Patches upstream came to cover by `v0.11.0` were dropped rather than
+# carried, and the app moved to upstream's API for them: `Editor:
+# Sizable`, the wrapped row count, a buffer line's display row and the
+# shown row count (`display_map()`), and folding at a line from code
+# (`set_folded`). The fork before the replay is tagged
+# `brink-v0.6.0-final`.
+#
+# A FORK REPO, not a vendored tree with a re-patching script. An upstream
+# release is taken by replaying the patches onto its tag, one cherry-pick
+# at a time with real conflicts, instead of string replacements that
+# silently match nothing.
 #
 # `gpui` comes through the kit (it re-exports `gpui-pre`, longbridge's
 # same-day snapshot of Zed's crate), so nothing here depends on Zed directly.
-gpui = { package = "gpui-pre", version = "0.3.3" }
-gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "c4906f2dda07edf545fa54bbc5e445a4682326f3", features = ["tree-sitter", "tree-sitter-toml"] }
+gpui = { package = "gpui-pre", version = "=0.3.14" }
+gpui-component = { git = "https://github.com/Syynth/gpui-kit", rev = "57fc63ea34959b9169a65f2fb6eca989d8cd6aa5", features = ["tree-sitter", "tree-sitter-toml"] }
 # The foundation under the kit, for the one renderer-trait type the kit does
 # not re-export (`ResizeHandleContext`, `shell/src/skin.rs`). Same rev, so it
 # is the same crate the kit is built against.
-gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "c4906f2dda07edf545fa54bbc5e445a4682326f3" }
-gpui-platform = { version = "0.3.3", package = "gpui-pre-platform" }
+gpui-base = { git = "https://github.com/Syynth/gpui-kit", rev = "57fc63ea34959b9169a65f2fb6eca989d8cd6aa5" }
+gpui-platform = { version = "=0.3.14", package = "gpui-pre-platform" }
 # The kit's icon SVGs (`IconName`), embedded. Without an asset source every
 # `IconName` in the app draws nothing — which is how the fold chevrons went
 # missing while their hitboxes were there all along.
-gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "c4906f2dda07edf545fa54bbc5e445a4682326f3" }
+gpui-kit-assets = { git = "https://github.com/Syynth/gpui-kit", rev = "57fc63ea34959b9169a65f2fb6eca989d8cd6aa5" }
 # Must match gpui-base's lsp-types (the provider traits speak these types).
 lsp-types = "0.97"
 # Watching the project on disk (`app/src/watch.rs`). The same crate the

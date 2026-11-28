@@ -19,7 +19,7 @@ use gpui::{AnyElement, AnyView, App, Axis, Div, Empty, IntoElement as _, Statefu
 use gpui_base::ResizeHandleContext;
 use gpui_component::dock::{
     BasePanelView, DockAreaRenderer, DockContext, DockSkin, DropIndicator, NodeId, PanelState,
-    TabGroupContext, TabGroupRenderer, TilesRenderer,
+    TabGroupContext, TabGroupRenderer,
 };
 
 use crate::editor_view::EDITOR_ROOT_PANEL_NAME;
@@ -97,10 +97,6 @@ impl DockAreaRenderer for StudioSkin {
             inner: self.inner.tab_group_renderer(),
             barless: self.barless.clone(),
         })
-    }
-
-    fn tiles_renderer(&self) -> Rc<dyn TilesRenderer> {
-        self.inner.tiles_renderer()
     }
 }
 

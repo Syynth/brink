@@ -38,6 +38,10 @@ use gpui::{
 
 use crate::{OpenStudios, Studio, landing};
 
+/// One display frame at 60Hz: how far the simulated clock moves per
+/// [`Harness::redraw`].
+const FRAME: Duration = Duration::from_micros(16_667);
+
 /// A studio under test. Windows are opened on it with [`Harness::open`].
 pub struct Harness {
     /// Always `Some` until `drop`, which decides whether the app is really
@@ -180,7 +184,8 @@ impl Harness {
     /// sequence) in `window`, then settle.
     pub fn press(&mut self, window: AnyWindowHandle, keystrokes: &str) {
         for source in keystrokes.split_whitespace() {
-            let keystroke = Keystroke::parse(source).expect("a keystroke the test spelled");
+            let keystroke = Keystroke::parse_with_os(source, gpui::OperatingSystem::Mac)
+                .expect("a keystroke the test spelled");
             self.app()
                 .update_window(window, |_, window, cx| {
                     window.dispatch_keystroke(keystroke, cx);
@@ -396,8 +401,14 @@ impl Harness {
     }
 
     /// Draw `window` once, without capturing it — for sampling where
-    /// things are, frame by frame, at real speed.
+    /// things are, frame by frame.
+    ///
+    /// Each draw is one frame later: animations run on the executor's
+    /// clock (gpui-pre 0.3.14), which the harness simulates, so a loop of
+    /// redraws waiting on a slide would otherwise sample its first frame
+    /// forever.
     pub fn redraw(&mut self, window: AnyWindowHandle) {
+        self.app().advance_clock(FRAME);
         self.app()
             .update_window(window, |_, window, _| window.refresh())
             .ok();
@@ -407,9 +418,21 @@ impl Harness {
     /// Move the clock on by `by`, then settle. The harness runs on
     /// simulated time: a `timer` — a slide's finish, a debounce — fires
     /// only when the test says that much time has passed.
+    ///
+    /// Every open window is then drawn, as a display link would draw it
+    /// once the clock moved: gpui-pre 0.3.14 no longer draws on a clock
+    /// advance by itself, so geometry read after a slide (a list's row
+    /// bounds) would still be the first frame's, mid-slide.
     pub fn advance(&mut self, by: Duration) {
         self.app().advance_clock(by);
         self.settle();
+        let windows = self.app().update(|cx| cx.windows());
+        for window in windows {
+            self.app()
+                .update_window(window, |_, window, _| window.refresh())
+                .ok();
+        }
+        self.app().run_until_parked();
     }
 
     /// Settle until `done` holds, or `within` passes. Answers whether it
