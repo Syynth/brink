@@ -82,7 +82,7 @@ const CLOUD = true;
 const CACHE =
   "export CARGO_TARGET_DIR=/tmp/pump-cargo-target-brink CARGO_INCREMENTAL=0 CARGO_PROFILE_DEV_DEBUG=0 CARGO_PROFILE_TEST_DEBUG=0 CARGO_BUILD_JOBS=4";
 const GATE =
-  "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test oracle_snapshots";
+  "cargo fmt --all -- --check && cargo clippy --workspace --all-targets -- -D warnings && cargo nextest run --workspace && cargo test -p brink-test-harness --test integration oracle_snapshots::";
 const MILESTONE = null; // optional milestone name for scope reconciliation
 const LEDGER = null; // optional: standing wave-ledger issue number (durable-by-default rule) — brink: 967
 const WAVE_ID = "wN"; // fill per wave when LEDGER is set

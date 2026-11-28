@@ -232,7 +232,7 @@ are exactly the three windows, and after pass 3 each is **one instruction**
 
 **Over the whole oracle corpus** — every checked-in oracle episode replayed
 on the unoptimized and the optimized artifact, summing the VM's `opcodes`
-counter (`cargo test -p brink-test-harness --test opt_corpus_stats --
+counter (`cargo test -p brink-test-harness --test integration opt_corpus_stats:: --
 --ignored --nocapture`):
 
 | Tier | Cases | Episodes | Opcodes executed | Bytecode bytes |

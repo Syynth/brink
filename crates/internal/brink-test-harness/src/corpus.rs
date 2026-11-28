@@ -782,7 +782,7 @@ mod native_analyzer_arm_tests {
     //! `is_native = true` itself (`per_file_diagnostics`' construction-
     //! literal checks — E084/E106/E138 — gated on `dialect ==
     //! Dialect::Brink || is_native`) is already pinned by the existing
-    //! `crates/internal/brink-test-harness/tests/b5_construction_e2e.rs::
+    //! `crates/internal/brink-test-harness/tests/integration/b5_construction_e2e.rs::
     //! a_duplicate_map_key_refuses_the_compile` e2e test: byte-identical
     //! fixture and assertion to what would otherwise duplicate here, via
     //! the same `explore_from_brink_native` entry point. No copy of it

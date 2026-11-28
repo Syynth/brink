@@ -138,7 +138,7 @@ let lines = render_transcript_asset(
 
 Pass any locale's line tables and the saved history localizes too — capture in
 English, re-render in Spanish. Runnable demos:
-`cargo run --example locale_switch` and `cargo run --example transcript_save`.
+`cargo run -p bevy-brink --features examples --example locale_switch` and `cargo run -p bevy-brink --features examples --example transcript_save`.
 
 ## Game-state saves (`SaveState`)
 
@@ -217,4 +217,4 @@ the same request-component pattern as any other flow (see
 
 Runnable end-to-end demo (drives two flows, saves world + both entities to a
 JSON-round-tripped map, loads into a **fresh** `App`, and re-enters each at a
-knot): `cargo run --example book_saves`.
+knot): `cargo run -p bevy-brink --features examples --example book_saves`.

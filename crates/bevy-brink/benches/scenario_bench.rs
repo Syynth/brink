@@ -91,7 +91,7 @@
 //! it (running `main()` would execute the whole baseline matrix and
 //! rewrite the checked-in baseline files as a side effect of an ordinary
 //! test run). Real `cargo test` coverage of the generator/driver logic
-//! lives in `tests/scenario_bench_model.rs`, which includes
+//! lives in `tests/integration/scenario_bench_model.rs`, which includes
 //! `scenario/model.rs`'s source directly.
 
 #[path = "scenario/model.rs"]

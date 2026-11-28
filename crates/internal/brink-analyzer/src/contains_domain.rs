@@ -873,7 +873,7 @@ mod tests {
         // classifies from whatever `InferenceResult` it's handed, so the
         // *policy* gate lives one level up. Full pipeline reachability
         // (including the gradual-mode silence) is proven in
-        // `crates/brink-compiler/tests/e0xx_diagnostics.rs`.
+        // `crates/brink-compiler/tests/integration/e0xx_diagnostics.rs`.
         let diags = check_all("=== main ===\n~ x = contains(#{1: \"a\"}, 3.5)\n-> DONE\n");
         assert_eq!(diags.len(), 1, "{diags:?}");
     }

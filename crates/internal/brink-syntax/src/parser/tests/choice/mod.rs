@@ -100,7 +100,7 @@ fn insta_choice_with_condition() {
 //
 // These tests check the CST/`TEXT`-node level, the same layer #2958's own
 // precedent tests (`content/mod.rs`) use — see
-// `crates/brink-compiler/tests/issue_2960_choice_midline_comment.rs` for
+// `crates/brink-compiler/tests/integration/issue_2960_choice_midline_comment.rs` for
 // the real-pipeline (compile + runtime transcript) proof, where this same
 // double space collapses to one at the output-buffer layer (pre-existing,
 // unrelated ink whitespace-collapse behavior, not part of this fix).

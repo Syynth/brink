@@ -29,19 +29,19 @@ An episode records a sequence of continues and choice selections with the expect
 
 ```sh
 # Corpus report -- per-category pass/fail breakdown (run first for triage)
-cargo test -p brink-test-harness --test corpus_report -- --nocapture
+cargo test -p brink-test-harness --test integration corpus_report:: -- --nocapture
 
 # All episodes (insta snapshots vs C# oracle)
-cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
+cargo test -p brink-test-harness --test integration oracle_snapshots:: -- --nocapture
 
 # Single case with diagnostics
-BRINK_CASE=I002 cargo test -p brink-test-harness --test oracle_snapshots -- --nocapture
+BRINK_CASE=I002 cargo test -p brink-test-harness --test integration oracle_snapshots:: -- --nocapture
 
 # Accept snapshot changes after intentional behavioral changes
-INSTA_UPDATE=always cargo test -p brink-test-harness --test oracle_snapshots
+INSTA_UPDATE=always cargo test -p brink-test-harness --test integration oracle_snapshots::
 ```
 
-Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/snapshots/`. Failing episodes are listed with step-by-step diffs against the oracle.
+Each case has a per-case snapshot in `crates/internal/brink-test-harness/tests/integration/snapshots/`. Failing episodes are listed with step-by-step diffs against the oracle.
 
 ## The ratchet
 
@@ -54,10 +54,10 @@ The C# oracle needs `dotnet`, which cloud sessions do not have. `tools/inkjs-ora
 ```sh
 cd tools/inkjs-oracle && npm ci && node --test && cd ../..
 # every C# golden in the corpus, replayed through inkjs, must match
-BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
-BRINK_CASE=shuffle BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
+BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test integration inkjs_sanction:: -- --nocapture
+BRINK_CASE=shuffle BRINK_INKJS_ORACLE=1 cargo test -p brink-test-harness --test integration inkjs_sanction:: -- --nocapture
 # generated stories: brink vs inkjs (the nightly lane; PROPTEST_CASES raises the count)
-BRINK_INKJS_ORACLE=1 cargo test -p brink-gen --test inkjs_differential -- --nocapture
+BRINK_INKJS_ORACLE=1 cargo test -p brink-gen --test integration inkjs_differential:: -- --nocapture
 ```
 
 The sanction compares the raw episode JSON after two normalisations (the C# tool's error-message wrapper and source paths; double- vs single-precision float printing — see `brink_test_harness::inkjs`'s header for the measurement behind each). `KNOWN_DIVERGENCES` in `inkjs_sanction.rs` lists any case where the two reference runtimes genuinely disagree, with a reason, checked both ways like `expected_mismatch`; it is empty. A one-off comparison of a single story is `node tools/inkjs-oracle/oracle.mjs path/to/story.ink --output-dir /tmp/out`, then `diff -r` against the case's `oracle/`.
@@ -72,7 +72,7 @@ Stories that came out of the generator (issue #3380, `docs/program-generator-spe
 | `oracle/*.oracle.json` | Golden episodes, same shape as the C# oracle's |
 | `case.toml` | `[provenance]`: `source` (`proptest`/`probe`), `property`, optional `seed`, `oracle-source` (`inkjs`/`csharp`), optional `issue`; plus `[source] expected_mismatch` when the case pins a known open divergence |
 
-The tier is **not** part of `RATCHET_EPISODE_COUNT` — the shared corpus walk prunes the directory, so nothing here reaches `oracle_snapshots`, the inkjs sanction, or the respell sweep. Its own must-pass target is `cargo test -p brink-test-harness --test tier4_generated`: every case matches its golden (or is flagged `expected_mismatch`, checked both ways), and `GENERATED_CASE_COUNT` there only moves through a promotion. `corpus_report` prints the tier in its own section.
+The tier is **not** part of `RATCHET_EPISODE_COUNT` — the shared corpus walk prunes the directory, so nothing here reaches `oracle_snapshots`, the inkjs sanction, or the respell sweep. Its own must-pass target is `cargo test -p brink-test-harness --test integration tier4_generated::`: every case matches its golden (or is flagged `expected_mismatch`, checked both ways), and `GENERATED_CASE_COUNT` there only moves through a promotion. `corpus_report` prints the tier in its own section.
 
 Promote with the script, which refuses a story brink cannot compile or the oracle cannot golden, writes the case, and bumps the count:
 

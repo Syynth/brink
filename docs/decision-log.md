@@ -6137,3 +6137,35 @@
 - **SCOPE:** moderate
 - **WHAT:** The workspace glam pin moves from 0.32 to 0.33, the version Bevy 0.20's `bevy_math` uses, in the same change as the Bevy 0.20 bump (#3707). It also updates every satellite lockfile that resolves glam ("whatever we need to update"). This settles #3705 in favour of realigning, not decoupling the pin from Bevy.
 - **WHY:** The 2026-07-19 tower ruling pins glam once, at the version the bevy graph uses, so a future bevy marshal is the identity on the same types. Maintainer: "we should update glam as well, whatever we need to update". The 0.33 numeric changes (the `lerp` form, finite-only inverses, FMA in the SIMD back-ends) are taken as part of the bump, not a reason to hold the pin back.
+
+## Agent-build tooling is judged on disk across parallel worktrees AND warm edit-loop time
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** build tooling / agent workflow
+- **SCOPE:** moderate
+- **WHAT:** A build accelerator or cache proposed for agent builds (blaze first, and any alternative after it) is evaluated on both (1) total disk across several parallel git worktrees, cargo's own `target/` included, and (2) warm edit-to-check time after a one-function edit. Neither alone is enough. The tool must also give each worktree its own correct diagnostics, a precondition checked before any timing.
+- **WHY:** Maintainer, asked which mattered: "Both". The disk half is the standing pain ("i always run out of disk space working on rust projects"), and agents in separate worktrees multiply it. The edit-loop half is what blaze advertises. The correctness precondition comes from the 2026-11-26 trial: blaze v1 answered a check in worktree B with worktree A's errors, which made its near-zero second-worktree disk cost meaningless.
+
+## Integration tests consolidate into one test binary per crate
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** test infrastructure (cross-system)
+- **SCOPE:** moderate
+- **WHAT:** Each crate's integration tests are merged into a single test target, so one binary per crate, instead of cargo's default of one binary per `tests/*.rs` file. The files move into `tests/integration/`, rooted at `tests/integration/main.rs` (cargo autodiscovers it as the test target `integration`), and their insta snapshots move with them. The only tests kept as separate binaries are ones that change or measure process-global state. Right now that's four: the two that `set_current_dir` (brink-compiler `issue_1504_root_content_identity`, brink-db `issue_2320_root_relative_conventions_pointer`), and the two that reset and read process-wide counters (brink-runtime `field_mutator_cow`, which reads `bench_counters`, and brink-test-harness `t2_ground_truth_effects`, which reads `effect_trace`). A check script (`scripts/check-integration-tests.mjs`) fails on a file under `tests/integration/` that `main.rs` never declares (it would silently never compile), and on a new top-level `tests/*.rs` that isn't a sanctioned separate target.
+- **WHY:** Disk, for agents working in parallel worktrees. The workspace had 281 integration-test targets, and each links its own near-full copy of the crate's dependency graph. With `[profile.dev] debug = 0` already set, those executables are what fill a worktree's ~22 GB `target/`. The 2026-11-26 blaze trial showed that no accelerator removes cargo's `target/`, because clippy, tests and wasm-pack still need it. So the saving has to come from what cargo is asked to build. Fewer binaries also means far less linking on every test run. Maintainer: "let's consolidate the integration tests into one binary per crate". The files move, rather than staying in place behind `autotests = false`, because `tests/integration/main.rs` is the conventional layout; the maintainer picked it over keeping snapshot paths unchanged. The chdir tests stay separate because a working-directory change in one test would hit every other test running in the same process. The two counter tests were found the same way: consolidated, `field_mutator_cow` counted 13 copy-on-write copies where at most 4 are allowed, because other VM tests in the shared binary were bumping the same atomics.
+
+## `cargo test` does not build examples
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** test infrastructure (cross-system)
+- **SCOPE:** moderate
+- **WHAT:** Every crate's examples sit behind an empty `examples` feature (`required-features = ["examples"]` on each `[[example]]`), so a plain `cargo test` (and a plain `cargo clippy --all-targets`) neither builds nor links them. Run or build one with `--features examples`. Every `--all-features` run (CI's second clippy pass, its all-features test lane, bevy-brink's clippy lane) still builds them all, so they stay compile-checked.
+- **WHY:** Disk. After the integration-test consolidation, examples were 1.8 GB of a cold test build's 11 GB `target/`: bevy-brink's nine examples each link the bevy umbrella. Maintainer: "let's not compile the examples w/ cargo test". It is a feature gate because cargo offers nothing narrower. Checked on a scratch crate: an explicit `test = false` on an `[[example]]` does not stop `cargo test` building it, and `autoexamples = false` stops it only by making the file no example at all, so `cargo run --example`, `cargo build --example` and clippy would no longer see it.
+
+## Incremental compilation stays on, even for agent worktrees
+- **WHEN:** 2026-11-26
+- **PROJECT:** brink
+- **SYSTEM:** build tooling / agent workflow
+- **SCOPE:** minor/local
+- **WHAT:** `target/debug/incremental` is kept. Agent builds do not set `CARGO_INCREMENTAL=0` and the dev profile does not turn `incremental` off, even though it is the next-largest piece of a cold test build's `target/` (2.1 GB of 7.2 GB after the test consolidation and examples gate).
+- **WHY:** Rebuild speed. Maintainer, asked why: "it's rebuild speed". An agent's loop is edit, then rebuild, many times in one worktree. Incremental data is what keeps those rebuilds fast, so the disk it costs is worth paying.

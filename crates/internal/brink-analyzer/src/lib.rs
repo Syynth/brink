@@ -111,7 +111,7 @@ pub use ufcs::{
 };
 
 /// Issue #2856: test-only re-export of the resolver's compiler-reserved
-/// name predicates, so `tests/proptest_resolve.rs`'s `completeness`
+/// name predicates, so `tests/integration/proptest_resolve.rs`'s `completeness`
 /// property can filter by the REAL production name sets rather than a
 /// hand-duplicated copy that would silently drift the moment a name is
 /// added to either list. As of issue #2863, `resolve::is_builtin_function`/

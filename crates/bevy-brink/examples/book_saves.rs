@@ -4,9 +4,9 @@
 //! Same mechanism as `book_flows.rs`: the book pulls the snippets shown on
 //! that page out of this file via mdbook `{{#include …:anchor}}`
 //! directives, so the code readers see is exactly the code that
-//! `cargo build --example book_saves` compiles.
+//! `cargo build -p bevy-brink --features examples --example book_saves` compiles.
 //!
-//! Run with `cargo run --example book_saves` for the full round trip: two
+//! Run with `cargo run -p bevy-brink --features examples --example book_saves` for the full round trip: two
 //! flows are driven once each (diverging their private `mood`, sharing
 //! `shared_count`), world + both entities are saved into a serde map
 //! (round-tripped through JSON to prove it), a FRESH app loads that map

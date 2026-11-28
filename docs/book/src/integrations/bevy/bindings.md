@@ -133,7 +133,7 @@ app.add_observer(|on: On<BrinkExternalAwaited<()>>, mut commands: Commands| {
 
 `resolve_brink_external` is guarded by `has_pending_external`, so a stale or
 double resolve is a safe no-op. Runnable demo:
-`cargo run --example async_external`.
+`cargo run -p bevy-brink --features examples --example async_external`.
 
 ### `bind_brink_task` — off-thread compute
 
@@ -158,7 +158,7 @@ app.bind_brink_task::<(), _, _>("expensive_roll", |args: Vec<Value>| async move 
 The future is `Send + 'static` and runs off the main thread, so it **cannot
 access the World** — it computes from the ink args only. For World-dependent
 async, use `bind_brink_async`. Runnable demo:
-`cargo run --example async_task`.
+`cargo run -p bevy-brink --features examples --example async_task`.
 
 ## engine → ink: calling ink functions
 
@@ -212,7 +212,7 @@ commands
 `brink_call` accepts `()`, tuples of `Into<Value>` (up to 4), `Vec<Value>`, or
 `&[Value]` as args. The plugin's resolver fires `BrinkCallResolved<M>` (with
 `value`) or `BrinkCallFailed<M>` (with an error string) at the call entity, then
-despawns it. Runnable demo: `cargo run --example engine_bindings`.
+despawns it. Runnable demo: `cargo run -p bevy-brink --features examples --example engine_bindings`.
 
 ## Wiring summary
 

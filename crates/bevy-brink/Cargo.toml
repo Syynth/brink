@@ -45,6 +45,11 @@ thiserror.workspace = true
 
 [features]
 default = ["dev"]
+# Gate for this crate's examples, so a plain `cargo test` does not build and
+# link them (docs/decision-log.md, "`cargo test` does not build examples").
+# Run one with `cargo run -p bevy-brink --features examples --example <name>`;
+# `--all-features` (CI's clippy and test lanes) still builds every one.
+examples = []
 # Dev mode: load `.ink` source files, compile at load time, hot-reload
 # the program when any file in the transitive INCLUDE graph changes.
 # Without this feature only compiled `.inkb` (and eventually `.inkl`,
@@ -95,7 +100,7 @@ brink-runtime = { path = "../brink-runtime", features = ["testing"]  }
 # The locale example + tests build `.inkl` overlays via the intl pipeline
 # (export_lines + compile_locale).
 brink-intl = { path = "../internal/brink-intl" }
-# tests/manifest_field_convergence.rs (#911, BH follow-up deliverable 1)
+# tests/integration/manifest_field_convergence.rs (#911, BH follow-up deliverable 1)
 # cross-validates one manifest JSON literal against both `capability::
 # CapabilityManifest` (this crate) and `brink_ir::host_manifest::
 # HostManifest` (the compiler/IDE-side type parsing the same on-disk
@@ -123,31 +128,51 @@ divan.workspace = true
 
 [[example]]
 name = "play_story"
-required-features = ["dev"]
+required-features = ["dev", "examples"]
 
 # Headless demo of the engine↔ink dynamic binding facility
 # (bind_brink_query / call_ink_function / commands.brink_call / advance_flow).
 [[example]]
 name = "engine_bindings"
+required-features = ["examples"]
 
 # Headless demo of global, event-driven locale switching (.inkl overlays).
 [[example]]
 name = "locale_switch"
+required-features = ["examples"]
 
 # Headless demo of .brkt transcript persistence (capture / reload / re-render).
 [[example]]
 name = "transcript_save"
+required-features = ["examples"]
 
 # Headless demo of bind_brink_task: an async external resolved by a detached
 # task on AsyncComputeTaskPool, across frames.
 [[example]]
 name = "async_task"
+required-features = ["examples"]
 
 # Headless demo of bind_brink_async: the event+resolve primitive for a
 # multi-frame World interaction (targeting UI), via BrinkExternalAwaited +
 # resolve_brink_external.
 [[example]]
 name = "async_external"
+required-features = ["examples"]
+
+# Compile-checked source for the book's Bevy flows page (docs/book/src/integrations/bevy/flows.md).
+[[example]]
+name = "book_flows"
+required-features = ["examples"]
+
+# Compile-checked source for the book's game-state saves section (docs/book/src/integrations/bevy/localization.md).
+[[example]]
+name = "book_saves"
+required-features = ["examples"]
+
+# Headless demo of `#@local` flow-private state, with no host policy code.
+[[example]]
+name = "flow_private_state"
+required-features = ["examples"]
 
 # Scenario harness skeleton + SERIAL-driver baselines (issue #900, BH-B-1):
 # headless MinimalPlugins runner, ScenarioConfig axes matrix, CSV+markdown
@@ -156,7 +181,7 @@ name = "async_external"
 # would execute the full 1/100/1k/10k baseline matrix and rewrite the
 # checked-in baseline files as a side effect of an ordinary test run.
 # Real `cargo test` coverage of the generator/driver logic lives in
-# `tests/scenario_bench_model.rs` instead (includes the same source).
+# `tests/integration/scenario_bench_model.rs` instead (includes the same source).
 [[bench]]
 name = "scenario_bench"
 harness = false

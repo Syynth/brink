@@ -87,7 +87,7 @@ thiserror = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
-# The negative-control passes (`tests/opt_negative_control.rs`). Enabled here
+# The negative-control passes (`tests/integration/opt_negative_control.rs`). Enabled here
 # rather than in `[dependencies]` so nothing outside this crate's test build
 # can reach them. Note `cargo test --workspace` unifies features, so the real
 # guard against a control running on a real artifact is the runtime assertion
@@ -115,32 +115,19 @@ effect-trace = ["brink-runtime/effect-trace"]
 # D8 debugger control seam (issue #3186): forwards to `brink-runtime`'s
 # `debug-hooks` feature. Same shape as `effect-trace` above — not part of
 # `default`, so `cargo test --workspace` never builds
-# `tests/debug_control_3186.rs`; CI's `Test (all features)` job
+# `tests/integration/debug_control_3186.rs`; CI's `Test (all features)` job
 # (`cargo test --workspace --all-features --exclude bevy-brink`) is what
 # exercises it, and the D8 build gate runs the workspace gate once per
 # feature state (off, then on) per the issue's own step-limit-ruling
 # requirement to prove the disabled build is unaffected.
 debug-hooks = ["brink-runtime/debug-hooks"]
 
+# Its own binary, not a module of tests/integration/: it reads the
+# process-wide effect-trace recorder, which every other test in a shared
+# binary would write to concurrently (scripts/check-integration-tests.mjs).
 [[test]]
 name = "t2_ground_truth_effects"
 required-features = ["effect-trace"]
-
-[[test]]
-name = "debug_control_3186"
-required-features = ["debug-hooks"]
-
-[[test]]
-name = "debug_sessions"
-required-features = ["debug-hooks"]
-
-[[test]]
-name = "debug_seam_3223_3224_3226"
-required-features = ["debug-hooks"]
-
-[[test]]
-name = "debug_entry_hold_3679"
-required-features = ["debug-hooks"]
 
 [lints]
 workspace = true

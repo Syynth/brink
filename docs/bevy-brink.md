@@ -190,7 +190,7 @@ Why pause/resume rather than resolve inline: the live eval holds
 `run_system_with` needs. Releasing the borrows at the pause point is the
 borrow-safe way to run a registered system mid-evaluation.
 
-Runnable demos (headless): `cargo run --example engine_bindings` exercises the
+Runnable demos (headless): `cargo run -p bevy-brink --features examples --example engine_bindings` exercises the
 sync bindings + engine→ink calls; `async_task` and `async_external` cover the
 two async flavors. `play_story` covers `bind_brink_fn`/`bind_brink_command` in
 an interactive window.
@@ -314,7 +314,7 @@ contents in place) and asserts the rendered output (via a UI render
 harness that mirrors `play_story.rs`'s observer wiring) contains the
 NEW story text and not the OLD.
 
-**Visual confirmation (2026-04-28)**: ran `cargo run --example play_story`,
+**Visual confirmation (2026-04-28)**: ran `cargo run -p bevy-brink --features examples --example play_story`,
 edited `crates/bevy-brink/examples/assets/story.ink`, saved, and the
 window updated to show the new content with the "Reloaded" banner.
 Loader logs confirmed the file watcher fired and `replay_on_reload`
@@ -606,7 +606,7 @@ Where we differ:
 ## How to pick this work up cleanly
 
 1. **Read this doc.** It is the canonical state.
-2. **Run `cargo run --example play_story` from the repo root** to confirm
+2. **Run `cargo run -p bevy-brink --features examples --example play_story` from the repo root** to confirm
    the basic loading path still works.
 3. **Decide what to tackle**. Most pressing:
    - (a) Diagnose and fix the `commands.trigger` issue — unblocks both

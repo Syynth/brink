@@ -27,5 +27,16 @@ brink-runtime = { path = "../../brink-runtime" }
 insta = { workspace = true, features = ["json"] }
 serde_json = { workspace = true }
 
+[features]
+# Gate for this crate's examples, so a plain `cargo test` does not build and
+# link them (docs/decision-log.md, "`cargo test` does not build examples").
+# Run one with `cargo run -p brink-intl --features examples --example <name>`;
+# `--all-features` (CI's clippy and test lanes) still builds every one.
+examples = []
+
+[[example]]
+name = "generate_xliff"
+required-features = ["examples"]
+
 [lints]
 workspace = true

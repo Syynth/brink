@@ -54,7 +54,7 @@ fn diag(file: FileId, range: rowan::TextRange, code: DiagnosticCode) -> Diagnost
 /// else_branch`'s doc), which recurses back into this same function one
 /// level down, producing an `InitialCondition` whose `else` branch's body
 /// contains another, nested `Conditional`. Cross-frontend differential
-/// testing (`crates/internal/brink-ir/tests/b07_native_body.rs`) found that
+/// testing (`crates/internal/brink-ir/tests/integration/b07_native_body.rs`) found that
 /// ink's *own* natural spelling of the simple 2-branch shape
 /// (`{cond: body - else: body2}`, `ConditionalWithExpr` plus a branchless
 /// first body) lowers the same way, to `CondKind::InitialCondition`, never

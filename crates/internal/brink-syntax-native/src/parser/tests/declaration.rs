@@ -1840,7 +1840,7 @@ fn an_annotation_line_precedes_a_pub_prefixed_declaration() {
 
 // ── Adversarial: property-based coverage scoped to declarations ───────
 //
-// Mirrors `tests/proptest_native.rs`'s generator style (studied from that
+// Mirrors `tests/integration/proptest_native.rs`'s generator style (studied from that
 // file) but scoped to the declaration shapes this issue owns — per the
 // wave instructions, a proptest generator for #1192 lives in this family
 // file, not in the shared `proptest_native.rs` integration test (owned by

@@ -248,6 +248,6 @@ else is #1519's design question, not answered here.
 
 This document makes no code change; the oracle ratchet is unaffected.
 `RATCHET_EPISODE_COUNT` in
-`crates/internal/brink-test-harness/tests/oracle_snapshots.rs` was 5,607 at
+`crates/internal/brink-test-harness/tests/integration/oracle_snapshots.rs` was 5,607 at
 time of writing and held at 5,607 after this PR (see PR body for the gate
 run).

@@ -616,7 +616,7 @@ precedent, oracle byte-identical):
    (`push(a, v)`), so the two never occupy the same syntactic
    position and there is nothing for a shadow warning to report —
    pinned by two tests in
-   `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`:
+   `crates/brink-compiler/tests/integration/issue_2856_builtin_shadow.rs`:
    `list_item_shadows_stdlib_verb_name_at_bare_reference_without_e035_warning`
    and `list_item_named_push_does_not_break_the_real_push_call`.
    `none` is the one reserved name that is itself bare-read, not

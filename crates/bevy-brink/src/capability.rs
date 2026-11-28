@@ -112,7 +112,7 @@ pub struct CapabilityEffects {
 /// #911, BH follow-up deliverable 1) — see that type's module doc for the
 /// full rationale (opposite-direction crate dependency the two sides must
 /// never take on each other). The two shared keys (`externals`, `name`) are
-/// pinned by `brink_format::manifest_field_names`; `tests/manifest_field_convergence.rs`
+/// pinned by `brink_format::manifest_field_names`; `tests/integration/manifest_field_convergence.rs`
 /// cross-validates one manifest literal against both types.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CapabilityManifestExternal {

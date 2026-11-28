@@ -972,7 +972,7 @@ fn insta_splice_with_args() {
 }
 
 // ── Proptest round-trip generators (family-local, per #1196's hint —
-// `tests/proptest_native.rs` is #1199's this wave) ────────────────────
+// `tests/integration/proptest_native.rs` is #1199's this wave) ────────────────────
 
 mod proptest_divert {
     use proptest::prelude::*;
@@ -981,7 +981,7 @@ mod proptest_divert {
 
     const NUM_CASES: u32 = 256;
 
-    /// Mirrors `tests/proptest_native.rs`'s own `KEYWORDS` list (this
+    /// Mirrors `tests/integration/proptest_native.rs`'s own `KEYWORDS` list (this
     /// family's generator is intentionally independent — see #1196's
     /// scoping note about not touching that file this wave — but the
     /// keyword set it must avoid is the same grammar).

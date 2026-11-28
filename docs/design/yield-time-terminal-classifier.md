@@ -62,7 +62,7 @@ Two structural observations fall straight out of the table:
 
 - **`End` classifies eagerly; `Done` classifies in two halves.** Site 4
   never consults `make_yield_line`, and the fault half of `Done` lives a
-  whole call later at site 2. `crates/brink-runtime/tests/terminal_classification.rs`
+  whole call later at site 2. `crates/brink-runtime/tests/integration/terminal_classification.rs`
   (added alongside this document) pins exactly this asymmetry.
 - **The information the deferred fault needs already exists at the
   yield.** `flow.did_safe_exit` is final by the time site 3 hands out
@@ -227,7 +227,7 @@ never delivers. So:
 
 1. **Now (this PR):** pin the seam with characterization tests so the
    contract cannot move silently. Done —
-   `crates/brink-runtime/tests/terminal_classification.rs`.
+   `crates/brink-runtime/tests/integration/terminal_classification.rs`.
 2. **R1 ruling.** If (c), #1520 folds into the `Step` migration
    (roadmap Track 1 step 3 / `docs/prose-dialect-spec.md` §7) and stops
    being a standalone refactor.

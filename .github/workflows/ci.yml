@@ -136,7 +136,7 @@ jobs:
         run: node --test
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Sanction inkjs against every C# oracle golden
-        run: cargo test -p brink-test-harness --test inkjs_sanction -- --nocapture
+        run: 'cargo test -p brink-test-harness --test integration inkjs_sanction:: -- --nocapture'
         env:
           BRINK_INKJS_ORACLE: "1"
 

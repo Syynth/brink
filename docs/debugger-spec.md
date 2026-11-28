@@ -988,7 +988,7 @@ path, no reader, no VM hook exists yet — D2 (already merged, #3180/#3188)
 retired the dormant `Opcode::SourceLocation`; D3–D9 build against this
 document but are not part of this change. Verification is therefore the
 full gate at the **unchanged** oracle ratchet
-(`RATCHET_EPISODE_COUNT`, `crates/internal/brink-test-harness/tests/oracle_snapshots.rs`)
+(`RATCHET_EPISODE_COUNT`, `crates/internal/brink-test-harness/tests/integration/oracle_snapshots.rs`)
 — any movement, in either direction, is stop-and-report per `CLAUDE.md`.
 Not wasm-observable: `@brink-lang/web` exposes no debugger surface yet (D9
 is what would add one), so no changeset is required for this PR.

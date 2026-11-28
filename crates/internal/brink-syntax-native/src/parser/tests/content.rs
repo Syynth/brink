@@ -1134,7 +1134,7 @@ fn multiline_brace_on_choice_line_is_choice_body_not_interpolation() {
 
 // ── Section I: proptest round-trip generators ───────────────────────────
 //
-// `tests/proptest_native.rs`'s `arb_text()` deliberately excludes every
+// `tests/integration/proptest_native.rs`'s `arb_text()` deliberately excludes every
 // structural character (including `<`/`>`, so `arb_content_line()` never
 // generates glue). These generators stay file-local rather than extending
 // `arb_text()` itself: it's consumed by many sibling properties beyond

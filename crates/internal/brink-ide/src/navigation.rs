@@ -683,7 +683,7 @@ fn main() {
     fn goto_definition_on_a_ufcs_field_call_finds_no_target() {
         // Fixture mirrors `brink-analyzer`'s
         // `a_function_typed_field_wins_and_is_recorded_as_a_field_call`
-        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs). A
+        // (crates/internal/brink-analyzer/tests/integration/ufcs_resolution.rs). A
         // struct field is not an index symbol — `ufcs_goto_definition`
         // returns `Some(None)` here (resolved, but nowhere to jump), which
         // must surface as `None` rather than falling through to the
@@ -708,7 +708,7 @@ fn main() {
     fn goto_definition_on_a_ufcs_free_fn_auto_ref_jumps_to_the_free_function() {
         // Fixture mirrors `brink-analyzer`'s
         // `a_ref_first_param_auto_refs_a_frame_local_receiver`
-        // (crates/internal/brink-analyzer/tests/ufcs_resolution.rs). Proves
+        // (crates/internal/brink-analyzer/tests/integration/ufcs_resolution.rs). Proves
         // the `FreeFnAutoRef` arm is live — it reaches `target` through an
         // or-pattern shared with `FreeFnDesugar`, so nothing else exercises
         // it independently.

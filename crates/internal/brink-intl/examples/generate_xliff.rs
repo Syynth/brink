@@ -2,7 +2,7 @@
 
 //! Generate an XLIFF file from a `.inkb` binary.
 //!
-//! Usage: `cargo run -p brink-intl --example generate_xliff -- <input.inkb> <output.xlf>`
+//! Usage: `cargo run -p brink-intl --features examples --example generate_xliff -- <input.inkb> <output.xlf>`
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();

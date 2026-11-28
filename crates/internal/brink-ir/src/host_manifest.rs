@@ -24,7 +24,7 @@
 //! shared type would need a new third crate for two fields (`externals[].name`)
 //! in common. Instead, `brink_format::manifest_field_names` pins the shared
 //! key spellings (`externals`, `name`) both types' serde derives must keep
-//! matching, and `crates/bevy-brink/tests/manifest_field_convergence.rs`
+//! matching, and `crates/bevy-brink/tests/integration/manifest_field_convergence.rs`
 //! cross-validates one manifest literal against both types.
 
 use serde::{Deserialize, Serialize};

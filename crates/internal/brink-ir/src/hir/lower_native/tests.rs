@@ -529,7 +529,7 @@ fn stray_top_level_content_is_diagnosed_not_dropped() {
 }
 
 /// The declaration-only gate fixture. A copy of the same source lives in
-/// `tests/b06_native_declarations.rs`'s admission-clean check — kept
+/// `tests/integration/b06_native_declarations.rs`'s admission-clean check — kept
 /// duplicated rather than shared because an in-`lib` unit test cannot link
 /// `brink-analyzer` (see that integration test file's module doc for why),
 /// so the two checks (diagnostic-free lowering; zero-diagnostic admission)
@@ -1000,7 +1000,7 @@ fn if_else_conditional_lowers_to_if_else_branches() {
     // `InitialCondition`, not `IfElse` — see `cond::lower_conditional`'s doc
     // comment: this is what ink's own equivalent `{cond: body - else: body2}`
     // spelling actually compiles to (cross-frontend differential finding,
-    // `tests/b07_native_body.rs`).
+    // `tests/integration/b07_native_body.rs`).
     assert_eq!(cond.kind, CondKind::InitialCondition);
     assert_eq!(cond.branches.len(), 2);
     assert!(cond.branches[0].condition.is_some());

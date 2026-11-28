@@ -1,7 +1,7 @@
 //! Headless example: global, event-driven **locale switching** via `.inkl`
 //! overlays.
 //!
-//! Run with `cargo run --example locale_switch`. Prints the story in the base
+//! Run with `cargo run -p bevy-brink --features examples --example locale_switch`. Prints the story in the base
 //! language, switches the global locale to a built-in `es` overlay, and prints
 //! it again — localized — then reverts.
 //!

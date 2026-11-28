@@ -46,7 +46,7 @@
 //!   anywhere, every native file still falls back to the single legacy
 //!   default project: that preserves the pre-#1580 "open a folder of
 //!   `.brink` files with no config yet" workflow byte-for-byte (see
-//!   `crates/brink-lsp/tests/integration.rs`'s "Native `.brink` workspaces"
+//!   `crates/brink-lsp/tests/integration/main.rs`'s "Native `.brink` workspaces"
 //!   tests, which exercise exactly this with zero `brink.toml` anywhere) —
 //!   NF-3's "single-file project" mode read literally would silently turn
 //!   every such workspace into N unrelated islands with no cross-file

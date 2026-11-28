@@ -16,7 +16,7 @@ fuzz_target!(|data: &[u8]| {
         .expect("re-encoded .inkb must decode successfully");
     // `source_checksum` is a CRC-32 of the *physical* `.inkb` payload bytes
     // (set from the binary header on read, recomputed from the freshly
-    // written buffer on write — see `crates/internal/brink-format/tests/inkb.rs`,
+    // written buffer on write — see `crates/internal/brink-format/tests/integration/inkb.rs`,
     // which resets it the same way before comparing). Arbitrary/mutated
     // input isn't guaranteed to already be in `write_inkb`'s canonical byte
     // layout, so re-encoding a semantically-identical `StoryData` can

@@ -7,12 +7,12 @@ name: inkjs differential
 # golden), must produce the same episodes.
 #
 # Nightly, not per PR — §7's ruled lane split: per-PR runs are the small
-# deterministic smoke properties in crates/internal/brink-gen/tests/smoke.rs
+# deterministic smoke properties in crates/internal/brink-gen/tests/integration/smoke.rs
 # plus the sanction; the differential is randomised and a NEW finding here is
 # a bug report against brink (minimise, add a C#-golden corpus case per the
 # 2026-09-02 directive), not a reason to block an unrelated PR. Known
 # divergences are keyed on their issue in
-# crates/internal/brink-gen/tests/inkjs_differential.rs's KNOWN_DIVERGENCES
+# crates/internal/brink-gen/tests/integration/inkjs_differential.rs's KNOWN_DIVERGENCES
 # so this lane is green until something new appears.
 #
 # Advisory: not in branch protection's required-checks list.
@@ -68,7 +68,7 @@ jobs:
         run: npm ci
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
       - name: Differential (brink vs inkjs on generated stories)
-        run: cargo test -p brink-gen --test inkjs_differential -- --nocapture
+        run: 'cargo test -p brink-gen --test integration inkjs_differential:: -- --nocapture'
         env:
           BRINK_INKJS_ORACLE: "1"
           # 512 on the schedule; a PR-triggered run gets the same, a manual

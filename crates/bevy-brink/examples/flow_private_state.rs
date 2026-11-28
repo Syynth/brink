@@ -10,7 +10,7 @@
 //! to both. The plugin is `BrinkPlugin::default()`: no `with_policy`,
 //! no hand-written name list. The compiled program *is* the policy.
 //!
-//! Run with `cargo run -p bevy-brink --example flow_private_state`.
+//! Run with `cargo run -p bevy-brink --features examples --example flow_private_state`.
 //!
 //! Expected arc: Ashe is approached three times (Halt! → You again? →
 //! ALARM); Brogan's first greeting is still "Halt!" (his private memory

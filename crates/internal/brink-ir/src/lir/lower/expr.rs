@@ -2332,7 +2332,7 @@ fn lower_weighted_call(
 /// forgotten" drift risk — it does not by itself prove every *consumer* of
 /// this list checks it in the right order relative to real symbol
 /// resolution; that's a separate, ordering-shaped invariant pinned by
-/// `crates/brink-compiler/tests/issue_2856_builtin_shadow.rs`.
+/// `crates/brink-compiler/tests/integration/issue_2856_builtin_shadow.rs`.
 pub fn is_t1b_stdlib_name(name: &str) -> bool {
     matches!(
         name,

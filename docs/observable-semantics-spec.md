@@ -109,7 +109,7 @@ future optimizer may already dead-store-eliminate module-private
 native globals without an escape hatch being ruled. `pub` globals,
 and every ink `VAR` in an undeclared stem module, stay fully covered.
 Pinned by
-`crates/internal/brink-test-harness/tests/trace_oracle.rs::a_module_private_native_global_is_not_host_readable_and_so_is_not_in_the_trace`,
+`crates/internal/brink-test-harness/tests/integration/trace_oracle.rs::a_module_private_native_global_is_not_host_readable_and_so_is_not_in_the_trace`,
 so it cannot silently flip either way.
 
 ## 3. The mechanical oracle — SHIPPED (tier 0, #3376)
@@ -233,7 +233,7 @@ serves, each its own target:
 - compile-road agreement (`compile_path` vs `brink_environment::compile`).
 
 **Status (2026-09-04).** The formatter and respeller properties are
-`crates/internal/brink-gen/tests/equivalence.rs`, per-PR. The formatter
+`crates/internal/brink-gen/tests/integration/equivalence.rs`, per-PR. The formatter
 is *Safe* over the `plain_ink` profile: trace-equal AND identity-preserving
 (§2.2) on every generated story (300 measured). The respeller is not yet:
 its first run found four emitter defects, carried as issue-keyed known

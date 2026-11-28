@@ -845,7 +845,7 @@ pub(crate) fn import_closure_query(
 /// changed closure, both of which salsa backdates when their value is
 /// unchanged, so an ordinary edit to a file **outside** the closure never
 /// re-executes this query's closure (proven by
-/// `tests/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` cases,
+/// `tests/integration/issue_2111_conventions_projection.rs`'s `Arc::ptr_eq` cases,
 /// including the new one for an edit to an *imported* struct file). See
 /// [`ConventionsProjection`]'s own doc for why this is now the ruled "the
 /// conventions module and its import closure" invalidation contract exactly,

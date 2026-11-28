@@ -1,0 +1,20 @@
+---
+source: crates/internal/brink-test-harness/tests/integration/oracle_snapshots.rs
+expression: case_snapshot
+---
+case: tier2/lists/I074-list-random
+oracle: 1, brink: 1, matched: 1
+passing: 1/1
+
+=== episode [] === PASS
+> "B\n" [Continue]
+> "B\n" [Continue]
+> "B\n" [Continue]
+> "C\n" [Continue]
+> "D\n" [Continue]
+> "C\n" [Continue]
+> "B\n" [Continue]
+> "C\n" [Continue]
+> "B\n" [Continue]
+> "C\n" [Done]
+outcome: Done

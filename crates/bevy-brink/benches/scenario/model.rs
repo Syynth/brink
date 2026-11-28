@@ -5,7 +5,7 @@
 //!
 //! Included via `#[path]` from both `benches/scenario_bench.rs` (the real
 //! bench binary — `report.rs` adds CLI/CSV/markdown on top) and
-//! `tests/scenario_bench_model.rs` (a real `cargo test` path exercising
+//! `tests/integration/scenario_bench_model.rs` (a real `cargo test` path exercising
 //! this same source, since the bench binary's `test = false` means
 //! `cargo test` never runs its `main()` — see that file's module docs).
 
@@ -440,7 +440,7 @@ pub fn active_count(flow_count: usize, active_fraction: f64) -> usize {
 
 /// A linked `(Program, line tables)` pair, ready to drive.
 ///
-/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` includes this
+/// `pub(crate)` (not private): `tests/integration/scenario_bench_model.rs` includes this
 /// module verbatim via `#[path]` and needs to name this type to call
 /// [`compile_scenario_story`] directly — see that function's doc comment.
 pub(crate) type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
@@ -450,7 +450,7 @@ pub(crate) type CompiledStory = (Program, Vec<Vec<brink_format::LineEntry>>);
 /// ([`run_batch_scenario`]) drivers so both time the exact same compiled
 /// story for a given config.
 ///
-/// `pub(crate)` (not private): `tests/scenario_bench_model.rs` calls this
+/// `pub(crate)` (not private): `tests/integration/scenario_bench_model.rs` calls this
 /// directly to get at the linked [`Program`] itself (`global_defaults()`),
 /// which the [`ScenarioResult`] returned by [`run_scenario`] /
 /// [`run_batch_scenario`] does not expose — needed to prove the
@@ -506,7 +506,7 @@ pub(crate) fn compile_scenario_story(
 /// `brink_runtime::bench_counters` is process-global mutable state — two
 /// bare `AtomicU64`s with no per-caller isolation (see that module's docs).
 /// `cargo test`'s default harness runs every `#[test]` fn on its own OS
-/// thread, and several tests in this crate's `tests/scenario_bench_model.rs`
+/// thread, and several tests in this crate's `tests/integration/scenario_bench_model.rs`
 /// call into `measure_app` (directly, or via [`run_scenario`]/
 /// [`run_batch_scenario`]/[`run_parallel_scenario`]), each doing its own
 /// `reset()` → drive frames → `snapshot()`. Without serialization, one

@@ -110,7 +110,7 @@ impl Profile {
     };
 
     /// The `plain_ink` differential profile (`docs/program-generator-spec.md`
-    /// §6, issue #3379): the stories `tests/inkjs_differential.rs` replays
+    /// §6, issue #3379): the stories `tests/integration/inkjs_differential.rs` replays
     /// through inkjs. Today it IS [`Self::DEFAULT`] — every construct the
     /// generator emits is plain ink, so the whole model is admissible — but
     /// the differential names this profile rather than the default so that a
@@ -119,7 +119,7 @@ impl Profile {
     /// accident.
     pub const PLAIN_INK: Self = Self::DEFAULT;
 
-    /// The profile `tests/smoke.rs`'s exhaustive-exploration property uses.
+    /// The profile `tests/integration/smoke.rs`'s exhaustive-exploration property uses.
     ///
     /// [`Self::DEFAULT`] bounds a story's SIZE but not its choice TREE:
     /// four knots with two stitches each, a choice set per weave with up
@@ -139,7 +139,7 @@ impl Profile {
     };
 
     /// The subset the ink → `.brink` respeller emits today: structure only,
-    /// no inline conditionals in content. `tests/equivalence.rs`'s
+    /// no inline conditionals in content. `tests/integration/equivalence.rs`'s
     /// `trace(P) = trace(respell(P))` property runs on it so the property
     /// is not vacuous while the emitter's supported shapes grow (#1951's
     /// holes, #1976's springs); widen it as they land.

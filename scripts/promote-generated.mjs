@@ -16,7 +16,7 @@
 // `oracle-source` to `csharp`. The script REFUSES when the story does not
 // compile under brink, when the oracle cannot produce a golden, or when the
 // case exists (without `--force`), and it bumps `GENERATED_CASE_COUNT` in
-// `crates/internal/brink-test-harness/tests/tier4_generated.rs` so the
+// `crates/internal/brink-test-harness/tests/integration/tier4_generated.rs` so the
 // tier's must-pass target sees the new case by count.
 //
 // `--from-log` takes a saved failing run of a brink-gen property (the
@@ -312,7 +312,7 @@ function main(argv) {
     } else {
       console.error(`promote-generated: wrote ${result.caseDir} (${result.episodes} episodes, golden by inkjs)`);
       if (result.count !== null) console.error(`promote-generated: GENERATED_CASE_COUNT is now ${result.count} (${COUNT_FILE})`);
-      console.error("promote-generated: run `cargo test -p brink-test-harness --test tier4_generated` to confirm");
+      console.error("promote-generated: run `cargo test -p brink-test-harness --test integration tier4_generated::` to confirm");
     }
     return 0;
   } catch (e) {

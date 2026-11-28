@@ -4,7 +4,7 @@
 // end-to-end promotion below runs with INJECTED runners (fake brink compile,
 // fake oracle) over a scratch tier directory. The real runners are exercised
 // by promoting the first cases (tests/tier4-generated) and by
-// `cargo test -p brink-test-harness --test tier4_generated`, which is what
+// `cargo test -p brink-test-harness --test integration tier4_generated::`, which is what
 // proves the written goldens are real.
 
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -57,7 +57,7 @@ describe("extractSourceFromLog", () => {
       "first",
       "-> END",
       "",
-      " at crates/internal/brink-gen/tests/inkjs_differential.rs:158.",
+      " at crates/internal/brink-gen/tests/integration/inkjs_differential.rs:158.",
       "minimal failing input: Story {",
       "...",
       "--- source ---",
